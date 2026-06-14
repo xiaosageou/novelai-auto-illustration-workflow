@@ -1,12 +1,77 @@
-/**
- * 35秒全局防抖冷却锁管理器
- */
 export class CooldownManager {
-  constructor(cooldownSeconds = 35) {
-    this.cooldownSeconds = cooldownSeconds;
+  constructor(baseCooldownSeconds = 15, degradedCooldownSeconds = 35) {
+    this.baseCooldownSeconds = this._normalizeBaseCooldown(baseCooldownSeconds);
+    this.degradedCooldownSeconds = degradedCooldownSeconds;
+    this.cooldownSeconds = this.baseCooldownSeconds;
+    this.mode = 'normal';
+    this.consecutive429 = 0;
+    this.degradedSuccesses = 0;
     this.lastGenerationTime = 0; // 上次生图完成的时间戳（毫秒）
     this.timer = null;
     this.listeners = new Set();
+  }
+
+  _normalizeBaseCooldown(seconds) {
+    const value = Number(seconds);
+    return Number.isFinite(value) ? Math.max(1, Math.min(120, value)) : 15;
+  }
+
+  setBaseCooldownSeconds(seconds) {
+    this.baseCooldownSeconds = this._normalizeBaseCooldown(seconds);
+    if (this.mode === 'normal') {
+      this.cooldownSeconds = this.baseCooldownSeconds;
+    }
+    this._emit(this.getRemainingSeconds());
+  }
+
+  record429() {
+    this.consecutive429 += 1;
+    if (this.mode === 'degraded') {
+      this.degradedSuccesses = 0;
+    }
+    if (this.mode === 'normal' && this.consecutive429 >= 3) {
+      this.mode = 'degraded';
+      this.cooldownSeconds = this.degradedCooldownSeconds;
+      this.degradedSuccesses = 0;
+    }
+    this._emit(this.getRemainingSeconds());
+    return this.getState();
+  }
+
+  recordSuccess() {
+    if (this.mode === 'degraded') {
+      this.degradedSuccesses += 1;
+      if (this.degradedSuccesses >= 5) {
+        this.mode = 'normal';
+        this.cooldownSeconds = this.baseCooldownSeconds;
+        this.consecutive429 = 0;
+        this.degradedSuccesses = 0;
+      }
+    } else {
+      this.consecutive429 = 0;
+    }
+    this._emit(this.getRemainingSeconds());
+    return this.getState();
+  }
+
+  recordNon429Failure() {
+    if (this.mode === 'normal') {
+      this.consecutive429 = 0;
+    } else {
+      this.degradedSuccesses = 0;
+    }
+  }
+
+  getState() {
+    return {
+      remaining: this.getRemainingSeconds(),
+      cooldownSeconds: this.cooldownSeconds,
+      baseCooldownSeconds: this.baseCooldownSeconds,
+      degradedCooldownSeconds: this.degradedCooldownSeconds,
+      mode: this.mode,
+      consecutive429: this.consecutive429,
+      degradedSuccesses: this.degradedSuccesses
+    };
   }
 
   /**
@@ -22,9 +87,10 @@ export class CooldownManager {
    * 触发所有监听器
    */
   _emit(remaining) {
+    const state = { ...this.getState(), remaining };
     for (const listener of this.listeners) {
       try {
-        listener(remaining);
+        listener(remaining, state);
       } catch (e) {
         console.error("Cooldown tick listener error:", e);
       }
@@ -95,4 +161,4 @@ export class CooldownManager {
 }
 
 // 导出全局单例，保证整个应用共享一个冷却锁
-export const globalCooldownManager = new CooldownManager(35);
+export const globalCooldownManager = new CooldownManager(15, 35);

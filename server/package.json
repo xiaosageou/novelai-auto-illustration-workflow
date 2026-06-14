@@ -13,6 +13,7 @@
     "express": "^4.21.2",
     "fflate": "^0.8.2",
     "jszip": "^3.10.1",
+    "sharp": "^0.35.1",
     "undici": "^8.3.0"
   },
   "devDependencies": {

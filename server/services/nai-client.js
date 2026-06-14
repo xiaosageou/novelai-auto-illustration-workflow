@@ -53,10 +53,29 @@ function normalizeCharacterCaption(prompt = "") {
 function buildDefaultCharacterCenters(count) {
   if (count <= 0) return [];
   if (count === 1) return [{ x: 0.5, y: 0.5 }];
+  const grid = [0.1, 0.3, 0.5, 0.7, 0.9];
   return Array.from({ length: count }, (_, index) => ({
-    x: Number((0.2 + (0.6 * index) / (count - 1)).toFixed(3)),
+    x: grid[Math.round((index * (grid.length - 1)) / (count - 1))],
     y: 0.5
   }));
+}
+
+function normalizeCharacterCenters(characterCenters = [], count = 0) {
+  const defaults = buildDefaultCharacterCenters(count);
+  const grid = [0.1, 0.3, 0.5, 0.7, 0.9];
+  const snapToGrid = (value) => grid.reduce((closest, candidate) => (
+    Math.abs(candidate - value) < Math.abs(closest - value) ? candidate : closest
+  ), grid[0]);
+  return Array.from({ length: count }, (_, index) => {
+    const supplied = characterCenters[index];
+    const x = Number(supplied?.x);
+    const y = Number(supplied?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return defaults[index];
+    return {
+      x: snapToGrid(Math.min(0.9, Math.max(0.1, x))),
+      y: snapToGrid(Math.min(0.9, Math.max(0.1, y)))
+    };
+  });
 }
 
 export class NovelAIClient {
@@ -69,11 +88,9 @@ export class NovelAIClient {
     "nai-diffusion-2": "Anime V2 (复古二次元)",
   };
 
-  constructor({ token = "", baseUrl = "https://image.novelai.net", cooldownSeconds = 35 } = {}) {
+  constructor({ token = "", baseUrl = "https://image.novelai.net" } = {}) {
     this.token = token.trim();
     this.baseUrl = baseUrl.trim();
-    this.cooldownSeconds = cooldownSeconds;
-    this.unsupportedStructuredCaptionTargets = new Set();
   }
 
   setToken(token) {
@@ -82,9 +99,6 @@ export class NovelAIClient {
 
   setBaseUrl(baseUrl) {
     const nextBaseUrl = (baseUrl || "https://image.novelai.net").trim();
-    if (this._normalizeBaseUrl(this.baseUrl) !== this._normalizeBaseUrl(nextBaseUrl)) {
-      this.unsupportedStructuredCaptionTargets.clear();
-    }
     this.baseUrl = nextBaseUrl;
   }
 
@@ -186,6 +200,7 @@ export class NovelAIClient {
     seed = null,
     basePrompt = null,
     characterPrompts = [],
+    characterCenters = [],
     useStructuredCharacterCaptions = false,
     negativeBasePrompt = null,
     negativeCharacterPrompts = [],
@@ -205,7 +220,7 @@ export class NovelAIClient {
       throw new Error("未配置有效的 NovelAI API Token！");
     }
 
-    // 1. 触发 35 秒强制防抖冷却锁
+    // 1. 触发全局自适应防抖冷却锁
     await globalCooldownManager.waitForCooldown();
 
     prompt = removeNonEnglishPromptTokens(prompt);
@@ -221,8 +236,6 @@ export class NovelAIClient {
 
     const isV4Model = /nai-diffusion-4/i.test(model);
     const normalizedBase = this._normalizeBaseUrl(this.baseUrl);
-    const structuredCaptionTarget = `${normalizedBase}::${model}`;
-    const structuredCaptionsDisabled = this.unsupportedStructuredCaptionTargets.has(structuredCaptionTarget);
 
     // 2. 自适应处理 NSFW 提示词屏蔽（解除艺术审查限制）
     const nsfwKeywords = [
@@ -289,13 +302,12 @@ export class NovelAIClient {
       }
 
       // V4/V4.5 角色槽遵循网页端结构：角色 prompt 不带人数，正负槽位和中心点一一对应。
-      const cleanCharacterPrompts = useStructuredCharacterCaptions && !structuredCaptionsDisabled && Array.isArray(characterPrompts)
+      const cleanCharacterPrompts = useStructuredCharacterCaptions && Array.isArray(characterPrompts)
         ? characterPrompts.map(normalizeCharacterCaption).filter(Boolean)
         : [];
-      // Coordinates tend to split two-person scenes into panels or duplicate
-      // subjects. Preserve ordered character captions without spatial regions.
-      const useCharacterCoords = false;
-      const centers = buildDefaultCharacterCenters(cleanCharacterPrompts.length);
+      // V4/V4.5 supports rough 5x5-grid placement when AI's Choice is disabled.
+      const useCharacterCoords = cleanCharacterPrompts.length >= 2;
+      const centers = normalizeCharacterCenters(characterCenters, cleanCharacterPrompts.length);
       const suppliedNegativePrompts = Array.isArray(negativeCharacterPrompts)
         ? negativeCharacterPrompts.map(item => String(item || '').trim())
         : [];
@@ -380,8 +392,13 @@ export class NovelAIClient {
       params.reference_information_extracted_multiple = [Number(vibeInfoExtracted) || 1.0];
     }
 
+    const hasStructuredCharacterPayload = Boolean(
+      isV4Model && params.v4_prompt?.caption?.char_captions?.length
+    );
     const payload = {
-      input: prompt,
+      input: hasStructuredCharacterPayload
+        ? params.v4_prompt.caption.base_caption
+        : prompt,
       model,
       action: "generate",
       parameters: params
@@ -413,17 +430,14 @@ export class NovelAIClient {
         vibe_count: Array.isArray(params.reference_image_multiple) ? params.reference_image_multiple.length : 0
       })}`);
     }
-    if (useStructuredCharacterCaptions && structuredCaptionsDisabled) {
-      const cachedFallbackMsg = "[NAI Client] 当前端点与模型曾拒绝结构化角色 payload，本次直接使用扁平 prompt。";
-      console.warn(cachedFallbackMsg);
-      if (onRetry) {
-        try { onRetry(cachedFallbackMsg); } catch (e) {}
-      }
-    }
-
     let attempt = 0;
     const maxRetries = 6;
-    const retryDelay = 35000;
+    const waitBeforeRetry = async () => {
+      const delaySeconds = globalCooldownManager.cooldownSeconds;
+      globalCooldownManager.startCooldown();
+      await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
+      return delaySeconds;
+    };
 
     try {
       while (true) {
@@ -436,95 +450,34 @@ export class NovelAIClient {
             signal: signal
           });
         } catch (fetchErr) {
+          globalCooldownManager.recordNon429Failure();
           if (attempt < maxRetries) {
             attempt++;
-            const retryMsg = `[NAI Client] 网络连接失败 (${fetchErr.message})，将在 35 秒后进行第 ${attempt}/${maxRetries} 次重试...`;
+            const delaySeconds = globalCooldownManager.cooldownSeconds;
+            const retryMsg = `[NAI Client] 网络连接失败 (${fetchErr.message})，将在 ${delaySeconds} 秒后进行第 ${attempt}/${maxRetries} 次重试...`;
             console.warn(retryMsg);
             if (onRetry) {
               try { onRetry(retryMsg); } catch (e) {}
             }
-            globalCooldownManager.startCooldown();
-            await new Promise(resolve => setTimeout(resolve, retryDelay));
+            await waitBeforeRetry();
             continue;
           } else {
             throw new Error(`[NovelAI Network Error] 网络连接失败，已重试 ${maxRetries} 次均失败: ${fetchErr.message}`);
           }
         }
 
-        // Vibe 与结构化角色 payload 分阶段降级，明确定位是哪组参数导致 5xx。
-        if (res.status >= 500) {
-          if (params.reference_image_multiple) {
-            const warningMsg = "[NAI Client] NovelAI 5xx，先仅移除 Vibe 参数并保留 char_captions 重试...";
-            console.warn(warningMsg);
-            if (onRetry) {
-              try { onRetry(warningMsg); } catch (e) {}
-            }
-            delete params.reference_image_multiple;
-            delete params.reference_strength_multiple;
-            delete params.reference_information_extracted_multiple;
-            payload.parameters = params;
-            res = await fetch(url, {
-              method: "POST",
-              headers: this.getHeaders(),
-              body: JSON.stringify(payload),
-              signal: signal
-            });
-            if (res.status === 200 || res.status === 201) {
-              const recoveredMsg = "[NAI Client] 移除 Vibe 后请求恢复，已确认本次 5xx 来自 Vibe 参数。";
-              console.warn(recoveredMsg);
-              if (onRetry) {
-                try { onRetry(recoveredMsg); } catch (e) {}
-              }
-            }
-          }
-
-          if (res.status >= 500 && params.v4_prompt?.caption?.char_captions?.length) {
-            const warningMsg = "[NAI Client] NovelAI 仍返回 5xx，移除结构化角色 payload 并退回扁平 prompt 重试...";
-            console.warn(warningMsg);
-            if (onRetry) {
-              try { onRetry(warningMsg); } catch (e) {}
-            }
-            if (params.v4_prompt?.caption) {
-              params.v4_prompt.caption.base_caption = prompt;
-              params.v4_prompt.caption.char_captions = [];
-              params.v4_prompt.use_order = false;
-            }
-            if (params.v4_negative_prompt?.caption) {
-              params.v4_negative_prompt.caption.base_caption = finalNegative;
-              params.v4_negative_prompt.caption.char_captions = [];
-            }
-            params.characterPrompts = [];
-            payload.parameters = params;
-            res = await fetch(url, {
-              method: "POST",
-              headers: this.getHeaders(),
-              body: JSON.stringify(payload),
-              signal: signal
-            });
-            if (res.status === 200 || res.status === 201) {
-              this.unsupportedStructuredCaptionTargets.add(structuredCaptionTarget);
-              const recoveredMsg = "[NAI Client] 移除结构化角色 payload 后请求恢复；当前结构仍被端点拒绝，后续将缓存使用扁平 prompt。";
-              console.warn(recoveredMsg);
-              if (onRetry) {
-                try { onRetry(recoveredMsg); } catch (e) {}
-              }
-            }
-          }
-        }
-
         // 处理 429 错误并进行重试
         if (res.status === 429) {
+          const cooldownState = globalCooldownManager.record429();
           if (attempt < maxRetries) {
             attempt++;
-            const retryMsg = `[NAI Client] NovelAI 返回 429 (频率限制)，将在 35 秒后进行第 ${attempt}/${maxRetries} 次重试...`;
+            const retryMsg = `[NAI Client] NovelAI 返回 429 (连续 ${cooldownState.consecutive429} 次)，将在 ${cooldownState.cooldownSeconds} 秒后进行第 ${attempt}/${maxRetries} 次重试${cooldownState.mode === 'degraded' ? '；已降级到固定 35 秒间隔' : ''}...`;
             console.warn(retryMsg);
             if (onRetry) {
               try { onRetry(retryMsg); } catch (e) {}
             }
             // 开启冷却锁确保其他并发请求在重试期间也进行排队
-            globalCooldownManager.startCooldown();
-            
-            await new Promise(resolve => setTimeout(resolve, retryDelay));
+            await waitBeforeRetry();
             continue;
           } else {
             throw new Error(`[NovelAI 429] 频率限制，已重试 ${maxRetries} 次均失败，停止工作流。`);
@@ -532,6 +485,7 @@ export class NovelAIClient {
         }
 
         if (res.status !== 200 && res.status !== 201) {
+          globalCooldownManager.recordNon429Failure();
           const errorText = await res.text();
           let message = errorText;
           try {
@@ -555,15 +509,16 @@ export class NovelAIClient {
         try {
           buffer = await res.arrayBuffer();
         } catch (streamErr) {
+          globalCooldownManager.recordNon429Failure();
           if (attempt < maxRetries && isRetryableStreamError(streamErr)) {
             attempt++;
-            const retryMsg = `[NAI Client] 响应体读取失败 (${streamErr.message})，将在 35 秒后进行第 ${attempt}/${maxRetries} 次重试...`;
+            const delaySeconds = globalCooldownManager.cooldownSeconds;
+            const retryMsg = `[NAI Client] 响应体读取失败 (${streamErr.message})，将在 ${delaySeconds} 秒后进行第 ${attempt}/${maxRetries} 次重试...`;
             console.warn(retryMsg);
             if (onRetry) {
               try { onRetry(retryMsg); } catch (e) {}
             }
-            globalCooldownManager.startCooldown();
-            await new Promise(resolve => setTimeout(resolve, retryDelay));
+            await waitBeforeRetry();
             continue;
           }
           throw streamErr;
@@ -576,6 +531,7 @@ export class NovelAIClient {
           // 兼容兜底：如果不是 ZIP 但直接是 PNG 字节
           if (bytes.length >= 8 && bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71) {
             const mimeType = "image/png";
+            globalCooldownManager.recordSuccess();
             return {
               imageBytes: bytes,
               dataUrl: uint8ArrayToDataUrl(bytes, mimeType),
@@ -586,6 +542,7 @@ export class NovelAIClient {
         }
 
         const mimeType = detectImageMimeType(imageFile.fileName);
+        globalCooldownManager.recordSuccess();
         return {
           imageBytes: imageFile.imageBytes,
           dataUrl: uint8ArrayToDataUrl(imageFile.imageBytes, mimeType),

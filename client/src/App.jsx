@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { 
   Settings, Plus, BookOpen, User, Play, Square, Download, 
-  RefreshCw, CheckCircle2, AlertCircle, Image, Sparkles, X, ChevronRight,
-  Copy
+  RefreshCw, CheckCircle2, Sparkles, X, FileText, Clapperboard, Timer,
+  Copy, PanelLeftClose, PanelLeftOpen
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:5001";
@@ -13,8 +13,18 @@ function App() {
     llm_url: "",
     llm_key: "",
     llm_model: "deepseek-chat",
+    llm_character_dna_url: "",
+    llm_character_dna_key: "",
+    llm_character_dna_model: "",
+    llm_scene_url: "",
+    llm_scene_key: "",
+    llm_scene_model: "",
+    llm_nai_tags_url: "",
+    llm_nai_tags_key: "",
+    llm_nai_tags_model: "",
     nai_token: "",
     nai_model: "nai-diffusion-4-5-full",
+    nai_cooldown_seconds: 15,
     steps: 28,
     scale: 5.5,
     sampler: "k_euler_ancestral",
@@ -33,11 +43,24 @@ function App() {
   const [activeProject, setActiveProject] = useState("");
   const [projectDetails, setProjectDetails] = useState(null);
   const [selectedChapter, setSelectedChapter] = useState(null);
+  const [workspaceTab, setWorkspaceTab] = useState('scenes');
+  const [chapterContent, setChapterContent] = useState(null);
+  const [textSelections, setTextSelections] = useState([]);
+  const [isSubmittingSelections, setIsSubmittingSelections] = useState(false);
+  const [isProjectSidebarCollapsed, setIsProjectSidebarCollapsed] = useState(() => (
+    window.localStorage.getItem('project-sidebar-collapsed') === 'true'
+  ));
   
   // 流水线运行状态
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [cooldown, setCooldown] = useState(0);
-  const [gallery, setGallery] = useState([]);
+  const [cooldownState, setCooldownState] = useState({
+    cooldownSeconds: 15,
+    baseCooldownSeconds: 15,
+    mode: 'normal',
+    consecutive429: 0,
+    degradedSuccesses: 0
+  });
   const [logs, setLogs] = useState([]);
 
   // 弹窗状态
@@ -57,9 +80,13 @@ function App() {
   const [isParsing, setIsParsing] = useState(false);
 
   // LLM 模型列表缓存与加载状态
-  const [availableModels, setAvailableModels] = useState([]);
-  const [isLoadingModels, setIsLoadingModels] = useState(false);
-  const [modelError, setModelError] = useState("");
+  const [availableModels, setAvailableModels] = useState({});
+  const [isLoadingModels, setIsLoadingModels] = useState({});
+  const [modelError, setModelError] = useState({});
+
+  useEffect(() => {
+    window.localStorage.setItem('project-sidebar-collapsed', String(isProjectSidebarCollapsed));
+  }, [isProjectSidebarCollapsed]);
 
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
@@ -116,12 +143,14 @@ function App() {
     eventSource.addEventListener('cooldown', (e) => {
       const data = JSON.parse(e.data);
       setCooldown(data.remaining);
+      setCooldownState(prev => ({ ...prev, ...data }));
     });
 
     eventSource.addEventListener('cooldown_start', (e) => {
       const data = JSON.parse(e.data);
       setCooldown(data.remaining);
-      addLog("⏱️ NAI 接口进入 35s 频控冷却，等待锁释放...");
+      setCooldownState(prev => ({ ...prev, ...data }));
+      addLog(`⏱️ NAI 接口进入 ${data.cooldownSeconds || 15}s 冷却，等待锁释放...`);
     });
 
     eventSource.addEventListener('progress', (e) => {
@@ -154,11 +183,6 @@ function App() {
           delete copy[sceneKey];
           return copy;
         });
-        // 追加到实时画廊
-        setGallery(prev => {
-          if (prev.includes(data.imagePath)) return prev;
-          return [data.imagePath, ...prev];
-        });
       }
 
       // 增量刷新项目进度
@@ -174,7 +198,7 @@ function App() {
 
       if (data.state === 'queued') {
         setLoadingScenes(prev => ({ ...prev, [sceneKey]: 'queued' }));
-        addLog(`📋 场景 #${data.sceneIdx} 已进入重绘队列${data.position ? `，当前位置 ${data.position}` : ''}。`);
+        addLog(`📋 场景 #${data.sceneIdx} 已进入${data.priority ? '插队' : '重绘'}队列${data.position ? `，当前位置 ${data.position}` : ''}。`);
       } else if (data.state === 'running') {
         setPipelineRunning(true);
         setLoadingScenes(prev => ({ ...prev, [sceneKey]: 'running' }));
@@ -185,14 +209,14 @@ function App() {
           delete copy[sceneKey];
           return copy;
         });
-        if (data.remaining === 0) setPipelineRunning(false);
+        if (data.remaining === 0 && !data.pipelineRunning) setPipelineRunning(false);
       } else if (data.state === 'failed') {
         setLoadingScenes(prev => {
           const copy = { ...prev };
           delete copy[sceneKey];
           return copy;
         });
-        if (data.remaining === 0) setPipelineRunning(false);
+        if (data.remaining === 0 && !data.pipelineRunning) setPipelineRunning(false);
         addLog(`❌ 场景 #${data.sceneIdx} 队列重绘失败: ${data.message || '未知错误'}`, 'error');
       }
     });
@@ -241,6 +265,24 @@ function App() {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
+  useEffect(() => {
+    if (!activeProject || !selectedChapter) {
+      setChapterContent(null);
+      setTextSelections([]);
+      return;
+    }
+    const chapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+    setChapterContent(null);
+    setTextSelections([]);
+    fetch(`${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/chapters/${encodeURIComponent(chapterKey)}/content`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.error) throw new Error(data.error);
+        setChapterContent(data);
+      })
+      .catch(error => addLog(`读取章节正文失败: ${error.message}`, 'error'));
+  }, [activeProject, selectedChapter]);
+
   const addLog = (text, type = 'info') => {
     const time = new Date().toLocaleTimeString();
     setLogs(prev => [...prev, { time, text, type }]);
@@ -274,27 +316,63 @@ function App() {
     }
   };
 
-  const fetchModels = async () => {
-    if (!config.llm_key) {
-      setModelError("请先填写 LLM API Key");
+  const llmTaskFields = {
+    default: { url: 'llm_url', key: 'llm_key', model: 'llm_model' },
+    characterDna: { url: 'llm_character_dna_url', key: 'llm_character_dna_key', model: 'llm_character_dna_model' },
+    scene: { url: 'llm_scene_url', key: 'llm_scene_key', model: 'llm_scene_model' },
+    naiTags: { url: 'llm_nai_tags_url', key: 'llm_nai_tags_key', model: 'llm_nai_tags_model' }
+  };
+
+  const fetchModels = async (scope = 'default') => {
+    const fields = llmTaskFields[scope];
+    const llmUrl = config[fields.url] || config.llm_url;
+    const llmKey = config[fields.key] || config.llm_key;
+    if (!llmKey) {
+      setModelError(prev => ({ ...prev, [scope]: "请先填写 LLM API Key" }));
       return;
     }
-    setIsLoadingModels(true);
-    setModelError("");
+    setIsLoadingModels(prev => ({ ...prev, [scope]: true }));
+    setModelError(prev => ({ ...prev, [scope]: "" }));
     try {
-      const res = await fetch(`${API_BASE}/api/config/llm-models?llm_url=${encodeURIComponent(config.llm_url)}&llm_key=${encodeURIComponent(config.llm_key)}`);
+      const res = await fetch(`${API_BASE}/api/config/llm-models?llm_url=${encodeURIComponent(llmUrl)}&llm_key=${encodeURIComponent(llmKey)}`);
       const data = await res.json();
       if (data.success && Array.isArray(data.models)) {
-        setAvailableModels(data.models);
+        setAvailableModels(prev => ({ ...prev, [scope]: data.models }));
         addLog(`✅ 成功获取了 ${data.models.length} 个 LLM 聊天模型`);
       } else {
-        setModelError(data.error || "获取模型列表失败");
+        setModelError(prev => ({ ...prev, [scope]: data.error || "获取模型列表失败" }));
       }
     } catch (err) {
-      setModelError(err.message);
+      setModelError(prev => ({ ...prev, [scope]: err.message }));
     } finally {
-      setIsLoadingModels(false);
+      setIsLoadingModels(prev => ({ ...prev, [scope]: false }));
     }
+  };
+
+  const copyDefaultLlmToTask = (scope) => {
+    const fields = llmTaskFields[scope];
+    setConfig(prev => ({
+      ...prev,
+      [fields.url]: prev.llm_url,
+      [fields.key]: prev.llm_key,
+      [fields.model]: prev.llm_model
+    }));
+  };
+
+  const copyDefaultLlmToAllTasks = () => {
+    setConfig(prev => ({
+      ...prev,
+      llm_character_dna_url: prev.llm_url,
+      llm_character_dna_key: prev.llm_key,
+      llm_character_dna_model: prev.llm_model,
+      llm_scene_url: prev.llm_url,
+      llm_scene_key: prev.llm_key,
+      llm_scene_model: prev.llm_model,
+      llm_nai_tags_url: prev.llm_url,
+      llm_nai_tags_key: prev.llm_key,
+      llm_nai_tags_model: prev.llm_model
+    }));
+    addLog("✅ 已将默认 LLM 连接带入三个任务配置");
   };
 
   const fetchProjects = async () => {
@@ -341,7 +419,6 @@ function App() {
           setActiveProject("");
           setProjectDetails(null);
           setSelectedChapter(null);
-          setGallery([]);
           setPipelineRunning(false);
         }
         const updatedProjects = await fetchProjects();
@@ -370,8 +447,6 @@ function App() {
         setSelectedChapter(data.chapters[0]);
       }
 
-      // 1. 从项目进度数据中搜集所有已成功生成的插图，初始化画廊流
-      // 只有在初始加载时，才全量初始化画廊。其余进度刷新时不覆盖 setGallery，防止重置增量绘图
       let completedCount = 0;
       if (data.progress && data.progress.completed_chapters) {
         for (const chap of Object.values(data.progress.completed_chapters)) {
@@ -381,31 +456,18 @@ function App() {
         }
       }
 
-      if (isInitialLoad) {
-        const generatedImages = [];
-        if (data.progress && data.progress.completed_chapters) {
-          for (const chap of Object.values(data.progress.completed_chapters)) {
-            if (Array.isArray(chap.scenes)) {
-              for (const scene of chap.scenes) {
-                if (scene.status === 'SUCCESS' && scene.image_path) {
-                  generatedImages.push(`/projects/${name}/${scene.image_path}`);
-                }
-              }
-            }
-          }
-        }
-        setGallery(generatedImages.reverse());
-      }
-
-      // 2. 动态检测该项目后台流水线是否处于运行状态
+      // 动态检测该项目后台流水线是否处于运行状态
       const statusRes = await fetch(`${API_BASE}/api/projects/${name}/pipeline/status`);
       const statusData = await statusRes.json();
       setPipelineRunning(statusData.isRunning);
       if (statusData.remainingCooldown > 0) {
         setCooldown(statusData.remainingCooldown);
       }
+      if (statusData.cooldown) {
+        setCooldownState(prev => ({ ...prev, ...statusData.cooldown }));
+      }
 
-      // 3. 输出初始状态同步日志
+      // 输出初始状态同步日志
       addLog(`ℹ️ 项目「${name}」已载入，当前处理进度: ${completedCount}/${data.chapters.length} 章节`);
       if (statusData.isRunning) {
         addLog("🚀 检测到流水线正在后台运行中，正实时接收进度更新...");
@@ -695,15 +757,148 @@ function App() {
   const progressInfo = getProgress();
   const characters = projectDetails?.progress?.global_characters || {};
 
+  const renderTaskLlmCard = (scope, title, description, accent) => {
+    const fields = llmTaskFields[scope];
+    const models = availableModels[scope] || [];
+    return (
+      <section className="llm-task-card" style={{ '--task-accent': accent }}>
+        <div className="llm-task-card__header">
+          <div>
+            <strong>{title}</strong>
+            <p>{description}</p>
+          </div>
+          <button type="button" className="btn-secondary llm-copy-button" onClick={() => copyDefaultLlmToTask(scope)}>
+            <Copy size={13} /> 带入默认连接
+          </button>
+        </div>
+        <div className="llm-task-grid">
+          <label>
+            <span>Base URL</span>
+            <input
+              type="text"
+              value={config[fields.url] || ""}
+              onChange={(e) => setConfig({ ...config, [fields.url]: e.target.value })}
+              placeholder={config.llm_url || "留空时使用默认 URL"}
+            />
+          </label>
+          <label>
+            <span>API Key</span>
+            <input
+              type="password"
+              value={config[fields.key] || ""}
+              onChange={(e) => setConfig({ ...config, [fields.key]: e.target.value })}
+              placeholder={config.llm_key ? "留空时使用默认 Key" : "输入 API Key"}
+            />
+          </label>
+          <label className="llm-task-model">
+            <span>Model</span>
+            <div className="llm-model-row">
+              <input
+                type="text"
+                list={`llm-models-${scope}`}
+                value={config[fields.model] || ""}
+                onChange={(e) => setConfig({ ...config, [fields.model]: e.target.value })}
+                placeholder={config.llm_model || "留空时使用默认模型"}
+              />
+              <button type="button" className="btn-secondary" onClick={() => fetchModels(scope)} disabled={isLoadingModels[scope]}>
+                <RefreshCw size={12} className={isLoadingModels[scope] ? "animate-spin" : ""} />
+                {isLoadingModels[scope] ? "获取中" : "模型"}
+              </button>
+            </div>
+            <datalist id={`llm-models-${scope}`}>
+              {models.map(model => <option key={model} value={model} />)}
+            </datalist>
+            {modelError[scope] && <small className="llm-model-error">{modelError[scope]}</small>}
+          </label>
+        </div>
+      </section>
+    );
+  };
+
+  const captureTextSelection = () => {
+    const selection = window.getSelection();
+    const text = selection?.toString().replace(/\s+/g, ' ').trim();
+    if (!selection || selection.rangeCount === 0 || !text) return;
+
+    const range = selection.getRangeAt(0);
+    const endElement = range.endContainer.nodeType === Node.ELEMENT_NODE
+      ? range.endContainer
+      : range.endContainer.parentElement;
+    const paragraphElement = endElement?.closest?.('[data-paragraph-index]');
+    const paragraphIndex = Number(paragraphElement?.dataset?.paragraphIndex);
+    const paragraph = chapterContent?.paragraphs?.[paragraphIndex];
+    if (!paragraph || !Number.isInteger(paragraphIndex)) return;
+
+    setTextSelections(prev => {
+      if (prev.some(item => item.paragraphIndex === paragraphIndex && item.text === text)) return prev;
+      return [...prev, { paragraphIndex, paragraph, text }];
+    });
+    selection.removeAllRanges();
+  };
+
+  const generateSelectedParagraphs = async () => {
+    if (!activeProject || !selectedChapter || !chapterContent || textSelections.length === 0) return;
+    const chapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+    const selections = [...textSelections].sort((a, b) => a.paragraphIndex - b.paragraphIndex);
+    setIsSubmittingSelections(true);
+    setPipelineRunning(true);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/chapters/${encodeURIComponent(chapterKey)}/selected-scenes`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ selections })
+        }
+      );
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || '提交失败');
+      addLog(`📝 ${data.message}`);
+      setTextSelections([]);
+      setWorkspaceTab('scenes');
+    } catch (error) {
+      setPipelineRunning(false);
+      addLog(`正文选段生图失败: ${error.message}`, 'error');
+    } finally {
+      setIsSubmittingSelections(false);
+    }
+  };
+
   return (
-    <div className="app-container">
+    <div className={[
+      'app-container',
+      workspaceTab === 'reader' && projectDetails ? 'reader-mode' : '',
+      isProjectSidebarCollapsed ? 'project-sidebar-collapsed' : ''
+    ].filter(Boolean).join(' ')}>
+      {isProjectSidebarCollapsed && !projectDetails && (
+        <button
+          className="sidebar-toggle sidebar-toggle-floating"
+          type="button"
+          title="展开书籍项目栏"
+          aria-label="展开书籍项目栏"
+          onClick={() => setIsProjectSidebarCollapsed(false)}
+        >
+          <PanelLeftOpen size={17} />
+        </button>
+      )}
       {/* 1. 左栏：项目概览与角色 DNA */}
-      <div className="app-column">
+      <div className="app-column project-sidebar">
         <div className="column-header">
           <h2><BookOpen size={18} /> 书籍项目</h2>
-          <button className="btn-secondary" style={{ padding: '6px' }} onClick={() => setIsNewProjectOpen(true)}>
-            <Plus size={16} />
-          </button>
+          <div className="sidebar-header-actions">
+            <button
+              className="sidebar-toggle"
+              type="button"
+              title="收起书籍项目栏"
+              aria-label="收起书籍项目栏"
+              onClick={() => setIsProjectSidebarCollapsed(true)}
+            >
+              <PanelLeftClose size={16} />
+            </button>
+            <button className="btn-secondary" style={{ padding: '6px' }} onClick={() => setIsNewProjectOpen(true)}>
+              <Plus size={16} />
+            </button>
+          </div>
         </div>
         
         <div className="column-body" style={{ flex: '0 0 220px', marginBottom: '20px' }}>
@@ -764,7 +959,7 @@ function App() {
                   </div>
                   {data.features && (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '6px' }}>
-                      {Object.entries(data.features).flatMap(([key, tags]) => 
+                      {Object.entries(data.features).flatMap(([, tags]) =>
                         Array.isArray(tags) ? tags.map(t => (
                           <span key={t} className="tag-badge dna">{t}</span>
                         )) : []
@@ -779,11 +974,21 @@ function App() {
       </div>
 
       {/* 2. 中栏：章节选择与场景定格卡片流 */}
-      <div className="app-column">
+      <div className="app-column workbench">
         {projectDetails ? (
           <>
             <div className="column-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  className="sidebar-toggle"
+                  type="button"
+                  title={isProjectSidebarCollapsed ? '展开书籍项目栏' : '收起书籍项目栏'}
+                  aria-label={isProjectSidebarCollapsed ? '展开书籍项目栏' : '收起书籍项目栏'}
+                  aria-expanded={!isProjectSidebarCollapsed}
+                  onClick={() => setIsProjectSidebarCollapsed(collapsed => !collapsed)}
+                >
+                  {isProjectSidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+                </button>
                 <span style={{ fontSize: '1.1rem', fontWeight: '600' }}>{activeProject}</span>
                 <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                   ({progressInfo.completed} / {progressInfo.total} 章节已处理)
@@ -808,8 +1013,23 @@ function App() {
               </div>
             </div>
 
+            <div className="workspace-tabs" role="tablist" aria-label="项目工作区">
+              <button
+                className={workspaceTab === 'scenes' ? 'active' : ''}
+                onClick={() => setWorkspaceTab('scenes')}
+              >
+                <Clapperboard size={15} /> 场景生图
+              </button>
+              <button
+                className={workspaceTab === 'reader' ? 'active' : ''}
+                onClick={() => setWorkspaceTab('reader')}
+              >
+                <FileText size={15} /> 正文阅读
+              </button>
+            </div>
+
             {/* 章节与正文卡片容器 */}
-            <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: '16px', flex: 1, overflow: 'hidden' }}>
+            <div style={{ display: workspaceTab === 'scenes' ? 'grid' : 'none', gridTemplateColumns: '200px 1fr', gap: '16px', flex: 1, overflow: 'hidden' }}>
               {/* 章节导航树 */}
               <div className="glass-panel" style={{ height: '100%', overflowY: 'auto', padding: '8px' }}>
                 {projectDetails.chapters.map(chap => {
@@ -1228,6 +1448,86 @@ function App() {
                 )}
               </div>
             </div>
+
+            {workspaceTab === 'reader' && (
+              <div className="reader-layout">
+                <div className="glass-panel reader-chapters">
+                  {projectDetails.chapters.map(chap => {
+                    const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+                    return (
+                      <button
+                        key={`reader-${chapKey}`}
+                        className={`chapter-item ${selectedChapter?.chapter === chap.chapter ? 'active' : ''}`}
+                        onClick={() => setSelectedChapter(chap)}
+                      >
+                        <span>{chap.chapter}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="reader-page glass-panel">
+                  <div className="reader-toolbar">
+                    <div>
+                      <h3>{selectedChapter?.chapter || '请选择章节'}</h3>
+                      <span>用光标拖选句子或段落，松开后自动加入待生成列表；可连续选择多处。</span>
+                    </div>
+                    <button
+                      className="btn-primary"
+                      disabled={!textSelections.length || pipelineRunning || isSubmittingSelections}
+                      onClick={generateSelectedParagraphs}
+                    >
+                      <Sparkles size={15} />
+                      {isSubmittingSelections ? '提交中...' : `生成所选${textSelections.length ? ` ${textSelections.length} 处` : ''}`}
+                    </button>
+                  </div>
+                  {textSelections.length > 0 && (
+                    <div className="reader-selection-tray">
+                      {textSelections.map((selection, index) => (
+                        <div className="reader-selection-chip" key={`${selection.paragraphIndex}-${selection.text}-${index}`}>
+                          <span>{selection.text}</span>
+                          <button
+                            type="button"
+                            aria-label={`移除选区 ${index + 1}`}
+                            onClick={() => setTextSelections(prev => prev.filter((_, itemIndex) => itemIndex !== index))}
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <article
+                    className="novel-reader"
+                    onPointerUp={() => window.setTimeout(captureTextSelection, 0)}
+                  >
+                    {!chapterContent ? (
+                      <div className="reader-empty">正在载入正文...</div>
+                    ) : chapterContent.paragraphs.map((paragraph, paragraphIndex) => {
+                      const scenes = getChapterProgress(selectedChapter.volume, selectedChapter.chapter)?.scenes || [];
+                      const paragraphScenes = scenes.filter(scene => scene.status === 'SUCCESS' && scene.image_path && (
+                        Number(scene.source_paragraph_index) === paragraphIndex ||
+                        String(scene.source_paragraph || '').trim() === paragraph ||
+                        (!scene.source_paragraph && scene.trigger_sentence && paragraph.includes(scene.trigger_sentence))
+                      ));
+                      return (
+                        <section key={`${paragraphIndex}-${paragraph.slice(0, 16)}`} className="reader-paragraph-block">
+                          <p className="reader-paragraph" data-paragraph-index={paragraphIndex}>{paragraph}</p>
+                          {paragraphScenes.map(scene => (
+                            <img
+                              key={`inline-${scene.scene_idx}`}
+                              className="reader-illustration"
+                              src={encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`)}
+                              alt=""
+                              onClick={() => setPreviewImage(encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`))}
+                            />
+                          ))}
+                        </section>
+                      );
+                    })}
+                  </article>
+                </div>
+              </div>
+            )}
           </>
         ) : (
           <div style={{ margin: 'auto', textAlign: 'center', color: 'var(--text-muted)' }}>
@@ -1237,43 +1537,19 @@ function App() {
       </div>
 
       {/* 3. 右栏：冷却管理、实时进度与日志 */}
-      <div className="app-column">
-        {/* 冷却环 */}
-        <div className="glass-panel" style={{ padding: '16px', marginBottom: '16px' }}>
-          <div className="cooldown-container">
-            <div 
-              className={`cooldown-ring ${cooldown > 0 ? 'active' : ''}`}
-              style={{ '--progress': `${(cooldown / 35) * 100}%` }}
-            >
-              <div className="cooldown-text">
-                {cooldown > 0 ? `${Math.ceil(cooldown)}s` : "READY"}
-              </div>
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              {cooldown > 0 ? "NovelAI 接口冷却防爆中" : "NAI 生图引擎就绪"}
-            </div>
-          </div>
-        </div>
-
-        {/* 实时画廊流 */}
-        <div className="column-header">
-          <h2><Image size={18} /> 实时画廊流</h2>
-        </div>
-        <div className="column-body" style={{ flex: '0 0 160px', marginBottom: '16px' }}>
-          <div className="glass-panel" style={{ height: '100%', overflowY: 'auto', padding: '8px' }}>
-            <div className="gallery-grid">
-              {gallery.map((path, idx) => (
-                <div key={idx} className="gallery-item" onClick={() => setPreviewImage(encodeURI(`${API_BASE}${path}`))}>
-                  <img src={encodeURI(`${API_BASE}${path}`)} alt="实时插画" style={{ cursor: 'zoom-in' }} title="点击放大预览" />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
+      <div className="app-column status-sidebar">
         {/* 实时流水线日志 */}
         <div className="column-header">
           <h2><Sparkles size={18} /> 流水线实时日志</h2>
+          <div
+            className={`cooldown-chip ${cooldown > 0 ? 'active' : ''} ${cooldownState.mode === 'degraded' ? 'degraded' : ''}`}
+            title={cooldownState.mode === 'degraded'
+              ? `429 降级模式：固定 35 秒，成功 ${cooldownState.degradedSuccesses || 0}/5 次后恢复`
+              : `基础间隔 ${cooldownState.baseCooldownSeconds || config.nai_cooldown_seconds || 15} 秒`}
+          >
+            <Timer size={14} />
+            <span>{cooldown > 0 ? `${Math.ceil(cooldown)}s` : `${cooldownState.cooldownSeconds || 15}s`}</span>
+          </div>
         </div>
         <div className="column-body">
           <div className="glass-panel" style={{ height: '100%', overflowY: 'auto', padding: '12px', fontFamily: 'var(--font-title)', fontSize: '0.8rem' }}>
@@ -1321,7 +1597,7 @@ function App() {
       {/* 4. 全局配置弹窗 */}
       {isConfigOpen && (
         <div className="modal-overlay">
-          <div className="modal-content glass-panel" style={{ maxWidth: configTab === 'prompts' ? '800px' : '500px', width: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+          <div className="modal-content glass-panel" style={{ maxWidth: configTab === 'prompts' ? '800px' : '920px', width: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexShrink: 0 }}>
               <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Settings size={20} /> 全局 API 配置</h2>
               <button className="btn-secondary" style={{ padding: '6px' }} onClick={() => setIsConfigOpen(false)}>
@@ -1384,24 +1660,38 @@ function App() {
                       <button 
                         type="button" 
                         className="btn-secondary" 
-                        onClick={fetchModels} 
-                        disabled={isLoadingModels}
+                        onClick={() => fetchModels('default')}
+                        disabled={isLoadingModels.default}
                         style={{ whiteSpace: 'nowrap', padding: '0 12px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}
                       >
-                        {isLoadingModels ? <RefreshCw size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-                        {isLoadingModels ? "获取中..." : "获取模型"}
+                        {isLoadingModels.default ? <RefreshCw size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                        {isLoadingModels.default ? "获取中..." : "获取模型"}
                       </button>
                     </div>
                     <datalist id="llm-models-datalist">
-                      {availableModels.map(model => (
+                      {(availableModels.default || []).map(model => (
                         <option key={model} value={model} />
                       ))}
                     </datalist>
-                    {modelError && (
+                    {modelError.default && (
                       <div style={{ color: 'var(--color-pink)', fontSize: '0.75rem', marginTop: '4px' }}>
-                        {modelError}
+                        {modelError.default}
                       </div>
                     )}
+                  </div>
+                  <div className="llm-routing-panel">
+                    <div className="llm-routing-panel__intro">
+                      <div>
+                        <strong>任务级 LLM 路由</strong>
+                        <p>每个任务可使用独立 API、Key 和模型；留空时自动回退到上方默认连接。</p>
+                      </div>
+                      <button type="button" className="btn-secondary" onClick={copyDefaultLlmToAllTasks}>
+                        <Copy size={14} /> 一键带入全部
+                      </button>
+                    </div>
+                    {renderTaskLlmCard('characterDna', '角色 DNA', '提取和更新人物外貌、别名与稳定特征', '#22c55e')}
+                    {renderTaskLlmCard('scene', '场景生成', '章节分镜提取与单场景描述重构', '#38bdf8')}
+                    {renderTaskLlmCard('naiTags', 'NAI Tags', '把分镜与角色 DNA 转换为结构化生图标签', '#c084fc')}
                   </div>
                   <div>
                     <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>DanbooruSearchOnline MCP URL</label>
@@ -1438,6 +1728,21 @@ function App() {
                       onChange={(e) => setConfig({ ...config, nai_model: e.target.value })}
                       style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                     />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>基础生图间隔（秒）</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="120"
+                      step="1"
+                      value={config.nai_cooldown_seconds ?? 15}
+                      onChange={(e) => setConfig({ ...config, nai_cooldown_seconds: Number(e.target.value) })}
+                      style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                    />
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                      默认 15 秒；连续 3 次 429 后自动固定为 35 秒，连续成功 5 次后恢复此间隔。
+                    </div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                     <div>

@@ -55,6 +55,18 @@ function normalizeVisualEntity(raw = {}) {
   };
 }
 
+function normalizeInteractionAction(raw = {}) {
+  if (!raw || typeof raw !== 'object') return null;
+  const action = cleanText(raw.action || raw.tag || raw.interaction);
+  if (!action) return null;
+  return {
+    action,
+    source: cleanText(raw.source || raw.actor || raw.donor),
+    target: cleanText(raw.target || raw.receiver || raw.recipient),
+    mutual: raw.mutual === true || /mutual|each other|互相|彼此|相互/.test(cleanText(raw.role))
+  };
+}
+
 function normalizeCharacterNameList(rawScene = {}, characters = []) {
   const directList = rawScene.character_names || rawScene.scene_characters || rawScene.characterNames;
   const names = [];
@@ -228,6 +240,16 @@ export function normalizeSceneCard(rawScene = {}) {
   }
 
   const visualEntities = inferVisualEntities(rawScene);
+  const interactionActions = (Array.isArray(rawScene.interaction_actions)
+    ? rawScene.interaction_actions
+    : (Array.isArray(rawScene.interactionActions) ? rawScene.interactionActions : []))
+    .map(normalizeInteractionAction)
+    .filter(Boolean)
+    .filter(interaction => (
+      characterNames.has(interaction.source)
+      && characterNames.has(interaction.target)
+    ));
+
   const normalized = {
     scene_idx: Number(rawScene.scene_idx) || Number(rawScene.scene_id) || 1,
     trigger_sentence: cleanText(rawScene.trigger_sentence),
@@ -238,6 +260,7 @@ export function normalizeSceneCard(rawScene = {}) {
     characters,
     character_names: characters.map(char => char.name).filter(Boolean),
     interactions: cleanText(rawScene.interactions),
+    interaction_actions: interactionActions,
     plot_traces: cleanText(rawScene.plot_traces),
     text_elements: cleanText(rawScene.text_elements),
     visual_entities: visualEntities,

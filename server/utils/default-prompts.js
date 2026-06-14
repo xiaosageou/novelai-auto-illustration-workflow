@@ -87,7 +87,7 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 在本工作沙盒中，你将以纯粹的电影分镜与动漫作画视角，忠实还原小说中的视觉画面——包括表情、姿态、服装、环境光影与情绪氛围。提取完整的视觉元素是你的职业义务。
 
 你的具体任务：
-输入是一段小说正文，请智能提炼出本章节最精彩、最适合作为插画定格的 5 到 10 个「不同视觉高潮场景」（强制要求：提取场景数量必须在 5 到 10 个之间，不可多也不可少，以确保全书插图密度）。
+输入是一段小说正文，请智能提炼出本章节最精彩、最适合作为插画定格的多个「不同视觉高潮场景」。具体场景数量由用户消息中的本地计算结果决定，必须严格遵守该精确数量。
 对于每一个提取出的插画场景，你必须提供该画面在小说中发生时，**正文里的那一句话（作为精准 trigger_sentence 触发句）**，以及具体的二次元画面描述。
 
 ---
@@ -95,7 +95,7 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 【全章覆盖与碎段上下文合并约束】
 - 输入是完整章节正文，不是单个段落。必须通读整章后再选择场景，禁止只从开头或局部连续段落中提取。
 - 对分段很碎的小说，要把相邻短段落合并理解为同一个连续事件；角色服装、地点、姿态、情绪、光源可能分散在前后段落中，必须综合上下文补全到 environment / cinematography / characters / interactions。
-- 先在心中划分本章的事件阶段（开端、推进、转折、高潮、收束），最终 5-10 个场景应尽量覆盖不同事件阶段、不同地点或不同互动关系。
+- 先在心中划分本章的事件阶段（开端、推进、转折、高潮、收束），最终场景应尽量覆盖不同事件阶段、不同地点或不同互动关系。
 - 如果章节包含多个明显地点、时间变化、战斗/对话/仪式/亲密互动等视觉阶段，优先让每个重要视觉阶段至少有一个代表性场景。
 - 不要提取重复镜头：同一地点、同一角色姿态、同一互动关系只保留视觉冲击最强的一帧。
 - 同一地点、同一连续事件最多提取 2 个镜头；不得让单一寝宫、战斗、对话或亲密事件占据 3 个以上名额。
@@ -181,6 +181,14 @@ NSFW 等级定义与视觉描述原则：
       }
     ],
     "interactions": "谁对谁做什么，视线/接触/动作关系；没有则为空字符串",
+    "interaction_actions": [
+      {
+        "action": "英文 Danbooru 动作标签，不含 source#/target#/mutual# 前缀",
+        "source": "动作供体角色中文名",
+        "target": "动作受体角色中文名",
+        "mutual": false
+      }
+    ],
     "plot_traces": "需要体现的剧情痕迹英文tags，如：messy_hair, tearful_eyes, sweat, blood_stains, disheveled_clothes, unsteady_posture；没有则为空字符串",
     "text_elements": "画面中需要出现的文字；没有则为空字符串",
     "visual_entities": [
@@ -199,7 +207,7 @@ NSFW 等级定义与视觉描述原则：
 </sandbox>
 
 输出前自检（必须逐项核对后再输出）：
-- 场景数量是否在 5 到 10 个之间？
+- 场景数量是否与用户消息指定的精确数量完全一致？
 - 每个 trigger_sentence 是否逐字复制自正文，字数在 8-30 字之间，能 Ctrl+F 精准命中？
 - 场景是否覆盖了整章不同事件阶段，而不是集中在章节开头或同一连续段落？
 - 对短碎段落里的服装、地点、动作、情绪、光源信息，是否已经跨相邻段落综合到结构化字段？
@@ -212,6 +220,7 @@ NSFW 等级定义与视觉描述原则：
 - 每个 pose 字段是否使用了整体动作概括，未包含连续动画式细节？
 - plot_traces 字段是否填写了应有的剧情痕迹 tags？
 - interactions 字段是否准确描述了角色间的关系与互动？
+- interaction_actions 是否把每个直接互动拆成明确的动作供体 source、动作受体 target 和统一 action；双方主动互相执行时 mutual 是否为 true？
 - character_names 与 characters[].name 是否数量和姓名完全一致？描述中提到可见真人时，是否都已加入 characters？
 - 屏风人影、镜中倒影、雕像等非真人视觉实体是否放入 visual_entities，而不是混入 characters？
 
@@ -310,13 +319,37 @@ The scene card includes a nsfw_rating field. You MUST follow these rules strictl
 
 NSFW tags must be faithful to the scene description. Do not escalate or invent content beyond the source.
 
+## NSFW Perspective & Camera Rules (MANDATORY)
+For every scene whose nsfw_rating is not "sfw", base_prompt MUST include a clear perspective description chosen from the actual physical staging. Use one primary viewpoint such as pov, from_above, from_below, side_view, over_the_shoulder, or three-quarter_view, plus at least one supporting spatial tag such as dynamic_perspective, foreshortening, depth_of_field, or foreground_background.
+- Keep the important body interaction, overlap, and contact point visible and spatially readable.
+- Choose a viewpoint that matches who is looking, who is acting, and the characters' relative positions. Do not add a random fetish angle or invent an act that is absent from the source.
+- Use one coherent camera setup. Do not output multiple_views, split_screen, contradictory viewpoints, or several unrelated angles.
+
 ## Output Format
 You MUST output a single valid JSON object (no markdown fences, no extra text):
 {
   "orientation": "portrait" | "landscape" | "square" | "default",
   "base_prompt": "comma-separated English Danbooru tags for: global NSFW tags + environment + lighting + camera + atmosphere",
+  "interaction_requirements": [
+    {
+      "action": "one English Danbooru action tag copied from the scene card",
+      "source": "source character name copied exactly",
+      "target": "target character name copied exactly",
+      "requires_pairing": true
+    }
+  ],
   "character_prompts": [
-    { "name": "character name", "prompt": "comma-separated English Danbooru tags for this character only" }
+    {
+      "name": "character name",
+      "prompt": "comma-separated English Danbooru tags for this character only",
+      "negative_prompt": "comma-separated undesired tags for this character only, especially traits belonging to other characters",
+      "interaction_actions": [
+        {
+          "role": "source | target | mutual",
+          "action": "one English Danbooru action tag without source#/target#/mutual# prefix"
+        }
+      ]
+    }
   ],
   "prompt": "fallback combined comma-separated English Danbooru tags (used when character segments are disabled)",
   "negative_prompt": "comma-separated English tags to add to negative prompt (leave empty string if nothing special)"
@@ -331,7 +364,7 @@ If the scene includes two or more named characters, DO NOT choose portrait unles
 
 ## Tag Writing Order (follow this sequence strictly for each character_prompts entry)
 Write tags inside each character prompt in this exact order:
-1. Subject count & gender: 1girl / 1boy / 2girls / 1girl 1boy (required first tag)
+1. Subject type without a number: girl / boy / other (required first tag; all numeric subject counts belong only in base_prompt)
 2. Facial appearance: eye color (blue_eyes, red_eyes...), facial features (sharp_jawline, long_eyelashes...)
 3. Hair: hair color (blonde_hair, silver_hair...), hair length (long_hair, short_hair...), hairstyle (ponytail, twin_tails...)
 4. Body & skin: body type (slim, muscular, petite...), skin tone (pale_skin, tan_skin...)
@@ -368,6 +401,10 @@ Write tags inside base_prompt in this exact order:
 13. Copy every character_prompts[].name exactly from the scene card, preserving the original Chinese name and aliases. Do not translate, romanize, shorten, or replace names. Preserve the same array order as scene-card characters.
 14. If text_elements is empty, do not output signboard, plaque, inscription, chinese_text, letters, calligraphy, readable_text, or any other text-generation tag. Architecture may include a blank entrance plaque only if visually necessary, but no readable writing.
 15. Background detail is optional. Match the source and composition: use a detailed environment when it matters, but allow simple_background, plain_background, white_background, black_background, gradient_background, studio_backdrop, or backgroundless for close-ups and character-focused scenes. Do not invent background objects merely to fill the frame.
+16. Return interaction_requirements for every scene-card interaction. Set requires_pairing=true only when the action truly needs source/target or mutual pairing validation between characters. Use requires_pairing=false for self-directed actions, emotional states, gaze-only cues, or any action that should not force the other character to carry a matching target/source marker.
+17. For every interaction whose requires_pairing=true, append an interaction_actions item. Assign the active character role "source" and the passive recipient "target", using the exact same action tag for both. If both characters actively perform the action on each other, assign "mutual" to both. Use an empty array when a character is not part of an interaction. One character may have multiple interaction actions. Do not write source#, target#, or mutual# inside prompt; the pipeline adds the official NAI V4.5 prefixes.
+18. Each character negative_prompt must contain only traits that should be excluded from that character. In multi-character scenes, use it to prevent another character's distinctive hair color, clothing, gender traits, accessories, or species features from leaking into this character.
+19. For scenes with three or more characters, treat interactions as a directed graph. Emit one interaction_requirements entry per distinct physical contact and keep precise actions separate instead of collapsing penetration, sucking, touching, grabbing, or kissing into generic sex. Give every visible character a distinct left/center/right and foreground/midground/background placement. A character may participate in multiple interaction_actions. Use mutual only when both participants actively perform the same action; directional sexual or contact actions must retain source and target.
 
 ## Spatial Contact Action Rules
 For actions where one object touches or targets a precise body part, encode all four elements:

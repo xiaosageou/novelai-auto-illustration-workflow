@@ -5,6 +5,9 @@ import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER
 import { searchTagsLocal, getRelatedTagsLocal } from './local-tag-searcher.js';
 import { searchTagsMcp, getRelatedTagsMcp } from './danbooru-mcp-searcher.js';
 
+export const SCENES_JSON_START = '<SCENES_JSON_START>';
+export const SCENES_JSON_END = '<SCENES_JSON_END>';
+
 export function withSystemPrefix(taskPrompt) {
   const prompt = preserveTextForLlm(taskPrompt)
     .replace(/\n*重要：[\s\S]*?<further_mathematics>[\s\S]*?<\/further_mathematics>/gi, '')
@@ -23,7 +26,9 @@ ${prompt}`;
 export function ensureAdvancedPromptContract(taskPrompt) {
   const prompt = preserveTextForLlm(taskPrompt || DEFAULT_ADVANCED_PROMPT).trim();
   const hasCurrentSchema = /["']?base_prompt["']?/i.test(prompt)
-    && /["']?character_prompts["']?/i.test(prompt);
+    && /["']?character_prompts["']?/i.test(prompt)
+    && /["']?negative_prompt["']?/i.test(prompt)
+    && /["']?interaction_actions["']?/i.test(prompt);
   if (hasCurrentSchema) return withSystemPrefix(prompt);
 
   return withSystemPrefix(`${prompt}
@@ -38,10 +43,25 @@ Return exactly one valid JSON object:
 {
   "orientation": "portrait" | "landscape" | "square" | "default",
   "base_prompt": "global character count, environment, lighting, camera, atmosphere, interactions and global NSFW tags only",
+  "interaction_requirements": [
+    {
+      "action": "one Danbooru action tag copied from the scene card",
+      "source": "copy the source character name exactly",
+      "target": "copy the target character name exactly",
+      "requires_pairing": true
+    }
+  ],
   "character_prompts": [
     {
       "name": "copy the character name exactly from the scene card",
-      "prompt": "tags for this character's appearance, hair, body, clothing, pose, expression and position only"
+      "prompt": "tags for this character's appearance, hair, body, clothing, pose, expression and position only",
+      "negative_prompt": "undesired tags for this character only, especially traits belonging to other characters",
+      "interaction_actions": [
+        {
+          "role": "source | target | mutual",
+          "action": "one Danbooru action tag without source#/target#/mutual# prefix"
+        }
+      ]
     }
   ],
   "negative_prompt": "scene-specific negative tags or an empty string"
@@ -49,10 +69,14 @@ Return exactly one valid JSON object:
 
 Hard requirements:
 - base_prompt must be a non-empty string.
+- interaction_requirements must evaluate whether each scene-card interaction truly requires source/target pairing validation. Use false for self-directed, emotional, gaze-only, or otherwise non-paired actions.
 - character_prompts must contain exactly one entry for every visible scene character, in the same order.
 - Copy each character name exactly. Do not translate or shorten it.
 - Put the total character count only in base_prompt.
 - Do not put character-specific appearance, clothing, expression or individual pose in base_prompt.
+- For every direct interaction, add an interaction_actions item: active character source, passive character target, or both mutual, using the same action tag.
+- Use each character's negative_prompt to prevent appearance, clothing, gender or accessories from leaking from other characters.
+- Do not write source#/target#/mutual# inside prompt; the application adds the official NovelAI prefix.
 - Do not output a top-level "prompt" field.
 - Output JSON only, without Markdown or commentary.`);
 }
@@ -165,7 +189,7 @@ function ensureStructuredScenePrompt(prompt) {
   const coverageInstruction = `【全章覆盖与碎段上下文合并约束】
 - 输入是完整章节正文，不是单个段落。必须通读整章后再选择场景，禁止只从开头或局部连续段落中提取。
 - 对分段很碎的小说，要把相邻短段落合并理解为同一个连续事件；角色服装、地点、姿态、情绪、光源可能分散在前后段落中，必须综合上下文补全到 environment / cinematography / characters / interactions。
-- 先在心中划分本章的事件阶段（开端、推进、转折、高潮、收束），最终 5-10 个场景应尽量覆盖不同事件阶段、不同地点或不同互动关系。
+- 先在心中划分本章的事件阶段（开端、推进、转折、高潮、收束），最终场景应尽量覆盖不同事件阶段、不同地点或不同互动关系。
 - 如果章节包含多个明显地点、时间变化、战斗/对话/仪式/亲密互动等视觉阶段，优先让每个重要视觉阶段至少有一个代表性场景。
 - 不要提取重复镜头：同一地点、同一角色姿态、同一互动关系只保留视觉冲击最强的一帧。
 - trigger_sentence 必须仍然来自原文连续短片段；若视觉信息来自相邻段落，trigger_sentence 选该事件中最能定位画面的原文句。`;
@@ -190,11 +214,27 @@ function ensureStructuredScenePrompt(prompt) {
     '"must_show"',
     '"must_not_show"'
   ];
+  const withBoundaryContract = (content) => withSystemPrefix(`${content}
+
+【分镜输出起止符协议（最高优先级）】
+- 完整输出必须以 ${SCENES_JSON_START} 独占一行开始。
+- 紧接着输出 JSON 数组本体。
+- 完整输出必须以 ${SCENES_JSON_END} 独占一行结束。
+- 起止符外禁止输出任何文字、解释、Markdown 或代码围栏。
+- 即使 JSON 本体语法完整，缺少结束符 ${SCENES_JSON_END} 也会被系统判定为输出截断并重试。
+
+严格格式：
+${SCENES_JSON_START}
+[
+  { "scene_idx": 1 }
+]
+${SCENES_JSON_END}`);
+
   if (requiredFields.every(field => withDiversity.includes(field))) {
-    return withSystemPrefix(withDiversity);
+    return withBoundaryContract(withDiversity);
   }
 
-  return withSystemPrefix(`${withDiversity}
+  return withBoundaryContract(`${withDiversity}
 
 【重要补充：必须输出新版结构化分镜字段】
 即使上文示例较旧，你最终返回的每个场景对象也必须补全以下字段，禁止省略：
@@ -218,6 +258,14 @@ function ensureStructuredScenePrompt(prompt) {
     }
   ],
   "interactions": "谁对谁做什么，视线/接触/动作关系；没有则为空字符串",
+  "interaction_actions": [
+    {
+      "action": "英文 Danbooru 动作标签，如 hug / kiss / pointing / holding_hands",
+      "source": "动作供体角色名",
+      "target": "动作受体角色名",
+      "mutual": false
+    }
+  ],
   "plot_traces": "需要体现的剧情痕迹英文 Danbooru tags；没有则为空字符串",
   "text_elements": "画面中需要出现的文字；没有则为空字符串",
   "visual_entities": [],
@@ -225,6 +273,24 @@ function ensureStructuredScenePrompt(prompt) {
   "must_not_show": []
 }
 只输出 JSON 数组本体，不要 Markdown。`);
+}
+
+export function extractBoundedScenesJson(rawContent = '') {
+  const text = String(rawContent || '').trim();
+  if (!text.startsWith(SCENES_JSON_START)) {
+    throw new Error(`缺少场景输出起始符 ${SCENES_JSON_START}`);
+  }
+  if (!text.endsWith(SCENES_JSON_END)) {
+    throw new Error(`缺少场景输出终止符 ${SCENES_JSON_END}，判定输出截断`);
+  }
+
+  const jsonText = text
+    .slice(SCENES_JSON_START.length, text.length - SCENES_JSON_END.length)
+    .trim();
+  if (!jsonText) {
+    throw new Error('场景输出起止符之间没有 JSON 内容');
+  }
+  return jsonText;
 }
 
 function uniqueTags(tags = []) {
@@ -238,7 +304,13 @@ function uniqueTags(tags = []) {
   });
 }
 
-function mapVisualTextToTags(text = '') {
+const SELF_DIRECTED_INTERACTION_ACTIONS = new Set([
+  'undressing',
+  'buttoning',
+  'buttoning_clothes'
+]);
+
+export function mapVisualTextToTags(text = '') {
   const source = String(text || '');
   const rules = [
     [/室内|寝宫|宫殿内|indoors/i, 'indoors'],
@@ -278,6 +350,7 @@ function mapVisualTextToTags(text = '') {
     [/抓.*臀|扶.*臀|grabbing.*hips/i, 'grabbing_hips'],
     [/拔出|pulling out/i, 'pulling_out'],
     [/精液.*流|精液.*溢|semen.*drip/i, 'semen_dripping'],
+    [/大腿.*湿|腿间.*湿|股间.*湿|大腿间.*淫水|大腿间.*爱液|股间.*淫水|股间.*爱液|顺着.*腿.*流下|沿着.*腿.*流下/i, 'wet_thighs'],
     [/掌印|手印|handprints/i, 'hand_prints'],
     [/交合|性交|插入|penetration/i, 'penetration']
   ];
@@ -353,6 +426,45 @@ function buildCountTags(sceneCharacters = []) {
     sceneCharacters.length === 2 ? 'exactly_two_characters' : '',
     sceneCharacters.length === 3 ? 'exactly_three_characters' : ''
   ].filter(Boolean);
+}
+
+export function countChapterCharacters(text = '') {
+  return String(text || '').replace(/\s/g, '').length;
+}
+
+export function countEnglishWords(text = '') {
+  return String(text || '').match(/[A-Za-z]+(?:['’-][A-Za-z]+)*/g)?.length || 0;
+}
+
+export function getSceneCountMetrics(text = '') {
+  const source = String(text || '');
+  const englishWordCount = countEnglishWords(source);
+  const latinLetterCount = source.match(/[A-Za-z]/g)?.length || 0;
+  const cjkCharacterCount = source.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu)?.length || 0;
+  const isEnglish = englishWordCount > 0 && latinLetterCount > cjkCharacterCount;
+
+  if (isEnglish) {
+    return {
+      language: 'english',
+      unit: 'words',
+      count: englishWordCount,
+      divisor: 350,
+      sceneCount: Math.max(1, Math.ceil(englishWordCount / 350))
+    };
+  }
+
+  const characterCount = countChapterCharacters(source);
+  return {
+    language: 'cjk',
+    unit: 'characters',
+    count: characterCount,
+    divisor: 600,
+    sceneCount: Math.max(1, Math.ceil(characterCount / 600))
+  };
+}
+
+export function calculateSceneCount(text = '') {
+  return getSceneCountMetrics(text).sceneCount;
 }
 
 function compileScenePromptDeterministically(sceneInput = {}) {
@@ -471,9 +583,9 @@ export class LLMExtractor {
   }
 
   /**
-   * 单章小说文本提炼：提取 5-10 个视觉插画分镜场景
+   * 单章小说文本提炼：中文按有效字符数，英文按单词数动态计算分镜数量。
    */
-  async extractChapterScenes(chapterTitle, text, model = "deepseek-chat", onProgressLog = null) {
+  async extractChapterScenes(chapterTitle, text, model = "deepseek-chat", onProgressLog = null, requestedSceneCount = null) {
     if (!this.apiKey) {
       throw new Error("请先配置有效的 LLM API Key！");
     }
@@ -482,7 +594,30 @@ export class LLMExtractor {
 
     const cleanedTitle = preserveTextForLlm(chapterTitle);
     const cleanedText = preserveTextForLlm(text);
-    const userContent = `请通读以下完整章节文本，提炼为精美定格的二次元视觉多场景列表（提取 5 到 10 个场景）。请覆盖全章不同事件阶段，不要只提取开头段落：\n\n【章节名】：${cleanedTitle}\n【完整正文文本】：\n${cleanedText}`;
+    const sceneCount = Number.isInteger(requestedSceneCount) && requestedSceneCount > 0
+      ? requestedSceneCount
+      : calculateSceneCount(text);
+    const countMetrics = getSceneCountMetrics(text);
+    const countRule = countMetrics.language === 'english'
+      ? 'ceil(英文总词数 / 350)'
+      : 'ceil(章节有效字符数 / 600)';
+    const countLabel = countMetrics.language === 'english'
+      ? '本章英文总词数'
+      : '本章有效字符数';
+    const userContent = `请通读以下完整章节文本，提炼为精美定格的二次元视觉多场景列表。
+
+【场景数量硬约束（最高优先级）】
+- 本地已按 ${countRule} 完成计算。
+- ${countLabel}：${countMetrics.count}
+- 必须输出恰好 ${sceneCount} 个场景，不得多于或少于 ${sceneCount} 个。
+- scene_idx 必须从 1 连续编号到 ${sceneCount}。
+- 完整回复必须使用 ${SCENES_JSON_START} 和 ${SCENES_JSON_END} 包裹 JSON 数组。
+
+请覆盖全章不同事件阶段，不要只提取开头段落：
+
+【章节名】：${cleanedTitle}
+【完整正文文本】：
+${cleanedText}`;
 
     const url = `${this.baseUrl}/chat/completions`;
     const payload = {
@@ -492,77 +627,91 @@ export class LLMExtractor {
         { role: "user", content: userContent }
       ],
       temperature: 0.4,
-      max_tokens: 8000
+      max_tokens: Math.max(8000, sceneCount * 1200)
     };
 
-    onProgressLog?.(`[LLM] 正在调用大模型提炼场景...`);
-    console.log(`[LLM Extractor] 正在提炼章节「${chapterTitle}」的 5-10 个场景...`);
+    onProgressLog?.(`[LLM] 正在调用大模型提炼 ${sceneCount} 个场景...`);
+    console.log(`[LLM Extractor] 正在提炼章节「${chapterTitle}」的 ${sceneCount} 个场景...`);
 
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(180000) // 180s 超时
-      });
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        onProgressLog?.(`[LLM] 场景提炼第 ${attempt}/3 次请求...`);
+        const res = await fetch(url, {
+          method: "POST",
+          headers: this.getHeaders(),
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(180000) // 180s 超时
+        });
 
-      if (res.status !== 200) {
-        throw new Error(`HTTP Error ${res.status}`);
+        if (res.status !== 200) {
+          throw new Error(`HTTP Error ${res.status}`);
+        }
+
+        const resData = await res.json();
+        const rawContent = (resData.choices?.[0]?.message?.content || "").trim();
+        if (!rawContent) {
+          throw new Error(`大模型返回内容为空: ${JSON.stringify(resData)}`);
+        }
+
+        onProgressLog?.(`[LLM] 大模型分镜提炼回复原始结果:\n${rawContent}`);
+
+        const boundedJson = extractBoundedScenesJson(rawContent);
+        const completeness = checkTextCompleteness(boundedJson);
+        if (!completeness.isComplete) {
+          onProgressLog?.(`[LLM] 场景提炼结果不完整: ${completeness.reason}。尝试 JSON 自愈解析...`, "warning");
+        }
+
+        const parsed = robustJsonLoads(boundedJson).map(scene => normalizeSceneCard(scene));
+        if (parsed.length !== sceneCount) {
+          throw new Error(`场景数量不符：要求 ${sceneCount} 个，实际返回 ${parsed.length} 个`);
+        }
+        const hasInvalidIndex = parsed.some((scene, index) => Number(scene.scene_idx) !== index + 1);
+        if (hasInvalidIndex) {
+          throw new Error(`scene_idx 未按 1-${sceneCount} 连续编号`);
+        }
+
+        onProgressLog?.(`[LLM] 第 ${attempt}/3 次场景提炼成功，共 ${parsed.length} 个场景。\n${parsed.map(s => `• 场景 ${s.scene_idx} -> 触发句: 「${s.trigger_sentence}」\n  分镜画面描述: ${buildSceneDescription(s)}`).join("\n")}`);
+        return parsed;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) {
+          onProgressLog?.(`[LLM] 第 ${attempt}/3 次场景提炼失败，优先重试: ${error.message}`, "warning");
+          console.warn(`[LLM Extractor] 场景提炼第 ${attempt}/3 次失败: ${error.message}`);
+        }
       }
-
-      const resData = await res.json();
-      const rawContent = (resData.choices?.[0]?.message?.content || "").trim();
-
-      if (!rawContent) {
-        onProgressLog?.(`[LLM] 警告：大模型返回内容为空。完整响应数据: ${JSON.stringify(resData)}`);
-        console.log("[LLM Extractor] 警告：大模型返回内容为空。完整响应数据:", JSON.stringify(resData, null, 2));
-      }
-
-      onProgressLog?.(`[LLM] 大模型分镜提炼回复原始结果:\n${rawContent}`);
-
-      // 检查完整性
-      const completeness = checkTextCompleteness(rawContent);
-      if (!completeness.isComplete) {
-        onProgressLog?.(`[LLM] 场景提炼结果不完整: ${completeness.reason}。启动自愈引擎进行修复...`, "warning");
-        console.warn(`[LLM Extractor] 场景提炼结果不完整: ${completeness.reason}. 启动自愈引擎进行修复...`);
-      }
-
-      const parsed = robustJsonLoads(rawContent).map(scene => normalizeSceneCard(scene));
-      onProgressLog?.(`[LLM] 成功解析分镜场景列表:\n${parsed.map(s => `• 场景 ${s.scene_idx} -> 触发句: 「${s.trigger_sentence}」\n  分镜画面描述: ${buildSceneDescription(s)}`).join("\n")}`);
-      return parsed;
-    } catch (error) {
-      onProgressLog?.(`[LLM] 场景提炼失败，使用兜底策略: ${error.message}`, "warning");
-      console.error(`[LLM Extractor] 场景提炼失败:`, error);
-      // 降级兜底：返回单场景
-      const lines = text.split("\n").filter(l => l.trim().length > 10);
-      const fallbackSentence = lines[Math.floor(lines.length / 2)] || "起风了。";
-      return [normalizeSceneCard({
-        scene_idx: 1,
-        trigger_sentence: fallbackSentence.substring(0, 30),
-        nsfw_rating: 'sfw',
-        visual_description: "1girl, solo, anime style, looking at viewer",
-        environment: "detailed background",
-        cinematography: "balanced composition, anime illustration",
-        characters: [{
-          name: "",
-          gender: "girl",
-          appearance: "",
-          clothing: "",
-          expression: "looking at viewer",
-          pose: "solo",
-          position: "center"
-        }],
-        interactions: "",
-        plot_traces: "",
-        text_elements: ""
-      })];
     }
+
+    onProgressLog?.(`[LLM] 连续 3 次场景提炼均失败，使用兜底策略: ${lastError?.message || "未知错误"}`, "warning");
+    console.error(`[LLM Extractor] 场景提炼连续 3 次失败:`, lastError);
+    const lines = text.split("\n").filter(l => l.trim().length > 10);
+    const fallbackSentence = lines[Math.floor(lines.length / 2)] || "起风了。";
+    return [normalizeSceneCard({
+      scene_idx: 1,
+      trigger_sentence: fallbackSentence.substring(0, 30),
+      nsfw_rating: 'sfw',
+      visual_description: "1girl, solo, anime style, looking at viewer",
+      environment: "detailed background",
+      cinematography: "balanced composition, anime illustration",
+      characters: [{
+        name: "",
+        gender: "girl",
+        appearance: "",
+        clothing: "",
+        expression: "looking at viewer",
+        pose: "solo",
+        position: "center"
+      }],
+      interactions: "",
+      plot_traces: "",
+      text_elements: ""
+    })];
   }
 
   /**
    * 单个分镜场景描述重构：针对特定触发句重新生成结构化 JSON
    */
-  async regenerateSingleSceneCard(chapterTitle, chapterContent, sceneIdx, triggerSentence, model = "deepseek-chat") {
+  async regenerateSingleSceneCard(chapterTitle, chapterContent, sceneIdx, triggerSentence, model = "deepseek-chat", focusParagraph = "") {
     if (!this.apiKey) {
       throw new Error("请先配置有效的 LLM API Key！");
     }
@@ -575,10 +724,13 @@ export class LLMExtractor {
       `请针对以下章节正文中指定的「触发高潮句」，重新提炼并生成一份极其直白的二次元插画画面分镜描述。`,
       `【章节名】: ${cleanedTitle}`,
       `【触发句 (trigger_sentence)】: 「${triggerSentence}」`,
+      focusParagraph
+        ? `【触发句所在完整段落（必须结合整段理解上下文）】:\n${preserveTextForLlm(focusParagraph)}`
+        : '',
       `【场景序号】: ${sceneIdx}`,
       `【完整章节原文】:`,
       cleanedText
-    ].join('\n');
+    ].filter(Boolean).join('\n');
 
     const url = `${this.baseUrl}/chat/completions`;
     const payload = {
@@ -933,6 +1085,7 @@ export class LLMExtractor {
       cinematography: sceneInput.cinematography || '',
       characters: getSceneCharacters(sceneInput),
       interactions: sceneInput.interactions || '',
+      interaction_actions: sceneInput.interaction_actions || [],
       text_elements: sceneInput.text_elements || '',
       visual_entities: Array.isArray(sceneInput.visual_entities) ? sceneInput.visual_entities : [],
       must_show: Array.isArray(sceneInput.must_show) ? sceneInput.must_show : [],
@@ -992,7 +1145,7 @@ export class LLMExtractor {
       const uniqueTags = new Set();
       const groupedCandidates = new Map();
       const MAX_CANDIDATES_PER_GROUP = 8;
-      const MAX_TOTAL_CANDIDATES = 18;
+      const MAX_TOTAL_CANDIDATES = 36;
       const isUsableCandidate = (item) => {
         const tag = String(item?.tag || '').trim();
         if (!tag) return false;
@@ -1112,6 +1265,9 @@ export class LLMExtractor {
     const nsfwRating = (typeof sceneDesc === 'object' ? sceneDesc.nsfw_rating : '') || 'sfw';
     const plotTraces = (typeof sceneDesc === 'object' ? sceneDesc.plot_traces : '') || '';
     const nsfwLine = `【NSFW 等级】${nsfwRating}（请严格按照系统 Prompt 中对该等级的 tag 规则生成，不得遗漏也不得升级）`;
+    const nsfwPerspectiveLine = nsfwRating !== 'sfw'
+      ? "【NSFW 透视与机位（必须）】base_prompt 必须根据人物相对位置与动作接触关系加入一个明确主视角（如 pov、from_above、from_below、side_view、over_the_shoulder、three-quarter_view），并加入至少一个空间透视 tag（如 dynamic_perspective、foreshortening、depth_of_field、foreground_background）。必须让关键身体互动、遮挡层次和接触点清楚可见；只能使用一套连贯机位，禁止 multiple_views、split_screen 或互相矛盾的角度。"
+      : '';
     const plotTracesLine = plotTraces ? `【剧情痕迹 tags（必须全部写入对应角色的 prompt 中）】${plotTraces}` : '';
 
     const userMessage = [
@@ -1121,7 +1277,12 @@ export class LLMExtractor {
       "NSFW 场景的角色表情必须针对当前情境生成：可使用 restrained pleasured_expression、half-closed_eyes、bedroom_eyes、deep_blush、embarrassed、pained_expression、dazed_expression、unfocused_eyes、teasing_expression、satisfied_expression、slightly_parted_lips 或 biting_lip；根据角色实际状态选择一个主情绪，禁止所有角色复用同一副表情，也禁止无依据的 ahegao、crazy_grin 或 distorted_face。",
       "背景不是硬性要求。根据原文与构图需要选择详细环境、简洁背景或纯色背景；近景、动作特写和角色主导画面可以使用 simple_background、plain_background、white_background、black_background、gradient_background 或 backgroundless。不要为了凑背景标签挤占主体动作与角色细节。",
       "精确接触动作必须写清：谁持有什么物体、对准谁、接触哪个身体部位、用什么镜头清楚显示接触点。剑尖抵喉必须使用 sword_tip_touching_throat / blade_pressed_against_neck / visible_throat_contact，不能只写 holding_sword、confrontation 或 attacking。",
+      "多人互动必须区分动作供体与受体。character_prompts 中供体写 interaction_role=source，受体写 interaction_role=target，双方主动互相执行时写 mutual；interaction_action 只写同一个英文 Danbooru 动作标签，不要自行添加 source#/target#/mutual# 前缀。",
+      getSceneCharacters(sceneDesc).length >= 3
+        ? "三人及以上复杂互动必须构建清晰动作图：每个直接身体接触单独输出一条 interaction_requirements，并在对应双方的 interaction_actions 中使用同一个精确动作标签。不要把 penetration、sucking、touching 等不同接触合并成泛化 sex。为每个角色分配互不冲突的 left/center/right 与 foreground/midground/background 位置；同一角色可以同时接收或发出多条动作。只有双方确实共同执行同一动作时才写 mutual，具有明确主动方和受体的性交、插入、吸吮、抓握等动作必须保留 source/target。"
+        : '',
       nsfwLine,
+      nsfwPerspectiveLine,
       plotTracesLine,
       "",
       "【结构化/兼容场景描述】",
@@ -1172,12 +1333,34 @@ export class LLMExtractor {
       if (!base_prompt) {
         throw new Error("缺少非空 base_prompt；旧式 prompt 单字段不再接受");
       }
+      const normalizeInteractionAction = (value) => String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, '_');
+      const normalizeInteractionRole = (role, action) => {
+        const normalizedRole = String(role || '').toLowerCase();
+        return ['source', 'target', 'mutual'].includes(normalizedRole) ? normalizedRole : 'none';
+      };
       const character_prompts = Array.isArray(parsed?.character_prompts)
         ? parsed.character_prompts.map(item => {
             if (typeof item === 'string') return { name: '', prompt: item.trim() };
             return {
               name: (item?.name || '').trim(),
-              prompt: (item?.prompt || '').trim()
+              prompt: (item?.prompt || '').trim(),
+              negative_prompt: String(item?.negative_prompt || '').trim(),
+              interaction_actions: (Array.isArray(item?.interaction_actions)
+                ? item.interaction_actions
+                : (item?.interaction_action ? [{
+                    role: item?.interaction_role,
+                    action: item?.interaction_action
+                  }] : []))
+                .map(action => ({
+                  action: String(action?.action || '').trim(),
+                  role: normalizeInteractionRole(action?.role, action?.action)
+                }))
+                .filter(action => action.role !== 'none' && action.action),
+              interaction_role: normalizeInteractionRole(item?.interaction_role, item?.interaction_action),
+              interaction_action: String(item?.interaction_action || '').trim()
             };
           }).filter(item => item.prompt)
         : [];
@@ -1189,6 +1372,67 @@ export class LLMExtractor {
         const actualName = String(character_prompts[index]?.name || '').trim();
         if (expectedName && actualName !== expectedName) {
           throw new Error(`character_prompts[${index}].name 应为「${expectedName}」，实际为「${actualName || '空'}」`);
+        }
+      }
+      const interactionRequirements = Array.isArray(parsed?.interaction_requirements)
+        ? parsed.interaction_requirements.map(item => ({
+            action: normalizeInteractionAction(item?.action),
+            source: String(item?.source || '').trim(),
+            target: String(item?.target || '').trim(),
+            requires_pairing: item?.requires_pairing !== false,
+            mutual: item?.mutual === true
+          })).filter(item => item.action && item.source)
+        : [];
+      const interactionRequirementMap = new Map(
+        interactionRequirements.map(item => [
+          `${item.action}::${item.source}::${item.target}`,
+          item.requires_pairing
+        ])
+      );
+      const promptsByName = new Map(
+        character_prompts.map(item => [String(item.name || '').trim(), item])
+      );
+      for (const interaction of Array.isArray(sceneDesc?.interaction_actions) ? sceneDesc.interaction_actions : []) {
+        const action = normalizeInteractionAction(interaction?.action);
+        const sourceName = String(interaction?.source || '').trim();
+        const targetName = String(interaction?.target || '').trim();
+        const interactionKey = `${action}::${sourceName}::${targetName}`;
+        const requiresPairing = interactionRequirementMap.has(interactionKey)
+          ? interactionRequirementMap.get(interactionKey) !== false
+          : !SELF_DIRECTED_INTERACTION_ACTIONS.has(action);
+        const requireMutual = interaction?.mutual === true || interactionRequirements.some(item => (
+          item.action === action
+          && item.source === sourceName
+          && item.target === targetName
+          && item.mutual === true
+        ));
+        if (!action || !sourceName || (!targetName && !SELF_DIRECTED_INTERACTION_ACTIONS.has(action))) {
+          throw new Error("interaction_actions 必须包含非空 action、source 和 target");
+        }
+        const sourcePrompt = promptsByName.get(sourceName);
+        const targetPrompt = promptsByName.get(targetName);
+        if (!sourcePrompt) {
+          throw new Error(`互动角色未出现在 character_prompts: ${sourceName} -> ${targetName || '空'}`);
+        }
+        if (
+          requiresPairing
+          && !targetPrompt
+        ) {
+          throw new Error(`互动角色未出现在 character_prompts: ${sourceName} -> ${targetName}`);
+        }
+        if (!requiresPairing) continue;
+        const expectedRole = interaction?.mutual === true ? 'mutual' : 'source';
+        const expectedTargetRole = interaction?.mutual === true ? 'mutual' : 'target';
+        const effectiveExpectedRole = requireMutual ? 'mutual' : expectedRole;
+        const effectiveExpectedTargetRole = requireMutual ? 'mutual' : expectedTargetRole;
+        const hasInteraction = (promptItem, role) => promptItem.interaction_actions.some(item => (
+          item.role === role && normalizeInteractionAction(item.action) === action
+        ));
+        if (!hasInteraction(sourcePrompt, effectiveExpectedRole)) {
+          throw new Error(`角色「${sourceName}」必须标记为 ${effectiveExpectedRole}#${action}`);
+        }
+        if (!hasInteraction(targetPrompt, effectiveExpectedTargetRole)) {
+          throw new Error(`角色「${targetName}」必须标记为 ${effectiveExpectedTargetRole}#${action}`);
         }
       }
       const characterSpecificTags = new Set(
@@ -1203,13 +1447,22 @@ export class LLMExtractor {
         .filter(Boolean)
         .filter(tag => !characterSpecificTags.has(tag.toLowerCase()))
         .join(', ');
+      const hasNsfwViewpoint = /(?:^|,\s*)(?:pov|from_above|from_below|side_view|over_the_shoulder|three-quarter_view)(?:\s*,|$)/i.test(cleanedBasePrompt);
+      const hasNsfwSpatialPerspective = /(?:^|,\s*)(?:dynamic_perspective|foreshortening|depth_of_field|foreground_background)(?:\s*,|$)/i.test(cleanedBasePrompt);
+      const resolvedBasePrompt = nsfwRating !== 'sfw'
+        ? uniqueTags([
+            ...cleanedBasePrompt.split(/[,，]/),
+            ...(!hasNsfwViewpoint ? ['three-quarter_view'] : []),
+            ...(!hasNsfwSpatialPerspective ? ['dynamic_perspective', 'depth_of_field'] : [])
+          ]).join(', ')
+        : cleanedBasePrompt;
       const prompt = uniqueTags([
-        ...cleanedBasePrompt.split(/[,，]/),
+        ...resolvedBasePrompt.split(/[,，]/),
         ...character_prompts.flatMap(item => item.prompt.split(/[,，]/))
       ]).join(', ');
       const negative_prompt = (parsed?.negative_prompt || "").trim();
-      if (!prompt && !cleanedBasePrompt) throw new Error("LLM 返回的 prompt 为空");
-      return { orientation, prompt, base_prompt: cleanedBasePrompt, character_prompts, negative_prompt };
+      if (!prompt && !resolvedBasePrompt) throw new Error("LLM 返回的 prompt 为空");
+      return { orientation, prompt, base_prompt: resolvedBasePrompt, character_prompts, negative_prompt };
     };
 
     try {
@@ -1217,8 +1470,10 @@ export class LLMExtractor {
         "上一次输出为空、截断或 JSON 结构无效。请重新生成，只输出一个完整 JSON 对象。",
         "不要解释，不要 Markdown，不要颜文字。",
         "必须包含 orientation、base_prompt、character_prompts、negative_prompt。",
+        "每个 character_prompts 项必须包含 negative_prompt 和 interaction_actions 数组；同时必须返回 interaction_requirements，逐项判断 scene card 里的动作是否真的需要 source/target 成对校验。",
         `character_prompts 必须严格包含 ${expectedSceneCharacters.length} 项，按以下顺序且 name 原样复制：${expectedSceneCharacters.map(char => char.name).join("、") || "无角色"}`,
         "禁止只返回旧式 prompt 字段。base_prompt 中不得包含角色外貌、服装、表情或个人姿势。",
+        nsfwPerspectiveLine,
         "务必完整闭合 JSON；若内容较长，优先减少次要 tags，不得截断。",
         "【场景】",
         scenePayload,
@@ -1275,23 +1530,16 @@ export class LLMExtractor {
               "warning"
             );
           } else {
-            onProgressLog?.(`[LLM] 连续 3 次参数生成失败，执行确定性降级: ${attemptError.message}`, "warning");
+            onProgressLog?.(`[LLM] 连续 3 次参数生成失败，不执行降级: ${attemptError.message}`, "warning");
           }
         }
       }
 
       throw lastAttemptError || new Error("连续 3 次参数生成失败");
     } catch (e) {
-      onProgressLog?.(`[LLM] 参数合成失败，使用结构化场景确定性编译兜底: ${e.message}`, "warning");
-      console.error("[LLM Extractor] 高级场景参数生成失败，使用确定性编译兜底:", e.message);
-      const deterministic = compileScenePromptDeterministically(
-        sceneDesc && typeof sceneDesc === 'object' ? sceneDesc : {
-          visual_description: String(sceneDesc || ''),
-          characters: []
-        }
-      );
-      onProgressLog?.(`[Fallback] 确定性编译结果: ${JSON.stringify(deterministic, null, 2)}`);
-      return deterministic;
+      onProgressLog?.(`[LLM] 参数合成失败，不允许降级: ${e.message}`, "warning");
+      console.error("[LLM Extractor] 高级场景参数生成失败:", e.message);
+      throw e;
     }
   }
 

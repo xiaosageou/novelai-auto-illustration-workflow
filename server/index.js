@@ -6,7 +6,7 @@ import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import { ProxyAgent, setGlobalDispatcher } from 'undici';
 import { PipelineManager } from './services/pipeline-manager.js';
-import { EPUBBuilder } from './services/epub-builder.js';
+import { EPUBBuilder, insertIllustrationsAfterParagraphs } from './services/epub-builder.js';
 import { globalCooldownManager } from './utils/cooldown.js';
 import { readJson, writeJsonAtomic } from './utils/db.js';
 import { parseFile } from './utils/file-parser.js';
@@ -16,8 +16,18 @@ const DEFAULT_CONFIG = {
   llm_url: "",
   llm_key: "",
   llm_model: "deepseek-chat",
+  llm_character_dna_url: "",
+  llm_character_dna_key: "",
+  llm_character_dna_model: "",
+  llm_scene_url: "",
+  llm_scene_key: "",
+  llm_scene_model: "",
+  llm_nai_tags_url: "",
+  llm_nai_tags_key: "",
+  llm_nai_tags_model: "",
   nai_token: "",
   nai_model: "nai-diffusion-4-5-full",
+  nai_cooldown_seconds: 15,
   steps: 28,
   scale: 5.5,
   sampler: "k_euler_ancestral",
@@ -89,8 +99,8 @@ function broadcastSSE(type, data) {
 }
 
 // 全局订阅冷却计时器，并实时推送到前端
-globalCooldownManager.onTick((remaining) => {
-  broadcastSSE('cooldown', { remaining });
+globalCooldownManager.onTick((remaining, state) => {
+  broadcastSSE('cooldown', state);
 });
 
 /**
@@ -111,10 +121,16 @@ async function getPipeline(projectName) {
     broadcastSSE('progress', progressData);
   };
   pipeline.uiCooldownCallback = () => {
-    broadcastSSE('cooldown_start', { remaining: 35 });
+    broadcastSSE('cooldown_start', globalCooldownManager.getState());
   };
   pipeline.uiLogCallback = (text, type) => {
     broadcastSSE('log', { text, type });
+  };
+  pipeline.priorityJobRunner = async () => {
+    const queue = getRedrawQueue(projectName);
+    if (queue.items.length > 0) {
+      await processRedrawQueue(projectName, pipeline, queue, { interleaved: true });
+    }
   };
 
   activePipelines[projectName] = pipeline;
@@ -136,7 +152,7 @@ function redrawJobKey(chapterKey, sceneIdx, mode) {
   return `${chapterKey}::${sceneIdx}::${mode}`;
 }
 
-async function processRedrawQueue(projectName, pipeline, queue) {
+async function processRedrawQueue(projectName, pipeline, queue, { interleaved = false } = {}) {
   if (queue.running) return;
   queue.running = true;
 
@@ -154,16 +170,17 @@ async function processRedrawQueue(projectName, pipeline, queue) {
 
       try {
         if (job.mode === 'nai_only') {
-          await pipeline.redrawSceneWithSavedPrompt(job.effectiveKey, job.sceneIdx);
+          await pipeline.redrawSceneWithSavedPrompt(job.effectiveKey, job.sceneIdx, { interleaved });
         } else {
-          await pipeline.redrawScene(job.effectiveKey, job.sceneIdx);
+          await pipeline.redrawScene(job.effectiveKey, job.sceneIdx, { interleaved });
         }
         broadcastSSE('redraw_queue', {
           projectName,
           chapterKey: job.chapterKey,
           sceneIdx: job.sceneIdx,
           state: 'completed',
-          remaining: queue.items.length
+          remaining: queue.items.length,
+          pipelineRunning: pipeline.isRunning
         });
       } catch (error) {
         console.error(`[Server] 队列重绘异常: ${error.message}`);
@@ -173,7 +190,8 @@ async function processRedrawQueue(projectName, pipeline, queue) {
           sceneIdx: job.sceneIdx,
           state: 'failed',
           message: error.message,
-          remaining: queue.items.length
+          remaining: queue.items.length,
+          pipelineRunning: pipeline.isRunning
         });
       } finally {
         queue.current = null;
@@ -195,10 +213,6 @@ function enqueueRedraw(projectName, pipeline, chapterKey, effectiveKey, sceneIdx
   if (existingIndex >= 0) {
     return { duplicate: true, state: 'queued', position: existingIndex + 1 };
   }
-  if (pipeline.isRunning && !queue.running) {
-    throw new Error("批量或单章流水线正在运行，暂时不能加入重绘队列");
-  }
-
   const job = {
     key,
     chapterKey,
@@ -214,10 +228,18 @@ function enqueueRedraw(projectName, pipeline, chapterKey, effectiveKey, sceneIdx
     sceneIdx: job.sceneIdx,
     state: 'queued',
     position,
-    remaining: queue.items.length
+    remaining: queue.items.length,
+    priority: pipeline.isRunning
   });
-  void processRedrawQueue(projectName, pipeline, queue);
-  return { duplicate: false, state: position === 1 ? 'running' : 'queued', position };
+  if (!pipeline.isRunning) {
+    void processRedrawQueue(projectName, pipeline, queue);
+  }
+  return {
+    duplicate: false,
+    state: pipeline.isRunning ? 'queued' : (position === 1 ? 'running' : 'queued'),
+    position,
+    priority: pipeline.isRunning
+  };
 }
 
 // === 1. 全局配置 API ===
@@ -235,6 +257,7 @@ app.post('/api/config', async (req, res) => {
   try {
     const newConfig = req.body;
     await writeJsonAtomic(CONFIG_PATH, newConfig);
+    globalCooldownManager.setBaseCooldownSeconds(newConfig.nai_cooldown_seconds ?? 15);
 
     // 动态同步更新所有已激活的管道配置
     for (const pipeline of Object.values(activePipelines)) {
@@ -398,6 +421,26 @@ app.get('/api/projects/:projectName', async (req, res) => {
   }
 });
 
+app.get('/api/projects/:projectName/chapters/:chapterKey/content', async (req, res) => {
+  try {
+    const { projectName, chapterKey } = req.params;
+    const pipeline = await getPipeline(projectName);
+    const chapter = pipeline.chapters.find(item => {
+      const key = pipeline.projectProgress.getEffectiveChapKey(item.volume, item.chapter);
+      return pipeline.projectProgress.normalizeKey(key) === pipeline.projectProgress.normalizeKey(chapterKey);
+    });
+    if (!chapter) return res.status(404).json({ error: "章节不存在" });
+    res.json({
+      volume: chapter.volume,
+      chapter: chapter.chapter,
+      content: chapter.content,
+      paragraphs: chapter.content.split(/\r?\n/).map(text => text.trim()).filter(Boolean)
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // === 3. 流水线核心操作 API ===
 
 // 一键提炼全书主要角色 DNA
@@ -538,6 +581,31 @@ app.post('/api/projects/:projectName/chapters/:chapterKey/generate', async (req,
   }
 });
 
+app.post('/api/projects/:projectName/chapters/:chapterKey/selected-scenes', async (req, res) => {
+  try {
+    const { projectName, chapterKey } = req.params;
+    const selections = Array.isArray(req.body?.selections) ? req.body.selections : [];
+    if (selections.length === 0) {
+      return res.status(400).json({ error: "请至少选择一段正文" });
+    }
+    const pipeline = await getPipeline(projectName);
+    if (pipeline.isRunning) {
+      return res.status(400).json({ error: "流水线正在运行中，请稍后再提交正文选段" });
+    }
+
+    pipeline.appendSelectedParagraphScenes(chapterKey, selections)
+      .then(result => {
+        broadcastSSE('pipeline_completed', { projectName, type: 'selected_scenes', ...result });
+      })
+      .catch(error => {
+        broadcastSSE('pipeline_failed', { projectName, message: error.message });
+      });
+    res.json({ success: true, message: `已提交 ${selections.length} 处正文选段，正在依次生成场景与插图` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 单场景重绘 (只重发 NAI)
 app.post('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx/redraw', async (req, res) => {
   try {
@@ -548,6 +616,8 @@ app.post('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx/redra
     const queued = enqueueRedraw(projectName, pipeline, chapterKey, effectiveKey, sceneIdx, 'refresh_prompt');
     const message = queued.duplicate
       ? `场景 #${sceneIdx} 已在重绘队列中`
+      : queued.priority
+        ? `场景 #${sceneIdx} 已加入插队队列，将在当前生图完成后优先重算 Prompt`
       : `场景 #${sceneIdx} 已加入重绘队列，当前位置 ${queued.position}`;
     res.json({ success: true, message, ...queued });
   } catch (error) {
@@ -564,6 +634,8 @@ app.post('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx/redra
     const queued = enqueueRedraw(projectName, pipeline, chapterKey, effectiveKey, sceneIdx, 'nai_only');
     const message = queued.duplicate
       ? `场景 #${sceneIdx} 的仅 NAI 重绘已在队列中`
+      : queued.priority
+        ? `场景 #${sceneIdx} 已加入插队队列，将在当前生图完成后优先执行仅 NAI 重绘`
       : `场景 #${sceneIdx} 已加入仅 NAI 重绘队列，当前位置 ${queued.position}`;
     res.json({ success: true, message, ...queued });
   } catch (error) {
@@ -602,6 +674,7 @@ app.get('/api/projects/:projectName/pipeline/status', async (req, res) => {
       isRunning: pipeline.isRunning,
       projectName: pipeline.projectName,
       remainingCooldown: globalCooldownManager.getRemainingSeconds(),
+      cooldown: globalCooldownManager.getState(),
       redrawQueue: {
         running: Boolean(redrawQueues.get(projectName)?.running),
         pending: redrawQueues.get(projectName)?.items.length || 0,
@@ -642,23 +715,22 @@ app.post('/api/projects/:projectName/build-epub', async (req, res) => {
       const progress = pipeline.projectProgress.getCompletedChapters()[chapKey];
       let content = chap.content;
 
-      if (progress && progress.status === 'completed' && Array.isArray(progress.scenes)) {
+      if (progress && Array.isArray(progress.scenes)) {
+        const insertions = [];
         for (const scene of progress.scenes) {
           if (scene.status === 'SUCCESS' && scene.image_path) {
             const imgName = path.basename(scene.image_path);
-            const trigger = (scene.trigger_sentence || "").trim();
-
-            if (trigger && content.includes(trigger)) {
-              content = content.replace(trigger, `${trigger}\n\n[插图：${imgName}]\n`);
-            } else {
-              content += `\n\n[插图：${imgName}]\n`;
-            }
-
-            // 读取对应的插画二进制，写入 EPUB 打包器
             const imgBytes = await fs.readFile(path.join(pipeline.projBase, scene.image_path));
-            builder.addImage(imgName, imgBytes);
+            const epubImgName = await builder.addImage(imgName, imgBytes);
+            insertions.push({
+              imageName: epubImgName,
+              paragraph: String(scene.source_paragraph || '').trim(),
+              trigger: String(scene.trigger_sentence || '').trim()
+            });
           }
         }
+
+        content = insertIllustrationsAfterParagraphs(content, insertions);
       }
 
       builder.addChapter(chap.volume, chap.chapter, content);

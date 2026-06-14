@@ -54,6 +54,15 @@ function 按逗号拆分提示词(text) {
   return text.split(/[,，]/).map(t => t.trim()).filter(Boolean);
 }
 
+function 清理体液与汗水冲突(prompt = '') {
+  const tokens = 按逗号拆分提示词(prompt);
+  const hasExplicitBodyFluid = tokens.some(token => /^(?:vaginal_fluids|pussy_juice|cumdrip|semen_dripping|wet_thighs)$/i.test(token));
+  if (!hasExplicitBodyFluid) return prompt;
+  return tokens
+    .filter(token => !/^(?:sweat|sweating)$/i.test(token))
+    .join(', ');
+}
+
 function 移除纯色背景负面限制(prompt = '') {
   const allowedBackgroundTags = /^(?:white|black|solid color|simple|plain|empty|gradient) background$|^(?:studio backdrop|isolated subject|backgroundless|white_background|black_background|solid_color_background|simple_background|plain_background|empty_background|gradient_background)$/i;
   return 按逗号拆分提示词(prompt)
@@ -262,6 +271,271 @@ function 是明确背景角色(char = {}) {
   const position = String(char?.position || '').toLowerCase();
   const appearance = String(char?.appearance || '').toLowerCase();
   return /background|background_shadow|shadow|silhouette|远景|背景|剪影|人影/.test(`${position} ${appearance}`);
+}
+
+function 解析角色位置(position = '', index = 0, count = 1) {
+  const text = String(position || '').toLowerCase();
+  let x = count <= 1 ? 0.5 : 0.2 + (0.6 * index) / Math.max(1, count - 1);
+  let y = 0.5;
+
+  if (/far[_ ]?left|最左|左侧边缘/.test(text)) x = 0.1;
+  else if (/left|左/.test(text)) x = 0.3;
+  else if (/far[_ ]?right|最右|右侧边缘/.test(text)) x = 0.9;
+  else if (/right|右/.test(text)) x = 0.7;
+  else if (/center|middle|中央|中间|正中/.test(text)) x = 0.5;
+
+  if (/top|upper|上方|上部/.test(text)) y = 0.1;
+  else if (/background|rear|back|远景|背景|后方/.test(text)) y = 0.3;
+  else if (/foreground|front|前景|前方/.test(text)) y = 0.7;
+  else if (/bottom|lower|下方|下部/.test(text)) y = 0.9;
+
+  return {
+    x: Number(x.toFixed(3)),
+    y: Number(y.toFixed(3))
+  };
+}
+
+function 查找互动角色索引(interactions = '', characters = []) {
+  const text = String(interactions || '');
+  const hits = characters
+    .map((char, index) => ({
+      index,
+      offset: text.indexOf(String(char?.name || '').trim())
+    }))
+    .filter(item => item.offset >= 0)
+    .sort((a, b) => a.offset - b.offset);
+  return hits.length >= 2 ? [hits[0].index, hits[1].index] : null;
+}
+
+export function buildCharacterSpatialGuidance(sceneCharacters = [], interactions = '', interactionActions = []) {
+  const characters = Array.isArray(sceneCharacters) ? sceneCharacters : [];
+  const centers = characters.map((char, index) => 解析角色位置(char?.position, index, characters.length));
+  const characterDirections = characters.map(() => '');
+  const directionCandidates = characters.map(() => new Set());
+  const baseDirections = [];
+  const byName = new Map(characters.map((char, index) => [String(char?.name || '').trim().toLowerCase(), index]));
+
+  if (characters.length >= 2) {
+    const interactionText = String(interactions || '');
+    const hasDirectInteraction = /牵|抱|拥|吻|抓|握|扶|搂|触|压|推|拉|递|喂|看向|对视|攻击|刺|砍|射|touch|hold|hug|kiss|grab|push|pull|hand|feed|look|face|attack|strike|shoot/i.test(interactionText);
+    const structuredPairs = (Array.isArray(interactionActions) ? interactionActions : [])
+      .map(item => [
+        byName.get(String(item?.source || '').trim().toLowerCase()),
+        byName.get(String(item?.target || '').trim().toLowerCase())
+      ])
+      .filter(([sourceIndex, targetIndex]) => (
+        sourceIndex !== undefined
+        && targetIndex !== undefined
+        && sourceIndex !== targetIndex
+      ));
+    const fallbackPair = 查找互动角色索引(interactions, characters) || [0, 1];
+    const pairs = structuredPairs.length ? structuredPairs : [fallbackPair];
+
+    for (const [actorIndex, targetIndex] of pairs) {
+      const actorCenter = centers[actorIndex];
+      const targetCenter = centers[targetIndex];
+      const horizontalDistance = targetCenter.x - actorCenter.x;
+      if (Math.abs(horizontalDistance) < 0.15) continue;
+      const actorDirection = horizontalDistance > 0 ? 'right' : 'left';
+      const targetDirection = horizontalDistance > 0 ? 'left' : 'right';
+      directionCandidates[actorIndex].add(actorDirection);
+      if (hasDirectInteraction || structuredPairs.length) {
+        directionCandidates[targetIndex].add(targetDirection);
+        baseDirections.push('characters facing their interaction partners');
+      }
+      baseDirections.push(`interaction directed from ${actorDirection === 'right' ? 'left to right' : 'right to left'}`);
+    }
+  }
+
+  directionCandidates.forEach((directions, index) => {
+    if (directions.size === 1) {
+      characterDirections[index] = `facing ${[...directions][0]}`;
+    }
+  });
+  if (characters.length >= 3) {
+    baseDirections.push('single unified three-character composition', 'distinct left center right staging', 'readable interaction graph');
+  }
+
+  return {
+    centers,
+    characterDirections,
+    basePrompt: [...new Set(baseDirections)].join(', ')
+  };
+}
+
+function 标准化互动动作(action = '') {
+  const raw = String(action || '').trim().toLowerCase().replace(/\s+/g, '_');
+  if (/^[a-z0-9_]+$/.test(raw)) return raw;
+  const mappings = [
+    [/拥抱|抱住|搂抱|相拥|hug/, 'hug'],
+    [/亲吻|接吻|吻|kiss/, 'kiss'],
+    [/牵手|握手|holding hands/, 'holding_hands'],
+    [/指向|指着|point/, 'pointing'],
+    [/推|push/, 'pushing'],
+    [/拉|pull/, 'pulling'],
+    [/抓|grab/, 'grabbing'],
+    [/看向|凝视|对视|look|gaze/, 'looking_at_another'],
+    [/攻击|刺|砍|attack|strike/, 'attacking']
+  ];
+  return mappings.find(([pattern]) => pattern.test(String(action || '')))?.[1] || '';
+}
+
+export function buildCharacterInteractionTags(sceneCharacters = [], interactionActions = [], structuredCharacterPrompts = []) {
+  const characters = Array.isArray(sceneCharacters) ? sceneCharacters : [];
+  const tags = characters.map(() => []);
+  const byName = new Map(characters.map((char, index) => [String(char?.name || '').trim().toLowerCase(), index]));
+
+  for (const item of Array.isArray(interactionActions) ? interactionActions : []) {
+    const action = 标准化互动动作(item?.action);
+    if (!action) continue;
+    const sourceIndex = byName.get(String(item?.source || '').trim().toLowerCase());
+    const targetIndex = byName.get(String(item?.target || '').trim().toLowerCase());
+    const isMutual = item?.mutual === true;
+    if (isMutual) {
+      if (sourceIndex !== undefined) tags[sourceIndex].push(`mutual#${action}`);
+      if (targetIndex !== undefined) tags[targetIndex].push(`mutual#${action}`);
+    } else {
+      if (sourceIndex !== undefined) tags[sourceIndex].push(`source#${action}`);
+      if (targetIndex !== undefined) tags[targetIndex].push(`target#${action}`);
+    }
+  }
+
+  (Array.isArray(structuredCharacterPrompts) ? structuredCharacterPrompts : []).forEach((item, index) => {
+    const characterIndex = byName.get(String(item?.name || '').trim().toLowerCase()) ?? index;
+    if (!tags[characterIndex]) return;
+    const actions = Array.isArray(item?.interaction_actions)
+      ? item.interaction_actions
+      : (item?.interaction_action ? [{
+          role: item?.interaction_role,
+          action: item?.interaction_action
+        }] : []);
+    for (const interaction of actions) {
+      const role = String(interaction?.role || '').toLowerCase();
+      const action = 标准化互动动作(interaction?.action);
+      if (action && ['source', 'target', 'mutual'].includes(role)) {
+        tags[characterIndex].push(`${role}#${action}`);
+      }
+    }
+  });
+
+  return tags.map(items => [...new Set(items)]);
+}
+
+function 构建互动自然语言(sceneCharacters = [], interactionActions = []) {
+  const characters = Array.isArray(sceneCharacters) ? sceneCharacters : [];
+  const sentences = characters.map(() => []);
+  const byName = new Map(characters.map((char, index) => [String(char?.name || '').trim().toLowerCase(), index]));
+  const subjectFor = (char) => {
+    const gender = String(char?.gender || '').toLowerCase();
+    if (/woman|girl|female/.test(gender)) return 'She';
+    if (/man|boy|male/.test(gender)) return 'He';
+    return 'They';
+  };
+  const positionFor = (char) => {
+    const text = String(char?.position || '').toLowerCase();
+    if (/left|左/.test(text)) return ' from the left';
+    if (/right|右/.test(text)) return ' from the right';
+    return '';
+  };
+  const partnerFor = (char, index) => {
+    const gender = String(char?.gender || '').toLowerCase();
+    const noun = /woman|girl|female/.test(gender)
+      ? 'woman'
+      : (/man|boy|male/.test(gender) ? 'man' : 'character');
+    const position = String(char?.position || '').toLowerCase();
+    if (/left|左/.test(position)) return `the ${noun} on the left`;
+    if (/right|右/.test(position)) return `the ${noun} on the right`;
+    if (/center|middle|中央|中间|正中/.test(position)) return `the ${noun} in the center`;
+    if (/foreground|front|前景|前方/.test(position)) return `the ${noun} in the foreground`;
+    if (/background|rear|back|远景|背景|后方/.test(position)) return `the ${noun} in the background`;
+    if (characters.length === 3) {
+      return `the ${noun} ${index === 0 ? 'on the left' : (index === 1 ? 'in the center' : 'on the right')}`;
+    }
+    return `the other ${noun}`;
+  };
+
+  for (const interaction of Array.isArray(interactionActions) ? interactionActions : []) {
+    const action = 标准化互动动作(interaction?.action);
+    if (!action) continue;
+    const sourceIndex = byName.get(String(interaction?.source || '').trim().toLowerCase());
+    const targetIndex = byName.get(String(interaction?.target || '').trim().toLowerCase());
+    const actionWords = action.replace(/_/g, ' ');
+    const isMutual = interaction?.mutual === true;
+    if (isMutual) {
+      if (sourceIndex !== undefined && targetIndex !== undefined) {
+        sentences[sourceIndex].push(`${subjectFor(characters[sourceIndex])} mutually performs ${actionWords} with ${partnerFor(characters[targetIndex], targetIndex)}${positionFor(characters[sourceIndex])}.`);
+        sentences[targetIndex].push(`${subjectFor(characters[targetIndex])} mutually performs ${actionWords} with ${partnerFor(characters[sourceIndex], sourceIndex)}${positionFor(characters[targetIndex])}.`);
+      }
+    } else {
+      if (sourceIndex !== undefined) {
+        const targetDescription = targetIndex !== undefined
+          ? partnerFor(characters[targetIndex], targetIndex)
+          : 'the other character';
+        sentences[sourceIndex].push(`${subjectFor(characters[sourceIndex])} performs ${actionWords} on ${targetDescription}${positionFor(characters[sourceIndex])}.`);
+      }
+      if (targetIndex !== undefined) {
+        const sourceDescription = sourceIndex !== undefined
+          ? partnerFor(characters[sourceIndex], sourceIndex)
+          : 'the other character';
+        sentences[targetIndex].push(`${subjectFor(characters[targetIndex])} receives ${actionWords} from ${sourceDescription}${positionFor(characters[targetIndex])}.`);
+      }
+    }
+  }
+  return sentences.map(items => [...new Set(items)]);
+}
+
+function estimateV45Tokens(text = '') {
+  return String(text || '')
+    .split(/[^A-Za-z0-9#]+/)
+    .filter(Boolean)
+    .reduce((sum, part) => sum + Math.max(1, Math.ceil(part.length / 8)), 0);
+}
+
+function promptTokenPriority(token = '') {
+  if (/^(?:source|target|mutual)#/i.test(token)) return 100;
+  if (/^(?:girl|boy|other|1girl|1boy|1other|[1-6](?:girls|boys|others))$/i.test(token)) return 95;
+  if (/exactly_|only_|facing |interaction directed|characters facing/i.test(token)) return 90;
+  if (/hair|eyes|dress|robe|shirt|skirt|armor|uniform|skin|breasts|muscular|petite/i.test(token)) return 75;
+  if (/hug|kiss|hold|grab|push|pull|point|attack|look|pose|standing|sitting|kneeling/i.test(token)) return 70;
+  if (/masterpiece|aesthetic|quality|absurdres|detailed|lighting|atmosphere/i.test(token)) return 20;
+  return 50;
+}
+
+function trimPromptTokens(prompt = '', tokenBudget = 0) {
+  const tokens = 按逗号拆分提示词(prompt);
+  if (estimateV45Tokens(prompt) <= tokenBudget) return prompt;
+  const selected = [];
+  let used = 0;
+  tokens
+    .map((token, index) => ({ token, index, priority: promptTokenPriority(token) }))
+    .sort((a, b) => b.priority - a.priority || a.index - b.index)
+    .forEach(item => {
+      const cost = estimateV45Tokens(item.token);
+      if (used + cost > tokenBudget) return;
+      selected.push(item);
+      used += cost;
+    });
+  return selected.sort((a, b) => a.index - b.index).map(item => item.token).join(', ');
+}
+
+export function enforceV45PromptBudget(basePrompt = '', characterPrompts = [], maxTokens = 480) {
+  const prompts = Array.isArray(characterPrompts) ? characterPrompts : [];
+  const minimumCharacterBudget = prompts.length > 0 ? 50 : 0;
+  const baseBudget = Math.max(100, Math.min(220, maxTokens - prompts.length * minimumCharacterBudget));
+  const trimmedBase = trimPromptTokens(basePrompt, baseBudget);
+  let remaining = Math.max(0, maxTokens - estimateV45Tokens(trimmedBase));
+  const trimmedCharacters = prompts.map((prompt, index) => {
+    const remainingCharacters = prompts.length - index;
+    const budget = Math.max(30, Math.floor(remaining / remainingCharacters));
+    const trimmed = trimPromptTokens(prompt, budget);
+    remaining -= estimateV45Tokens(trimmed);
+    return trimmed;
+  });
+  return {
+    basePrompt: trimmedBase,
+    characterPrompts: trimmedCharacters,
+    estimatedTokens: estimateV45Tokens([trimmedBase, ...trimmedCharacters].join(', '))
+  };
 }
 
 function 构建均衡多人构图(prompt = '', sceneCharacters = []) {
@@ -540,6 +814,8 @@ export function buildFinalImagePrompt(prompt, {
   sceneNsfwRating = 'sfw',
   sceneEnvironment = '',
   sceneDescription = '',
+  sceneInteractions = '',
+  sceneInteractionActions = [],
   structuredCharacterPrompts = [], // LLM 输出的角色级 prompts
   sceneMustShow = [],
   sceneMustNotShow = [],
@@ -578,7 +854,15 @@ export function buildFinalImagePrompt(prompt, {
   const height = Number.isFinite(parsedHeight) && parsedHeight > 0 ? parsedHeight : 1024;
 
   // 2. 主体提示词净化
-  const sceneCharacterList = Array.isArray(sceneCharacters) ? sceneCharacters : [];
+  const rawSceneCharacterList = Array.isArray(sceneCharacters) ? sceneCharacters : [];
+  const sceneCharacterList = rawSceneCharacterList
+    .map((char, index) => ({
+      char,
+      index,
+      center: 解析角色位置(char?.position, index, rawSceneCharacterList.length)
+    }))
+    .sort((a, b) => a.center.x - b.center.x || a.center.y - b.center.y || a.index - b.index)
+    .map(item => item.char);
   let cleanPrompt = conservativeCompletionNaiWeights(prompt);
   const hardPositive = (Array.isArray(sceneMustShow) ? sceneMustShow : [])
     .map(item => String(item || '').trim())
@@ -606,7 +890,7 @@ export function buildFinalImagePrompt(prompt, {
     构图: composition,
     场景类型: sceneType,
     尺寸: finalSize,
-    角色列表: sceneCharacters,
+    角色列表: sceneCharacterList,
     主体提示词: cleanPrompt
   });
 
@@ -618,6 +902,14 @@ export function buildFinalImagePrompt(prompt, {
 
   const structuredPromptList = Array.isArray(structuredCharacterPrompts) ? structuredCharacterPrompts : [];
   const heightConstraints = 构建多人身高约束(sceneCharacterList, characterAnchors);
+  const spatialGuidance = buildCharacterSpatialGuidance(sceneCharacterList, sceneInteractions, sceneInteractionActions);
+  const interactionTags = buildCharacterInteractionTags(
+    sceneCharacterList,
+    sceneInteractionActions,
+    structuredPromptList
+  );
+  const interactionSentences = 构建互动自然语言(sceneCharacterList, sceneInteractionActions);
+  const negativeCharacterPrompts = [];
   const characterPrompts = sceneCharacterList.map((char, index) => {
     const hasCharacterName = Boolean(String(char?.name || '').trim());
     const matchedAnchor = 按姓名查找(characterAnchors, char?.name)
@@ -628,6 +920,9 @@ export function buildFinalImagePrompt(prompt, {
     const structured = 按姓名查找(structuredPromptList, char?.name)
       || (!hasCharacterName ? structuredPromptList[index] || null : null);
     const structuredPrompt = typeof structured === 'string' ? structured : structured?.prompt;
+    negativeCharacterPrompts.push(
+      removeNonEnglishPromptTokens(typeof structured === 'string' ? '' : structured?.negative_prompt || '')
+    );
 
     // ★ 修复：不直接注入中文 sceneTags（appearance/clothing/expression/pose/position 都是中文）
     // 仅用场景字段拼接扫描文本供正则匹配，不写入最终 prompt
@@ -644,6 +939,7 @@ export function buildFinalImagePrompt(prompt, {
     }
 
     finalCharPrompt = 应用角色场景状态覆盖(finalCharPrompt, char);
+    finalCharPrompt = 清理体液与汗水冲突(finalCharPrompt);
     const genderTag = 角色性别标签(char?.gender);
     if (genderTag === 'girl' || genderTag === 'boy') {
       finalCharPrompt = mergePositivePromptParts(`1${genderTag}`, 移除角色局部数量标签(finalCharPrompt));
@@ -657,7 +953,10 @@ export function buildFinalImagePrompt(prompt, {
       const heightKey = String(char?.name || '').trim().toLowerCase() || `#${index}`;
       finalCharPrompt = mergePositivePromptParts(
         净化多人身高标签(finalCharPrompt),
-        heightConstraints.byName.get(heightKey) || ''
+        heightConstraints.byName.get(heightKey) || '',
+        spatialGuidance.characterDirections[index] || '',
+        interactionTags[index]?.join(', ') || '',
+        interactionSentences[index]?.join(' ') || ''
       );
       finalCharPrompt = 按逗号拆分提示词(finalCharPrompt)
         .filter(token => !/^(?:on[_ ]?(?:the[_ ]?)?(?:left|right)|left[_ ]?(?:side|foreground|background)?|right[_ ]?(?:side|foreground|background)?|far[_ ]?(?:left|right))$/i.test(token))
@@ -670,7 +969,7 @@ export function buildFinalImagePrompt(prompt, {
     return finalCharPrompt;
   }).filter(Boolean);
 
-  const fallbackCharacterPrompts = (characterPrompts.length > 0 ? characterPrompts : charDnaTagsArray)
+  let fallbackCharacterPrompts = (characterPrompts.length > 0 ? characterPrompts : charDnaTagsArray)
     .map(removeNonEnglishPromptTokens)
     .filter(Boolean);
   const characterCountPrompt = 构建人物数量标签(sceneCharacterList);
@@ -692,12 +991,16 @@ export function buildFinalImagePrompt(prompt, {
     actionEmphasisPrompt,
     environmentEnhancementPrompt,
     heightConstraints.basePrompt,
+    spatialGuidance.basePrompt,
     balancedMultiCharacter.positive,
     postPositive,
     normalizedArtistStylePrompt
   );
   // 对 basePrompt 应用全局正则规则
   basePrompt = removeNonEnglishPromptTokens(normalizeArtistTag(applyRules(prompt, basePrompt)));
+  const budgetedPrompts = enforceV45PromptBudget(basePrompt, fallbackCharacterPrompts);
+  basePrompt = budgetedPrompts.basePrompt;
+  fallbackCharacterPrompts = budgetedPrompts.characterPrompts;
   let finalPositive = "";
 
   if (useCharacterSegments && fallbackCharacterPrompts.length > 0) {
@@ -750,6 +1053,9 @@ export function buildFinalImagePrompt(prompt, {
     postPositive,
     basePrompt,
     characterPrompts: fallbackCharacterPrompts,
+    negativeCharacterPrompts,
+    characterCenters: spatialGuidance.centers,
+    estimatedPromptTokens: budgetedPrompts.estimatedTokens,
     finalPositive,
     finalNegative,
     size: finalSize,

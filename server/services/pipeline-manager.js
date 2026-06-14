@@ -2,15 +2,30 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import { ProjectProgress } from '../utils/db.js';
-import { LLMExtractor } from './llm-extractor.js';
+import { getSceneCountMetrics, LLMExtractor } from './llm-extractor.js';
 import { NovelAIClient } from './nai-client.js';
 import { buildFinalImagePrompt } from './prompt-builder.js';
 import { loadVibeBundleForModel } from '../utils/vibe-bundle.js';
 import { normalizeSceneCard, serializeSceneForMatching } from '../utils/scene-structure.js';
 import { findOriginalTriggerSentence } from '../utils/prompt-cleaner.js';
+import { globalCooldownManager } from '../utils/cooldown.js';
 
 const CHARACTER_DNA_LONG_CHAPTER_THRESHOLD = 5000;
 const CHARACTER_DNA_LONG_CHAPTER_BATCH_SIZE = 5;
+
+export function resolveTaskLlmConfig(config = {}, task = 'scene') {
+  const prefixMap = {
+    characterDna: 'llm_character_dna',
+    scene: 'llm_scene',
+    naiTags: 'llm_nai_tags'
+  };
+  const prefix = prefixMap[task] || prefixMap.scene;
+  return {
+    baseUrl: config[`${prefix}_url`] || config.llm_url || "",
+    apiKey: config[`${prefix}_key`] || config.llm_key || "",
+    model: config[`${prefix}_model`] || config.llm_model || "deepseek-chat"
+  };
+}
 
 export class PipelineManager {
   constructor(config = {}) {
@@ -23,14 +38,8 @@ export class PipelineManager {
       token: this.config.nai_token || "",
       baseUrl: this.config.nai_url || "https://image.novelai.net"
     });
-    this.llmExtractor = new LLMExtractor({
-      baseUrl: this.config.llm_url || "",
-      apiKey: this.config.llm_key || "",
-      system_prompt_extract_scenes: this.config.system_prompt_extract_scenes || "",
-      system_prompt_character_dna: this.config.system_prompt_character_dna || "",
-      system_prompt_advanced_prompt: this.config.system_prompt_advanced_prompt || "",
-      danbooru_mcp_url: this.config.danbooru_mcp_url || ""
-    });
+    globalCooldownManager.setBaseCooldownSeconds(this.config.nai_cooldown_seconds ?? 15);
+    this.rebuildLlmExtractors();
 
     this.isRunning = false;
     this.chapters = [];
@@ -38,6 +47,7 @@ export class PipelineManager {
     this.uiCooldownCallback = null;
     this.uiProgressCallback = null;
     this.uiLogCallback = null;
+    this.priorityJobRunner = null;
     this.cachedVibeBundle = null;
     this.cachedVibeBundleKey = "";
     this.dnaSliceSize = Number(config.characterDnaSliceSize) || 10;
@@ -69,15 +79,33 @@ export class PipelineManager {
     this.cachedVibeBundleKey = "";
     this.naiClient.setToken(this.config.nai_token || "");
     this.naiClient.setBaseUrl(this.config.nai_url || "https://image.novelai.net");
-    this.llmExtractor.updateConfig(
-      this.config.llm_url || "",
-      this.config.llm_key || "",
-      this.config.system_prompt_extract_scenes,
-      this.config.system_prompt_character_dna,
-      this.config.system_prompt_advanced_prompt,
-      undefined,
-      this.config.danbooru_mcp_url
-    );
+    globalCooldownManager.setBaseCooldownSeconds(this.config.nai_cooldown_seconds ?? 15);
+    this.rebuildLlmExtractors();
+  }
+
+  async runPriorityJobs() {
+    if (!this.priorityJobRunner) return;
+    await this.priorityJobRunner();
+  }
+
+  createLlmExtractor(task) {
+    const connection = resolveTaskLlmConfig(this.config, task);
+    return new LLMExtractor({
+      baseUrl: connection.baseUrl,
+      apiKey: connection.apiKey,
+      system_prompt_extract_scenes: this.config.system_prompt_extract_scenes || "",
+      system_prompt_character_dna: this.config.system_prompt_character_dna || "",
+      system_prompt_advanced_prompt: this.config.system_prompt_advanced_prompt || "",
+      danbooru_mcp_url: this.config.danbooru_mcp_url || ""
+    });
+  }
+
+  rebuildLlmExtractors() {
+    this.characterDnaExtractor = this.createLlmExtractor('characterDna');
+    this.sceneExtractor = this.createLlmExtractor('scene');
+    this.naiTagsExtractor = this.createLlmExtractor('naiTags');
+    // Keep the legacy property for external callers that may still reference it.
+    this.llmExtractor = this.sceneExtractor;
   }
 
   /**
@@ -245,7 +273,7 @@ export class PipelineManager {
       return this.projectProgress.getGlobalCharacters();
     }
 
-    const model = this.config.llm_model || "deepseek-chat";
+    const model = resolveTaskLlmConfig(this.config, 'characterDna').model;
     const sourceChapters = info.chapters.map(c => `${c.volume}_${c.chapter}`);
     const chapterCharCounts = info.chapters.map(c => String(c.content || '').replace(/\s/g, '').length);
     const averageChapterChars = chapterCharCounts.length > 0
@@ -284,7 +312,7 @@ export class PipelineManager {
         this.writeLog(`[Pipeline] 角色 DNA 切片 ${info.label} 第 ${batchIndex + 1}/${chapterBatches.length} 批：${batchSourceChapters.join(", ")}`);
       }
 
-      const list = await this.llmExtractor.extractCharacterDNA(batchText, model, {
+      const list = await this.characterDnaExtractor.extractCharacterDNA(batchText, model, {
         knownCharacters: this.projectProgress.getGlobalCharacters(),
         sourceChapters: batchSourceChapters
       });
@@ -396,7 +424,8 @@ export class PipelineManager {
 
     this.writeLog(`[Pipeline] 启动配图流水线... 全书共解析到 ${this.chapters.length} 章节` + (targetChapterKey ? ` (目标单章: ${targetChapterKey})` : ""));
 
-    const llmModel = this.config.llm_model || "deepseek-chat";
+    const sceneModel = resolveTaskLlmConfig(this.config, 'scene').model;
+    const naiTagsModel = resolveTaskLlmConfig(this.config, 'naiTags').model;
     const naiModel = this.config.nai_model || "nai-diffusion-4-5-full";
 
     for (let idx = 0; idx < this.chapters.length; idx++) {
@@ -443,6 +472,7 @@ export class PipelineManager {
               ...pauseInfo
             });
           }
+          await this.runPriorityJobs();
           return { paused: true, pauseInfo };
         }
       }
@@ -459,21 +489,27 @@ export class PipelineManager {
 
       this.writeLog(`\n[Pipeline] ➔ 正在处理第 ${idx + 1}/${this.chapters.length} 章节: ${chap.chapter}`);
 
+      let scenes = [];
       try {
-        let scenes = [];
         
         // 1. 如果该章节已有提取记录，并且不是指定的单章强制生成，直接复用已提取的场景卡片（实现场景级恢复的第一步）
         if (!targetChapterKey && currentProgress && Array.isArray(currentProgress.scenes) && currentProgress.scenes.length > 0) {
           scenes = currentProgress.scenes.map(scene => ({ ...scene, ...normalizeSceneCard(scene), status: scene.status || 'PENDING' }));
           this.writeLog(`[Pipeline] 检测到该章节已有提炼好的 ${scenes.length} 个分镜场景，直接恢复断点场景...`);
         } else {
-          // 否则，调用 LLM 重新提取 5-10 个场景
-          this.writeLog(`[Pipeline] 正在调用大模型提炼章节「${chap.chapter}」的 5-10 个分镜场景，请稍候...`);
-          scenes = await this.llmExtractor.extractChapterScenes(
+          // 中文按有效字符数 / 600，英文按单词数 / 350 向上取整。
+          const countMetrics = getSceneCountMetrics(chap.content);
+          const requestedSceneCount = countMetrics.sceneCount;
+          const countDescription = countMetrics.language === 'english'
+            ? `英文总词数 ${countMetrics.count}，按 ceil(词数 / 350)`
+            : `有效字符数 ${countMetrics.count}，按 ceil(字数 / 600)`;
+          this.writeLog(`[Pipeline] 章节「${chap.chapter}」${countDescription} 计算为 ${requestedSceneCount} 个分镜场景。`);
+          scenes = await this.sceneExtractor.extractChapterScenes(
             chap.chapter,
             chap.content,
-            llmModel,
-            (logMsg) => this.writeLog(logMsg)
+            sceneModel,
+            (logMsg) => this.writeLog(logMsg),
+            requestedSceneCount
           );
           this.writeLog(`[Pipeline] 成功提炼本章共 ${scenes.length} 幅插画场景。`);
           
@@ -497,6 +533,9 @@ export class PipelineManager {
         for (let sIdx = 0; sIdx < scenes.length; sIdx++) {
           if (!this.isRunning) break;
 
+          await this.runPriorityJobs();
+          if (!this.isRunning) break;
+
           const scene = scenes[sIdx];
           
           // 如果该场景状态已为 SUCCESS，说明在之前的运行中已经生好图了，直接跳过 (场景级断点续传的关键！)
@@ -505,7 +544,8 @@ export class PipelineManager {
             continue;
           }
 
-          await this.generateSingleScene(chap, scene, scenes, chapKey, llmModel, naiModel);
+          await this.generateSingleScene(chap, scene, scenes, chapKey, naiTagsModel, naiModel);
+          await this.runPriorityJobs();
         }
 
         // 3. 所有场景生图完毕后，将该章节标记为 completed
@@ -524,11 +564,13 @@ export class PipelineManager {
         this.projectProgress.setChapterFailed(chapKey, error.message, scenes);
         await this.projectProgress.save();
         this.isRunning = false;
+        await this.runPriorityJobs();
         throw error;
       }
     }
 
     this.isRunning = false;
+    await this.runPriorityJobs();
     console.log("[Pipeline] 批量流水线全部执行完毕！");
     return { completed: true };
   }
@@ -537,30 +579,49 @@ export class PipelineManager {
    * 生成单个分镜场景（生图核心步骤提取）
    */
   async generateSingleScene(chap, scene, scenes, chapKey, llmModel, naiModel) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        return await this.generateSingleSceneAttempt(
+          chap,
+          scene,
+          scenes,
+          chapKey,
+          llmModel,
+          naiModel,
+          attempt
+        );
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) {
+          this.writeLog(
+            `  [场景 ${scene.scene_idx}] 第 ${attempt}/3 次执行失败，将完整重试场景流程: ${error.message}`,
+            "warning"
+          );
+        }
+      }
+    }
+
+    throw new Error(`场景 ${scene.scene_idx} 连续 3 次执行失败: ${lastError?.message || "未知错误"}`, {
+      cause: lastError
+    });
+  }
+
+  async generateSingleSceneAttempt(chap, scene, scenes, chapKey, llmModel, naiModel, attempt) {
     this.writeLog(`  [场景 ${scene.scene_idx}] 正在生图 -> 描述: ${scene.scene_desc || scene.visual_description}`);
 
     // A. 智能命中角色 DNA 标签组（提前匹配，用于传入LLM参考）
     const matchedAnchors = this.autoMatchCharacterDNA(scene, chap.content);
 
     // B. 高级参数生成：LLM 感知角色DNA，输出结构化 { orientation, prompt, negative_prompt }
-    let advancedParams = null;
-    try {
-      this.writeLog(`  [场景 ${scene.scene_idx}] 正在调用大模型生成高级生图参数（含角色DNA感知）...`);
-      advancedParams = await this.llmExtractor.generateScenePromptAdvanced(
-        scene,
-        matchedAnchors,
-        llmModel,
-        (logMsg) => this.writeLog(`  [场景 ${scene.scene_idx}] ${logMsg}`)
-      );
-      this.writeLog(`  [场景 ${scene.scene_idx}] 高级参数生成完成 → orientation=${advancedParams.orientation}`);
-    } catch (e) {
-      this.writeLog(`  [场景 ${scene.scene_idx}] 高级参数生成异常，使用兜底: ${e.message}`, "warning");
-      advancedParams = {
-        orientation: matchedAnchors.length > 0 ? "portrait" : "landscape",
-        prompt: matchedAnchors.length > 0 ? "1girl, anime style, detailed background" : "scenery, anime style, detailed background",
-        negative_prompt: ""
-      };
-    }
+    this.writeLog(`  [场景 ${scene.scene_idx}] 正在调用大模型生成高级生图参数（场景尝试 ${attempt}/3，含角色DNA与互动供体/受体）...`);
+    const advancedParams = await this.naiTagsExtractor.generateScenePromptAdvanced(
+      scene,
+      matchedAnchors,
+      llmModel,
+      (logMsg) => this.writeLog(`  [场景 ${scene.scene_idx}] ${logMsg}`)
+    );
+    this.writeLog(`  [场景 ${scene.scene_idx}] 高级参数生成完成 → orientation=${advancedParams.orientation}`);
 
     // C. 根据结构化场景二次裁决构图，避免 LLM 把多人/大全景误判成单人竖图
     const sceneCharacters = Array.isArray(scene.characters) ? scene.characters : [];
@@ -610,11 +671,12 @@ export class PipelineManager {
       sceneNsfwRating: scene.nsfw_rating || 'sfw',
       sceneEnvironment: scene.environment || '',
       sceneDescription: scene.visual_description || scene.scene_desc || '',
+      sceneInteractions: scene.interactions || '',
+      sceneInteractionActions: scene.interaction_actions || [],
       structuredCharacterPrompts: advancedParams.character_prompts || [],
       sceneMustShow: scene.must_show || [],
       sceneMustNotShow: scene.must_not_show || [],
       artistStylePrompt: this.config.artistStylePrompt || "",
-      // API 层使用 V4 结构化角色槽；这里保留扁平 prompt 作为 payload 被端点拒绝时的降级输入。
       useCharacterSegments: false
     });
 
@@ -636,9 +698,9 @@ export class PipelineManager {
       noiseSchedule: this.config.noiseSchedule || "karras",
       basePrompt: promptResult.basePrompt,
       characterPrompts: promptResult.characterPrompts,
-      // Multi-character interactions are more coherent as one flat caption.
-      // Separate V4 character captions often produce side-by-side panels.
-      useStructuredCharacterCaptions: promptResult.characterPrompts.length <= 1,
+      negativeCharacterPrompts: promptResult.negativeCharacterPrompts,
+      characterCenters: promptResult.characterCenters,
+      useStructuredCharacterCaptions: promptResult.characterPrompts.length > 0,
       vibeEncodings: vibeBundle?.encodings || null,
       vibeStrengths: vibeBundle ? vibeBundle.encodings.map(() => Number(this.config.vibeStrength) || 0.45) : null,
       vibeInfoExtracted: vibeBundle ? vibeBundle.informationExtracted.map(value => Number.isFinite(value) ? value : (Number(this.config.vibeInfoExtracted) || 1.0)) : null,
@@ -664,6 +726,8 @@ export class PipelineManager {
     scene.final_negative = promptResult.finalNegative;
     scene.base_prompt = promptResult.basePrompt;
     scene.character_prompts = promptResult.characterPrompts;
+    scene.negative_character_prompts = promptResult.negativeCharacterPrompts;
+    scene.character_centers = promptResult.characterCenters;
     scene.width = promptResult.width;
     scene.height = promptResult.height;
 
@@ -685,9 +749,11 @@ export class PipelineManager {
   /**
    * 单场景重绘（保留现有分镜描述，仅重新生图）
    */
-  async redrawScene(chapterKey, sceneIdx) {
-    await this.initialize();
-    if (this.isRunning) {
+  async redrawScene(chapterKey, sceneIdx, { interleaved = false } = {}) {
+    if (!interleaved) {
+      await this.initialize();
+    }
+    if (this.isRunning && !interleaved) {
       throw new Error("流水线正在运行中，请先暂停流水线再进行操作。");
     }
 
@@ -721,9 +787,10 @@ export class PipelineManager {
       });
     }
 
+    const previousRunningState = this.isRunning;
     this.isRunning = true;
     try {
-      const llmModel = this.config.llm_model || "deepseek-chat";
+      const llmModel = resolveTaskLlmConfig(this.config, 'naiTags').model;
       const naiModel = this.config.nai_model || "nai-diffusion-4-5-full";
       this.writeLog(`[Pipeline] 开始单场景重绘: 章节「${chap.chapter}」场景 #${sceneIdx}`);
       await this.generateSingleScene(chap, scene, scenes, chapKey, llmModel, naiModel);
@@ -745,16 +812,18 @@ export class PipelineManager {
       }
       throw err;
     } finally {
-      this.isRunning = false;
+      this.isRunning = previousRunningState;
     }
   }
 
   /**
    * 仅使用场景已保存的最终 Prompt 重绘，不调用 LLM 或 MCP。
    */
-  async redrawSceneWithSavedPrompt(chapterKey, sceneIdx) {
-    await this.initialize();
-    if (this.isRunning) {
+  async redrawSceneWithSavedPrompt(chapterKey, sceneIdx, { interleaved = false } = {}) {
+    if (!interleaved) {
+      await this.initialize();
+    }
+    if (this.isRunning && !interleaved) {
       throw new Error("流水线正在运行中，请先暂停流水线再进行操作。");
     }
 
@@ -788,10 +857,15 @@ export class PipelineManager {
       imagePath: null
     });
 
+    const previousRunningState = this.isRunning;
     this.isRunning = true;
     try {
       const naiModel = this.config.nai_model || "nai-diffusion-4-5-full";
       const characterPrompts = Array.isArray(scene.character_prompts) ? scene.character_prompts : [];
+      const negativeCharacterPrompts = Array.isArray(scene.negative_character_prompts)
+        ? scene.negative_character_prompts
+        : [];
+      const characterCenters = Array.isArray(scene.character_centers) ? scene.character_centers : [];
       const basePrompt = String(scene.base_prompt || scene.final_prompt).trim();
       const finalPrompt = String(scene.final_prompt).trim();
       const finalNegative = String(scene.final_negative || '').trim();
@@ -812,7 +886,9 @@ export class PipelineManager {
         noiseSchedule: this.config.noiseSchedule || "karras",
         basePrompt,
         characterPrompts,
-        useStructuredCharacterCaptions: characterPrompts.length <= 1,
+        negativeCharacterPrompts,
+        characterCenters,
+        useStructuredCharacterCaptions: characterPrompts.length > 0,
         vibeEncodings: vibeBundle?.encodings || null,
         vibeStrengths: vibeBundle ? vibeBundle.encodings.map(() => Number(this.config.vibeStrength) || 0.45) : null,
         vibeInfoExtracted: vibeBundle
@@ -855,7 +931,7 @@ export class PipelineManager {
       this.writeLog(`[Pipeline] 仅 NAI 重绘失败: ${err.message}`, "error");
       throw err;
     } finally {
-      this.isRunning = false;
+      this.isRunning = previousRunningState;
     }
   }
 
@@ -902,17 +978,18 @@ export class PipelineManager {
     this.isRunning = true;
     (async () => {
       try {
-        const llmModel = this.config.llm_model || "deepseek-chat";
+        const sceneModel = resolveTaskLlmConfig(this.config, 'scene').model;
+        const naiTagsModel = resolveTaskLlmConfig(this.config, 'naiTags').model;
         const naiModel = this.config.nai_model || "nai-diffusion-4-5-full";
         this.writeLog(`[Pipeline] 开始重构分镜画面描述: 章节「${chap.chapter}」场景 #${sceneIdx}`);
 
         // 调用大模型重新提炼描述卡片
-        const newSceneCard = await this.llmExtractor.regenerateSingleSceneCard(
+        const newSceneCard = await this.sceneExtractor.regenerateSingleSceneCard(
           chap.chapter,
           chap.content,
           scene.scene_idx,
           scene.trigger_sentence,
-          llmModel
+          sceneModel
         );
 
         // 把新卡片属性融合到原有 scene 中，重设 status 和清除老图
@@ -921,7 +998,7 @@ export class PipelineManager {
         await this.projectProgress.save();
 
         this.writeLog(`[Pipeline] 描述重构完成，开始重绘场景 #${sceneIdx}...`);
-        await this.generateSingleScene(chap, scene, scenes, chapKey, llmModel, naiModel);
+        await this.generateSingleScene(chap, scene, scenes, chapKey, naiTagsModel, naiModel);
         this.writeLog(`[Pipeline] 单场景重构并重绘成功: 章节「${chap.chapter}」场景 #${sceneIdx}`);
       } catch (err) {
         this.writeLog(`[Pipeline] 单场景重构并重绘失败: ${err.message}`, "error");
@@ -940,6 +1017,84 @@ export class PipelineManager {
         this.isRunning = false;
       }
     })();
+  }
+
+  async appendSelectedParagraphScenes(chapterKey, selections = []) {
+    await this.initialize();
+    if (this.isRunning) {
+      throw new Error("流水线正在运行中，请先暂停后再提交正文选段。");
+    }
+
+    const chap = this.chapters.find(c => {
+      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+      return this.projectProgress.normalizeKey(ck) === this.projectProgress.normalizeKey(chapterKey);
+    });
+    if (!chap) throw new Error(`找不到章节: ${chapterKey}`);
+
+    const paragraphs = chap.content.split(/\r?\n/).map(text => text.trim()).filter(Boolean);
+    const selectedParagraphs = selections
+      .map(item => ({
+        paragraphIndex: Number(item?.paragraphIndex),
+        text: String(item?.text || '').trim(),
+        paragraph: String(item?.paragraph || '').trim()
+      }))
+      .filter(item => {
+        const paragraph = paragraphs[item.paragraphIndex];
+        return item.text && paragraph && (item.paragraph === paragraph || paragraph.includes(item.text));
+      })
+      .map(item => ({ ...item, paragraph: paragraphs[item.paragraphIndex] }));
+    if (selectedParagraphs.length === 0) {
+      throw new Error("没有可用的正文选段，正文可能已变化，请刷新后重试。");
+    }
+
+    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const currentProgress = this.projectProgress.getCompletedChapters()[chapKey] || {};
+    const scenes = Array.isArray(currentProgress.scenes)
+      ? currentProgress.scenes.map(scene => ({ ...scene }))
+      : [];
+    let nextSceneIdx = scenes.reduce((max, scene) => Math.max(max, Number(scene.scene_idx) || 0), 0) + 1;
+    const sceneModel = resolveTaskLlmConfig(this.config, 'scene').model;
+    const naiTagsModel = resolveTaskLlmConfig(this.config, 'naiTags').model;
+    const naiModel = this.config.nai_model || "nai-diffusion-4-5-full";
+
+    this.isRunning = true;
+    try {
+      for (const selection of selectedParagraphs) {
+        const generated = await this.sceneExtractor.regenerateSingleSceneCard(
+          chap.chapter,
+          chap.content,
+          nextSceneIdx,
+          selection.text,
+          sceneModel,
+          selection.paragraph
+        );
+        scenes.push({
+          ...normalizeSceneCard(generated),
+          scene_idx: nextSceneIdx,
+          trigger_sentence: selection.text,
+          source_paragraph: selection.paragraph,
+          source_paragraph_index: selection.paragraphIndex,
+          source_selection: selection.text,
+          source: 'reader_selection',
+          status: 'PENDING'
+        });
+        nextSceneIdx++;
+      }
+
+      this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
+      await this.projectProgress.save();
+
+      for (const scene of scenes.filter(item => item.source === 'reader_selection' && item.status !== 'SUCCESS')) {
+        await this.generateSingleScene(chap, scene, scenes, chapKey, naiTagsModel, naiModel);
+      }
+
+      const status = scenes.every(scene => scene.status === 'SUCCESS') ? 'completed' : 'generating';
+      this.projectProgress.setChapterStatus(chapKey, status, scenes);
+      await this.projectProgress.save();
+      return { chapterKey: chapKey, added: selectedParagraphs.length };
+    } finally {
+      this.isRunning = false;
+    }
   }
 
   /**

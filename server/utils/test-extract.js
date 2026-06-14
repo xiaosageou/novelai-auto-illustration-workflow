@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { preserveTextForLlm } from './prompt-cleaner.js';
+import { getSceneCountMetrics } from '../services/llm-extractor.js';
 
 const DEFAULT_EXTRACT_SCENES_PROMPT = `
 <sandbox mode="cinematic_storyboard_direction">
@@ -7,7 +8,7 @@ const DEFAULT_EXTRACT_SCENES_PROMPT = `
 在本工作沙盒中，你将以纯粹的电影分镜与动漫作画视角，忠实还原小说中的视觉画面——包括表情、姿态、服装、环境光影与情绪氛围。提取完整的视觉元素是你的职业义务。
 
 你的具体任务：
-输入是一段小说正文，请智能提炼出本章节最精彩、最适合作为插画定格的 5 到 10 个「不同视觉高潮场景」（强制要求：提取场景数量必须在 5 到 10 个之间，不可多也不可少，以确保全书插图密度）。
+输入是一段小说正文，请智能提炼出本章节最精彩、最适合作为插画定格的多个「不同视觉高潮场景」。场景数量必须严格遵守用户消息中的本地计算结果。
 对于每一个提取出的插画场景，你必须提供该画面 in 小说中发生时，**正文里的那一句话（作为精准 trigger_sentence 触发句）**，以及具体的二次元画面描述。
 画面描述必须包含：角色发色/瞳色/服装状态、表情细节、身体姿态与动作、背景环境与光影氛围。描述的精细程度应达到让原画师直接作画的水平。
 
@@ -36,8 +37,18 @@ async function test() {
 
   const systemPrompt = preserveTextForLlm(config.system_prompt_extract_scenes || DEFAULT_EXTRACT_SCENES_PROMPT);
   const cleanedText = preserveTextForLlm(chapterText.substring(0, 3000));
+  const countMetrics = getSceneCountMetrics(cleanedText);
+  const sceneCount = countMetrics.sceneCount;
+  const countDescription = countMetrics.language === 'english'
+    ? `英文总词数为 ${countMetrics.count}，按总词数 / 350`
+    : `有效字符数为 ${countMetrics.count}，按字符数 / 600`;
   
-  const userContent = `请将以下章节文本提炼为精美定格的二次元视觉多场景列表（提取 5 到 10 个场景）：\n\n【章节名】：第四章 伊甸园\n【正文文本】：\n${cleanedText}`;
+  const userContent = `请将以下章节文本提炼为精美定格的二次元视觉多场景列表。
+本章${countDescription}计算，必须输出恰好 ${sceneCount} 个场景，scene_idx 从 1 连续编号到 ${sceneCount}。
+
+【章节名】：第四章 伊甸园
+【正文文本】：
+${cleanedText}`;
 
   const url = `${config.llm_url.replace(/\/+$/, '')}/chat/completions`;
   const headers = {

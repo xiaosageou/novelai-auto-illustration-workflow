@@ -1,6 +1,38 @@
 import JSZip from 'jszip';
 import path from 'path';
 import { promises as fs } from 'fs';
+import sharp from 'sharp';
+
+export function insertIllustrationsAfterParagraphs(content, insertions = []) {
+  const lines = String(content || '').split(/\r?\n/);
+  const placements = new Map();
+  const fallback = [];
+
+  for (const insertion of insertions) {
+    const paragraph = String(insertion?.paragraph || '').trim();
+    const trigger = String(insertion?.trigger || '').trim();
+    let lineIndex = paragraph ? lines.findIndex(line => line.trim() === paragraph) : -1;
+    if (lineIndex < 0 && trigger) {
+      lineIndex = lines.findIndex(line => line.includes(trigger));
+    }
+    if (lineIndex < 0) {
+      fallback.push(insertion.imageName);
+      continue;
+    }
+    const names = placements.get(lineIndex) || [];
+    names.push(insertion.imageName);
+    placements.set(lineIndex, names);
+  }
+
+  for (const [lineIndex, imageNames] of [...placements.entries()].sort((a, b) => b[0] - a[0])) {
+    const markers = imageNames.flatMap(imageName => ['', `[插图：${imageName}]`, '']);
+    lines.splice(lineIndex + 1, 0, ...markers);
+  }
+  for (const imageName of fallback) {
+    lines.push('', `[插图：${imageName}]`, '');
+  }
+  return lines.join('\n');
+}
 
 export class EPUBBuilder {
   constructor(title, author, outputPath) {
@@ -50,24 +82,11 @@ p {
 .illustration-container {
     text-align: center;
     margin: 2em 0;
-    padding: 10px;
-    background-color: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.06);
+    page-break-inside: avoid;
 }
 .illustration-container img {
     max-width: 95%;
     height: auto;
-    border-radius: 8px;
-}
-.illustration-caption {
-    font-size: 0.85em;
-    color: #64748b;
-    margin-top: 8px;
-    font-style: italic;
-    text-indent: 0;
-    text-align: center;
 }
     `.trim();
   }
@@ -83,8 +102,28 @@ p {
     this.cssContent = cssContent.trim();
   }
 
-  addImage(name, data) {
-    this.images[name] = data;
+  async addImage(name, data) {
+    const baseName = path.basename(name, path.extname(name));
+    const outputName = `${baseName}.jpg`;
+    const compressed = await sharp(data, { failOn: 'none' })
+      .rotate()
+      .flatten({ background: '#ffffff' })
+      .resize({
+        width: 1600,
+        height: 2400,
+        fit: 'inside',
+        withoutEnlargement: true,
+        kernel: sharp.kernel.lanczos3
+      })
+      .jpeg({
+        quality: 90,
+        chromaSubsampling: '4:4:4',
+        mozjpeg: true,
+        progressive: true
+      })
+      .toBuffer();
+    this.images[outputName] = compressed;
+    return outputName;
   }
 
   addChapter(volume, chapter, text) {
@@ -105,8 +144,7 @@ p {
         const imgName = imgMatch[1].trim();
         xhtmlParts.push([
           '<div class="illustration-container">',
-          `  <img src="images/${imgName}" alt="${imgName}" />`,
-          `  <div class="illustration-caption">章节精美插图 - ${imgName}</div>`,
+          `  <img src="images/${imgName}" alt="" />`,
           '</div>'
         ].join('\n'));
       } else {
