@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { 
   Settings, Plus, BookOpen, User, Play, Square, Download, 
   RefreshCw, CheckCircle2, Sparkles, X, FileText, Clapperboard, Timer,
-  Copy, PanelLeftClose, PanelLeftOpen
+  Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:5001";
@@ -73,6 +73,9 @@ function App() {
   const [previewImage, setPreviewImage] = useState(null);
   const [loadingScenes, setLoadingScenes] = useState({});
   const [dnaUpdatePrompt, setDnaUpdatePrompt] = useState(null);
+  const [editingCharacterName, setEditingCharacterName] = useState("");
+  const [editingCharacterFeatures, setEditingCharacterFeatures] = useState(null);
+  const [savingCharacterTags, setSavingCharacterTags] = useState(false);
   
   // 新建项目表单
   const [newProjName, setNewProjName] = useState("");
@@ -83,6 +86,57 @@ function App() {
   const [availableModels, setAvailableModels] = useState({});
   const [isLoadingModels, setIsLoadingModels] = useState({});
   const [modelError, setModelError] = useState({});
+
+  const getReaderSelectionStorageKey = (projectName, chapterKey) => (
+    projectName && chapterKey ? `reader-selections::${projectName}::${chapterKey}` : ""
+  );
+
+  const normalizeReaderSelections = (selections, paragraphs = []) => {
+    const seen = new Set();
+    return (Array.isArray(selections) ? selections : [])
+      .map(item => ({
+        paragraphIndex: Number(item?.paragraphIndex),
+        text: String(item?.text || '').trim(),
+        paragraph: String(item?.paragraph || '').trim()
+      }))
+      .filter(item => {
+        const paragraph = paragraphs[item.paragraphIndex];
+        return item.text && paragraph && (item.paragraph === paragraph || paragraph.includes(item.text));
+      })
+      .filter(item => {
+        const key = `${item.paragraphIndex}::${item.text}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map(item => ({
+        ...item,
+        paragraph: paragraphs[item.paragraphIndex]
+      }));
+  };
+
+  const saveReaderSelections = (projectName, chapterKey, selections) => {
+    const storageKey = getReaderSelectionStorageKey(projectName, chapterKey);
+    if (!storageKey) return;
+    if (!Array.isArray(selections) || selections.length === 0) {
+      window.localStorage.removeItem(storageKey);
+      return;
+    }
+    window.localStorage.setItem(storageKey, JSON.stringify(selections));
+  };
+
+  const loadReaderSelections = (projectName, chapterKey, paragraphs = []) => {
+    const storageKey = getReaderSelectionStorageKey(projectName, chapterKey);
+    if (!storageKey) return [];
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return normalizeReaderSelections(parsed, paragraphs);
+    } catch {
+      return [];
+    }
+  };
 
   useEffect(() => {
     window.localStorage.setItem('project-sidebar-collapsed', String(isProjectSidebarCollapsed));
@@ -272,15 +326,20 @@ function App() {
       return;
     }
     const chapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+    let cancelled = false;
     setChapterContent(null);
-    setTextSelections([]);
     fetch(`${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/chapters/${encodeURIComponent(chapterKey)}/content`)
       .then(res => res.json())
       .then(data => {
+        if (cancelled) return;
         if (data.error) throw new Error(data.error);
         setChapterContent(data);
+        setTextSelections(loadReaderSelections(activeProject, chapterKey, data.paragraphs || []));
       })
       .catch(error => addLog(`读取章节正文失败: ${error.message}`, 'error'));
+    return () => {
+      cancelled = true;
+    };
   }, [activeProject, selectedChapter]);
 
   const addLog = (text, type = 'info') => {
@@ -391,9 +450,16 @@ function App() {
   };
 
   const selectProject = async (name) => {
+    if (activeProject && selectedChapter && textSelections.length > 0) {
+      const previousChapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+      saveReaderSelections(activeProject, previousChapterKey, textSelections);
+    }
+    setEditingCharacterName("");
+    setEditingCharacterFeatures(null);
     setActiveProject(name);
     addLog(`📂 载入项目: ${name}`);
     setSelectedChapter(null); // 切换项目时重置选中章节
+    setTextSelections([]);
     fetchProjectDetails(name, true);
   };
 
@@ -645,6 +711,55 @@ function App() {
     }
   };
 
+  const deleteScene = async (chap, sceneIdx) => {
+    if (!activeProject || !chap) return;
+    const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+    const sceneKey = `${chapKey}_${sceneIdx}`;
+    const confirmed = window.confirm(`确定删除场景 #${sceneIdx} 吗？删除后会清除对应图片并重排后续编号。`);
+    if (!confirmed) return;
+
+    try {
+      setLoadingScenes(prev => ({ ...prev, [sceneKey]: 'deleting' }));
+      addLog(`🗑️ 正在删除场景 #${sceneIdx}...`);
+      const res = await fetch(
+        `${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/chapters/${encodeURIComponent(chapKey)}/scenes/${sceneIdx}`,
+        { method: "DELETE" }
+      );
+      const responseText = await res.text();
+      let data = null;
+      try {
+        data = responseText ? JSON.parse(responseText) : null;
+      } catch {
+        throw new Error(`删除场景接口返回了非 JSON 内容: ${responseText.slice(0, 120)}`);
+      }
+
+      if (!res.ok) {
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
+      if (!data.success) {
+        setLoadingScenes(prev => {
+          const copy = { ...prev };
+          delete copy[sceneKey];
+          return copy;
+        });
+        addLog(`❌ 删除场景 #${sceneIdx} 失败: ${data.error || '未知错误'}`, "error");
+        return;
+      }
+
+      addLog(`🗑️ ${data.message}`);
+      setExpandedPrompt(prev => (prev === sceneKey ? null : prev));
+      setLoadingScenes({});
+      await fetchProjectDetails(activeProject);
+    } catch (e) {
+      setLoadingScenes(prev => {
+        const copy = { ...prev };
+        delete copy[sceneKey];
+        return copy;
+      });
+      addLog(`❌ 删除场景 #${sceneIdx} 异常: ${e.message}`, "error");
+    }
+  };
+
   const regenerateScene = async (chap, sceneIdx) => {
     if (!activeProject || !chap) return;
     const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
@@ -756,6 +871,111 @@ function App() {
 
   const progressInfo = getProgress();
   const characters = projectDetails?.progress?.global_characters || {};
+  const dnaFeatureOrder = [
+    '外貌标签',
+    '身材标签',
+    '胸部标签',
+    '发型标签',
+    '发色标签',
+    '眼睛标签',
+    '肤色标签',
+    '年龄感标签',
+    '服装基底标签',
+    '特殊特征标签'
+  ];
+
+  const emptyCharacterFeatures = () => Object.fromEntries(dnaFeatureOrder.map(key => [key, '']));
+
+  const normalizeFeatureText = (value) => (
+    Array.isArray(value) ? value.join(', ') : String(value || '')
+  );
+
+  const featuresToEditorState = (features = {}) => (
+    dnaFeatureOrder.reduce((acc, key) => {
+      acc[key] = normalizeFeatureText(features?.[key]);
+      return acc;
+    }, emptyCharacterFeatures())
+  );
+
+  const editorStateToFeatures = (state = {}) => (
+    dnaFeatureOrder.reduce((acc, key) => {
+      const raw = String(state?.[key] || '');
+      acc[key] = raw
+        .split(/[,，]/)
+        .map(item => item.trim())
+        .filter(Boolean);
+      return acc;
+    }, {})
+  );
+
+  const renderDnaFeatures = (features) => {
+    if (!features || typeof features !== 'object') return null;
+    const entries = dnaFeatureOrder
+      .map(key => [key, Array.isArray(features[key]) ? features[key].filter(Boolean) : []])
+      .filter(([, tags]) => tags.length > 0);
+    if (entries.length === 0) return null;
+
+    return (
+      <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {entries.map(([label, tags]) => (
+          <div key={label} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+            <div style={{
+              flex: '0 0 82px',
+              fontSize: '0.72rem',
+              color: 'var(--text-muted)',
+              lineHeight: '1.4',
+              paddingTop: '2px'
+            }}>
+              {label}
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', minWidth: 0 }}>
+              {tags.map(tag => (
+                <span key={`${label}-${tag}`} className="tag-badge dna">{tag}</span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderFeatureEditor = () => {
+    if (!editingCharacterFeatures) return null;
+    return (
+      <div style={{ marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {dnaFeatureOrder.map(label => (
+          <label key={label} style={{ display: 'grid', gridTemplateColumns: '82px 1fr', gap: '8px', alignItems: 'start' }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: '1.4', paddingTop: '8px' }}>{label}</span>
+            <textarea
+              value={editingCharacterFeatures[label] || ''}
+              onChange={(e) => setEditingCharacterFeatures(prev => ({
+                ...(prev || emptyCharacterFeatures()),
+                [label]: e.target.value
+              }))}
+              rows={2}
+              spellCheck={false}
+              placeholder="用逗号分隔"
+              style={{
+                width: '100%',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(168,85,247,0.35)',
+                borderRadius: '6px',
+                padding: '8px',
+                color: 'white',
+                fontFamily: 'monospace',
+                fontSize: '0.78rem',
+                lineHeight: '1.4',
+                resize: 'vertical'
+              }}
+            />
+          </label>
+        ))}
+        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+          每个字段输入逗号分隔的结构化标签。保存后会自动重建基础 tags。
+        </div>
+      </div>
+    );
+  };
 
   const renderTaskLlmCard = (scope, title, description, accent) => {
     const fields = llmTaskFields[scope];
@@ -831,7 +1051,12 @@ function App() {
 
     setTextSelections(prev => {
       if (prev.some(item => item.paragraphIndex === paragraphIndex && item.text === text)) return prev;
-      return [...prev, { paragraphIndex, paragraph, text }];
+      const next = [...prev, { paragraphIndex, paragraph, text }];
+      if (activeProject && selectedChapter) {
+        const chapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+        saveReaderSelections(activeProject, chapterKey, next);
+      }
+      return next;
     });
     selection.removeAllRanges();
   };
@@ -855,12 +1080,51 @@ function App() {
       if (!data.success) throw new Error(data.error || '提交失败');
       addLog(`📝 ${data.message}`);
       setTextSelections([]);
+      if (activeProject && selectedChapter) {
+        const chapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+        saveReaderSelections(activeProject, chapterKey, []);
+      }
       setWorkspaceTab('scenes');
     } catch (error) {
       setPipelineRunning(false);
       addLog(`正文选段生图失败: ${error.message}`, 'error');
     } finally {
       setIsSubmittingSelections(false);
+    }
+  };
+
+  const startEditingCharacterTags = (name, tags = "") => {
+    setEditingCharacterName(name);
+    const character = characters[name] || {};
+    setEditingCharacterFeatures(featuresToEditorState(character.features || {}));
+  };
+
+  const cancelEditingCharacterTags = () => {
+    setEditingCharacterName("");
+    setEditingCharacterFeatures(null);
+  };
+
+  const saveEditingCharacterTags = async () => {
+    if (!activeProject || !editingCharacterName) return;
+    setSavingCharacterTags(true);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/characters/${encodeURIComponent(editingCharacterName)}/features`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ features: editorStateToFeatures(editingCharacterFeatures) })
+        }
+      );
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || '保存失败');
+      addLog(`🧬 角色「${editingCharacterName}」结构化 DNA 已更新。`);
+      cancelEditingCharacterTags();
+      await fetchProjectDetails(activeProject);
+    } catch (error) {
+      addLog(`❌ 保存角色结构化 DNA 失败: ${error.message}`, 'error');
+    } finally {
+      setSavingCharacterTags(false);
     }
   };
 
@@ -946,7 +1210,40 @@ function App() {
             ) : (
               Object.entries(characters).map(([name, data]) => (
                 <div key={name} style={{ marginBottom: '14px', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '10px' }}>
-                  <div style={{ fontWeight: '500', fontSize: '0.9rem', color: 'var(--color-pink)' }}>{name}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                    <div style={{ fontWeight: '500', fontSize: '0.9rem', color: 'var(--color-pink)' }}>{name}</div>
+                    {editingCharacterName === name ? (
+                      <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                        <button
+                          className="btn-secondary"
+                          type="button"
+                          onClick={saveEditingCharacterTags}
+                          disabled={savingCharacterTags}
+                          style={{ padding: '3px 8px', fontSize: '0.75rem' }}
+                        >
+                          {savingCharacterTags ? '保存中' : '保存'}
+                        </button>
+                        <button
+                          className="btn-secondary"
+                          type="button"
+                          onClick={cancelEditingCharacterTags}
+                          disabled={savingCharacterTags}
+                          style={{ padding: '3px 8px', fontSize: '0.75rem' }}
+                        >
+                          取消
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        className="btn-secondary"
+                        type="button"
+                        onClick={() => startEditingCharacterTags(name)}
+                        style={{ padding: '3px 8px', fontSize: '0.75rem', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '4px' }}
+                      >
+                        <Pencil size={11} /> 编辑结构化
+                      </button>
+                    )}
+                  </div>
                   {(data.aliases?.length > 0 || data.confidence || data.source_chapters?.length > 0) && (
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px' }}>
                       {data.aliases?.length > 0 ? `别名: ${data.aliases.join(' / ')}` : ''}
@@ -954,18 +1251,7 @@ function App() {
                       {data.source_chapters?.length > 0 ? ` · 来源: ${data.source_chapters.slice(0, 3).join(' / ')}${data.source_chapters.length > 3 ? ' ...' : ''}` : ''}
                     </div>
                   )}
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: '1.4' }}>
-                    {data.tags}
-                  </div>
-                  {data.features && (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '6px' }}>
-                      {Object.entries(data.features).flatMap(([, tags]) =>
-                        Array.isArray(tags) ? tags.map(t => (
-                          <span key={t} className="tag-badge dna">{t}</span>
-                        )) : []
-                      )}
-                    </div>
-                  )}
+                  {editingCharacterName === name ? renderFeatureEditor() : renderDnaFeatures(data.features)}
                 </div>
               ))
             )}
@@ -1042,7 +1328,15 @@ function App() {
                     <div 
                       key={chapKey}
                       className={`chapter-item ${selectedChapter?.chapter === chap.chapter ? 'active' : ''}`}
-                      onClick={() => setSelectedChapter(chap)}
+                      onClick={() => {
+                        if (activeProject && selectedChapter && textSelections.length > 0) {
+                          const previousChapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+                          saveReaderSelections(activeProject, previousChapterKey, textSelections);
+                        }
+                        setSelectedChapter(chap);
+                        setChapterContent(null);
+                        setTextSelections([]);
+                      }}
                     >
                       <span style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{chap.chapter}</span>
                       {isCompleted && <CheckCircle2 size={14} style={{ color: 'var(--color-green)' }} />}
@@ -1439,6 +1733,24 @@ function App() {
                               >
                                 🧠 重构描述 (LLM+NAI)
                               </button>
+                              <button
+                                className="btn-secondary"
+                                style={{
+                                  padding: '4px 12px',
+                                  fontSize: '0.75rem',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  height: '28px',
+                                  borderColor: 'rgba(239, 68, 68, 0.45)',
+                                  color: '#fca5a5'
+                                }}
+                                disabled={pipelineRunning || Boolean(isSceneLoading)}
+                                onClick={() => deleteScene(selectedChapter, scene.scene_idx)}
+                                title="删除该场景并清理对应图片文件，后续场景会重新编号"
+                              >
+                                <Trash2 size={12} /> 删除
+                              </button>
                             </div>
                           </div>
                         );
@@ -1455,10 +1767,18 @@ function App() {
                   {projectDetails.chapters.map(chap => {
                     const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
                     return (
-                      <button
+                    <button
                         key={`reader-${chapKey}`}
                         className={`chapter-item ${selectedChapter?.chapter === chap.chapter ? 'active' : ''}`}
-                        onClick={() => setSelectedChapter(chap)}
+                        onClick={() => {
+                          if (activeProject && selectedChapter && textSelections.length > 0) {
+                            const previousChapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+                            saveReaderSelections(activeProject, previousChapterKey, textSelections);
+                          }
+                          setSelectedChapter(chap);
+                          setChapterContent(null);
+                          setTextSelections([]);
+                        }}
                       >
                         <span>{chap.chapter}</span>
                       </button>
@@ -1488,7 +1808,14 @@ function App() {
                           <button
                             type="button"
                             aria-label={`移除选区 ${index + 1}`}
-                            onClick={() => setTextSelections(prev => prev.filter((_, itemIndex) => itemIndex !== index))}
+                            onClick={() => setTextSelections(prev => {
+                              const next = prev.filter((_, itemIndex) => itemIndex !== index);
+                              if (activeProject && selectedChapter) {
+                                const chapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+                                saveReaderSelections(activeProject, chapterKey, next);
+                              }
+                              return next;
+                            })}
                           >
                             <X size={12} />
                           </button>

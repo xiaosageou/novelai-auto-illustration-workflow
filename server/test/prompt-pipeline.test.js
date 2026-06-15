@@ -296,6 +296,162 @@ test('selected sentence regeneration includes its complete paragraph and full ch
   }
 });
 
+test('single scene regeneration retries and falls back when the model returns no JSON', async () => {
+  const extractor = new LLMExtractor({
+    baseUrl: 'https://example.test/v1',
+    apiKey: 'test-key'
+  });
+  let requestCount = 0;
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    requestCount++;
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: '这里是说明文字，没有 JSON。'
+          }
+        }]
+      })
+    };
+  };
+
+  try {
+    const scene = await extractor.regenerateSingleSceneCard(
+      '测试章',
+      '前一段。\n她抬起了头，雨水顺着脸颊滑落。\n后一段。',
+      7,
+      '她抬起了头',
+      'test-model',
+      '她抬起了头，雨水顺着脸颊滑落。'
+    );
+    assert.equal(requestCount, 3);
+    assert.equal(scene.scene_idx, 7);
+    assert.equal(scene.trigger_sentence, '她抬起了头');
+    assert.equal(scene.nsfw_rating, 'sfw');
+    assert.match(scene.visual_description, /她抬起了头|测试章/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('selected paragraph scenes are generated in one LLM session', async () => {
+  const extractor = new LLMExtractor({
+    baseUrl: 'https://example.test/v1',
+    apiKey: 'test-key'
+  });
+  let requestCount = 0;
+  let requestBody = null;
+  const originalFetch = global.fetch;
+  global.fetch = async (_url, options) => {
+    requestCount++;
+    requestBody = JSON.parse(options.body);
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: `${SCENES_JSON_START}${JSON.stringify([
+              {
+                selection_index: 1,
+                scene_idx: 1,
+                trigger_sentence: '她抬起了头',
+                visual_description: '角色在雨夜抬头',
+                environment: '雨夜街道',
+                cinematography: '中景',
+                characters: [],
+                interactions: '',
+                plot_traces: '',
+                text_elements: ''
+              },
+              {
+                selection_index: 2,
+                scene_idx: 2,
+                trigger_sentence: '她轻轻点头',
+                visual_description: '角色在门边点头',
+                environment: '门廊',
+                cinematography: '近景',
+                characters: [],
+                interactions: '',
+                plot_traces: '',
+                text_elements: ''
+              }
+            ])}${SCENES_JSON_END}`
+          }
+        }]
+      })
+    };
+  };
+
+  try {
+    const scenes = await extractor.regenerateSelectedParagraphScenes(
+      '测试章',
+      '前一段。\n她抬起了头，雨水顺着脸颊滑落。\n她轻轻点头。\n后一段。',
+      [
+        {
+          paragraphIndex: 1,
+          text: '她抬起了头',
+          paragraph: '她抬起了头，雨水顺着脸颊滑落。'
+        },
+        {
+          paragraphIndex: 2,
+          text: '她轻轻点头',
+          paragraph: '她轻轻点头。'
+        }
+      ],
+      'test-model'
+    );
+
+    assert.equal(requestCount, 1);
+    assert.equal(scenes.length, 2);
+    assert.equal(scenes[0].trigger_sentence, '她抬起了头');
+    assert.equal(scenes[1].trigger_sentence, '她轻轻点头');
+    assert.match(requestBody.messages[0].content, /全章覆盖与碎段上下文合并约束/);
+    assert.match(requestBody.messages.find(item => item.role === 'user').content, /正文选段列表/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('batch selected paragraph fallback keeps the original paragraph text', async () => {
+  const extractor = new LLMExtractor({
+    baseUrl: 'https://example.test/v1',
+    apiKey: 'test-key'
+  });
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    status: 200,
+    json: async () => ({
+      choices: [{
+        message: { content: '' }
+      }]
+    })
+  });
+
+  try {
+    const scenes = await extractor.regenerateSelectedParagraphScenes(
+      '测试章',
+      '前一段。\n她抬起了头，雨水顺着脸颊滑落。\n后一段。',
+      [
+        {
+          paragraphIndex: 1,
+          text: '她抬起了头',
+          paragraph: '她抬起了头，雨水顺着脸颊滑落。'
+        }
+      ],
+      'test-model'
+    );
+
+    assert.equal(scenes.length, 1);
+    assert.equal(scenes[0].trigger_sentence, '她抬起了头');
+    assert.match(scenes[0].visual_description, /她抬起了头，雨水顺着脸颊滑落。/);
+    assert.doesNotMatch(scenes[0].visual_description, /根据正文选段生成的基础场景/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('priority jobs run without clearing the active pipeline state', async () => {
   const pipeline = new PipelineManager({ projectName: 'priority-test' });
   const observedStates = [];
@@ -308,6 +464,43 @@ test('priority jobs run without clearing the active pipeline state', async () =>
 
   assert.deepEqual(observedStates, [true]);
   assert.equal(pipeline.isRunning, true);
+});
+
+test('deleteScene removes the image file and reindexes remaining scenes', async () => {
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nai-delete-scene-'));
+  const imagePath = path.join(outputDir, 'illustrations', 'scene-2.png');
+  await fs.mkdir(path.dirname(imagePath), { recursive: true });
+  await fs.writeFile(imagePath, Buffer.from([1, 2, 3]));
+
+  const pipeline = new PipelineManager({ projectName: 'delete-scene-test' });
+  pipeline.initialize = async () => {};
+  pipeline.projBase = outputDir;
+  pipeline.chapters = [{ volume: '卷一', chapter: '第一章' }];
+  pipeline.projectProgress = {
+    getEffectiveChapKey: () => '卷一_第一章',
+    normalizeKey: value => String(value).replace(/[\s_]+/g, '').toLowerCase(),
+    getCompletedChapters: () => ({
+      '卷一_第一章': {
+        scenes: [
+          { scene_idx: 1, status: 'SUCCESS', image_path: 'illustrations/scene-1.png' },
+          { scene_idx: 2, status: 'SUCCESS', image_path: 'illustrations/scene-2.png' },
+          { scene_idx: 3, status: 'SUCCESS', image_path: 'illustrations/scene-3.png' }
+        ]
+      }
+    }),
+    setChapterStatus: (key, status, scenes) => {
+      pipeline.__saved = { key, status, scenes };
+    },
+    save: async () => {}
+  };
+
+  const result = await pipeline.deleteScene('卷一_第一章', 2);
+
+  assert.equal(result.remainingScenes, 2);
+  assert.equal(await fs.access(imagePath).then(() => true).catch(() => false), false);
+  assert.deepEqual(pipeline.__saved.status, 'completed');
+  assert.deepEqual(pipeline.__saved.scenes.map(scene => scene.scene_idx), [1, 2]);
+  assert.deepEqual(pipeline.__saved.scenes.map(scene => scene.image_path), ['illustrations/scene-1.png', 'illustrations/scene-3.png']);
 });
 
 test('scene normalization reconciles named characters and infers shadow entities', () => {
@@ -907,6 +1100,72 @@ test('advanced prompt validation accepts directional penetration roles', async (
   }
 });
 
+test('advanced prompt validation ignores mutual hints for directional sex', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+  extractor.searchDanbooruTags = async () => ({ results: [] });
+  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    status: 200,
+    json: async () => ({
+      choices: [{
+        finish_reason: 'stop',
+        message: {
+          content: JSON.stringify({
+            orientation: 'square',
+            base_prompt: 'nsfw, explicit, 1girl, 1boy, bedroom',
+            interaction_requirements: [{
+              action: 'sex',
+              source: '阿宾',
+              target: '王忆如',
+              requires_pairing: true,
+              mutual: false
+            }],
+            character_prompts: [
+              {
+                name: '阿宾',
+                prompt: 'boy, short_hair, completely_nude, leaning_forward',
+                negative_prompt: '',
+                interaction_actions: [{ role: 'source', action: 'sex' }]
+              },
+              {
+                name: '王忆如',
+                prompt: 'girl, long_hair, completely_nude, lying_on_back',
+                negative_prompt: '',
+                interaction_actions: [{ role: 'target', action: 'sex' }]
+              }
+            ],
+            negative_prompt: ''
+          })
+        }
+      }]
+    })
+  });
+
+  try {
+    const result = await extractor.generateScenePromptAdvanced({
+      visual_description: '阿宾压在王忆如身上进行性交',
+      nsfw_rating: 'nsfw_explicit',
+      characters: [
+        { name: '阿宾', gender: 'man' },
+        { name: '王忆如', gender: 'woman' }
+      ],
+      interaction_actions: [{
+        action: 'sex',
+        source: '阿宾',
+        target: '王忆如',
+        mutual: true
+      }]
+    }, [], 'test');
+
+    assert.equal(result.character_prompts[0].interaction_actions[0].role, 'source');
+    assert.equal(result.character_prompts[1].interaction_actions[0].role, 'target');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('directional sex actions preserve source and target markers in final prompts', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, bedroom, sex', {
     sceneCharacters: [
@@ -926,6 +1185,63 @@ test('directional sex actions preserve source and target markers in final prompt
   assert.match(result.characterPrompts[0], /target#sex/);
   assert.match(result.characterPrompts[1], /source#sex/);
   assert.doesNotMatch(result.characterPrompts.join(' '), /mutual#sex/);
+});
+
+test('directional sex actions ignore mutual hints and still emit source target markers', () => {
+  const result = buildFinalImagePrompt('1girl, 1boy, bedroom, sex', {
+    sceneCharacters: [
+      { name: '王忆如', gender: 'woman', position: 'left' },
+      { name: '阿宾', gender: 'man', position: 'right' }
+    ],
+    sceneInteractionActions: [
+      { action: 'sex', source: '阿宾', target: '王忆如', mutual: true }
+    ],
+    structuredCharacterPrompts: [
+      { name: '王忆如', prompt: 'girl, naked, lying, sweating, vaginal_fluids' },
+      { name: '阿宾', prompt: 'boy, naked, standing' }
+    ],
+    sceneNsfwRating: 'nsfw_explicit'
+  });
+
+  assert.match(result.characterPrompts[0], /target#sex/);
+  assert.match(result.characterPrompts[1], /source#sex/);
+  assert.doesNotMatch(result.characterPrompts.join(' '), /mutual#sex/);
+});
+
+test('penetration scenes require inset xray guidance while non-penetrative scenes do not', () => {
+  const penetrationResult = buildFinalImagePrompt('1girl, 1boy, bedroom, sex', {
+    sceneCharacters: [
+      { name: '钰慧', gender: 'woman', position: 'left' },
+      { name: '阿宾', gender: 'man', position: 'right' }
+    ],
+    sceneInteractions: '阿宾将性器官插入钰慧体内',
+    sceneInteractionActions: [
+      { action: 'penetration', source: '阿宾', target: '钰慧', mutual: false }
+    ],
+    sceneDescription: '阿宾与钰慧发生明确插入性交，主图保持外视角，插入点放入局部放大图。',
+    sceneNsfwRating: 'nsfw_explicit'
+  });
+
+  assert.match(penetrationResult.basePrompt, /magnified inset/i);
+  assert.match(penetrationResult.basePrompt, /x-ray inset/i);
+  assert.doesNotMatch(penetrationResult.finalNegative, /comic panel/i);
+  assert.doesNotMatch(penetrationResult.finalNegative, /inset image/i);
+
+  const handjobResult = buildFinalImagePrompt('1girl, 1boy, handjob', {
+    sceneCharacters: [
+      { name: '淑华', gender: 'woman', position: 'left' },
+      { name: '明健', gender: 'man', position: 'right' }
+    ],
+    sceneInteractions: '淑华用手上下套弄明健暴露的性器官',
+    sceneInteractionActions: [
+      { action: 'handjob', source: '淑华', target: '明健', mutual: false }
+    ],
+    sceneDescription: '淑华在围墙边给明健手交，没有插入动作。',
+    sceneNsfwRating: 'nsfw_explicit'
+  });
+
+  assert.doesNotMatch(handjobResult.basePrompt, /magnified inset/i);
+  assert.match(handjobResult.finalNegative, /comic panel/i);
 });
 
 test('three-character interaction graph keeps both directed contacts and partner positions', () => {
@@ -1263,19 +1579,23 @@ test('pipeline retries the complete scene flow three times for any error', async
     llmCalls++;
     throw new Error(`arbitrary failure ${llmCalls}`);
   };
+  pipeline.projectProgress = {
+    setChapterStatus() {},
+    save: async () => {}
+  };
 
-  await assert.rejects(
-    pipeline.generateSingleScene(
-      { chapter: '测试章', content: '女子站在庭院中' },
-      scene,
-      [scene],
-      '测试章',
-      'test-llm',
-      'nai-diffusion-4-5-full'
-    ),
-    /连续 3 次执行失败: arbitrary failure 3/
+  const result = await pipeline.generateSingleScene(
+    { chapter: '测试章', content: '女子站在庭院中' },
+    scene,
+    [scene],
+    '测试章',
+    'test-llm',
+    'nai-diffusion-4-5-full'
   );
+
+  assert.equal(result, false);
   assert.equal(llmCalls, 3);
+  assert.equal(scene.status, 'FAILED');
 });
 
 test('scene normalization removes interactions whose endpoints are not characters', () => {

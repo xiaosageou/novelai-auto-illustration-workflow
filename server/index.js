@@ -512,6 +512,60 @@ app.post('/api/projects/:projectName/character-dna-slices/:sliceIndex/update', a
   }
 });
 
+// 覆盖更新指定角色 DNA tags
+app.put('/api/projects/:projectName/characters/:characterName/tags', async (req, res) => {
+  try {
+    const { projectName, characterName } = req.params;
+    const tags = String(req.body?.tags || '');
+    const pipeline = await getPipeline(projectName);
+
+    if (!characterName) {
+      return res.status(400).json({ error: "角色名不能为空" });
+    }
+
+    const updated = pipeline.projectProgress.setCharacterDNATags(characterName, tags);
+    if (!updated) {
+      return res.status(404).json({ error: `未找到角色「${characterName}」` });
+    }
+
+    await pipeline.projectProgress.save();
+    res.json({
+      success: true,
+      message: `角色「${characterName}」DNA tags 已更新`,
+      character: pipeline.projectProgress.getGlobalCharacters()[characterName]
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 覆盖更新指定角色结构化 DNA 特征
+app.put('/api/projects/:projectName/characters/:characterName/features', async (req, res) => {
+  try {
+    const { projectName, characterName } = req.params;
+    const features = req.body?.features || {};
+    const pipeline = await getPipeline(projectName);
+
+    if (!characterName) {
+      return res.status(400).json({ error: "角色名不能为空" });
+    }
+
+    const updated = pipeline.projectProgress.setCharacterDNAFeatures(characterName, features);
+    if (!updated) {
+      return res.status(404).json({ error: `未找到角色「${characterName}」` });
+    }
+
+    await pipeline.projectProgress.save();
+    res.json({
+      success: true,
+      message: `角色「${characterName}」结构化 DNA 已更新`,
+      character: pipeline.projectProgress.getGlobalCharacters()[characterName]
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 启动生图流水线
 app.post('/api/projects/:projectName/pipeline/start', async (req, res) => {
   try {
@@ -600,7 +654,7 @@ app.post('/api/projects/:projectName/chapters/:chapterKey/selected-scenes', asyn
       .catch(error => {
         broadcastSSE('pipeline_failed', { projectName, message: error.message });
       });
-    res.json({ success: true, message: `已提交 ${selections.length} 处正文选段，正在依次生成场景与插图` });
+    res.json({ success: true, message: `已提交 ${selections.length} 处正文选段，正在一次性生成全部场景与插图` });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -660,6 +714,23 @@ app.post('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx/regen
     });
 
     res.json({ success: true, message: `单场景 #${sceneIdx} 描述重构与重绘已在后台启动` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx', async (req, res) => {
+  try {
+    const { projectName, chapterKey, sceneIdx } = req.params;
+    const pipeline = await getPipeline(projectName);
+
+    if (pipeline.isRunning) {
+      return res.status(400).json({ error: "流水线正在运行中，请先暂停后再删除场景" });
+    }
+
+    const effectiveKey = pipeline.projectProgress.getEffectiveChapKeyByRaw(chapterKey);
+    const result = await pipeline.deleteScene(effectiveKey, sceneIdx);
+    res.json({ success: true, message: `场景 #${sceneIdx} 已删除`, ...result });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

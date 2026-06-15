@@ -157,6 +157,12 @@ NSFW 等级定义与视觉描述原则：
 - 等级2 nsfw_moderate：visual_description 中必须包含明确的裸露视觉细节（如裸背、裸肩、半裸、胸部轮廓等）。
 - 等级3 nsfw_explicit：visual_description 中必须包含完整且极度露骨的 explicit 画面物理细节（包括脱掉裤子露出性器官、性行为的具体姿态等），精确对应正文实际描写的物理行为，不可含糊其辞或用意境规避。
 
+【插入场景局部放大规则】
+- 只有当画面存在明确的性器官插入/性交/penetration 时，才允许并且应当规划“主图正常外视角 + 一个局部放大图”的结构。
+- 放大图内部可以使用 x-ray / cutaway / 剖面来说明插入接触点，但主图本体禁止直接做 x-ray。
+- 手交、抚摸、接吻、脱衣、普通裸露、非插入式性挑逗等场景禁止规划放大图或 x-ray。
+- 若属于插入场景，请在 cinematography、visual_entities、must_show 中明确体现：主图、单个 inset、以及 inset 内的 x-ray 接触点。
+
 ---
 
 请严格以以下合规的 JSON 数组格式返回，不要有任何解释或 Markdown 代码块：
@@ -319,6 +325,13 @@ The scene card includes a nsfw_rating field. You MUST follow these rules strictl
 
 NSFW tags must be faithful to the scene description. Do not escalate or invent content beyond the source.
 
+## Penetration Inset Rule (MANDATORY)
+For scenes with actual genital penetration, use a main external scene plus exactly one localized magnified inset focused on the penetration site.
+- The main image must remain an external full-scene or half-body view. Do NOT place x-ray or cutaway anatomy directly on the main figure.
+- The inset may use x-ray / cutaway / cross-section only inside the magnified callout, and only to clarify the penetration point.
+- Apply this only to real penetration scenes. Do NOT add inset panels or x-ray to handjob, breast play, oral teasing, kissing, groping, undressing, or any non-penetrative act.
+- Prefer tags and wording such as inset_image, magnified_inset, penetration_focus, xray_inset, cutaway_inset, main_scene_plus_inset, external_view_main_frame. Avoid split_screen, multi-panel comic page, or several unrelated insets.
+
 ## NSFW Perspective & Camera Rules (MANDATORY)
 For every scene whose nsfw_rating is not "sfw", base_prompt MUST include a clear perspective description chosen from the actual physical staging. Use one primary viewpoint such as pov, from_above, from_below, side_view, over_the_shoulder, or three-quarter_view, plus at least one supporting spatial tag such as dynamic_perspective, foreshortening, depth_of_field, or foreground_background.
 - Keep the important body interaction, overlap, and contact point visible and spatially readable.
@@ -405,6 +418,7 @@ Write tags inside base_prompt in this exact order:
 17. For every interaction whose requires_pairing=true, append an interaction_actions item. Assign the active character role "source" and the passive recipient "target", using the exact same action tag for both. If both characters actively perform the action on each other, assign "mutual" to both. Use an empty array when a character is not part of an interaction. One character may have multiple interaction actions. Do not write source#, target#, or mutual# inside prompt; the pipeline adds the official NAI V4.5 prefixes.
 18. Each character negative_prompt must contain only traits that should be excluded from that character. In multi-character scenes, use it to prevent another character's distinctive hair color, clothing, gender traits, accessories, or species features from leaking into this character.
 19. For scenes with three or more characters, treat interactions as a directed graph. Emit one interaction_requirements entry per distinct physical contact and keep precise actions separate instead of collapsing penetration, sucking, touching, grabbing, or kissing into generic sex. Give every visible character a distinct left/center/right and foreground/midground/background placement. A character may participate in multiple interaction_actions. Use mutual only when both participants actively perform the same action; directional sexual or contact actions must retain source and target.
+20. If and only if the scene contains actual genital penetration, enforce one magnified inset with x-ray/cutaway inside the inset only. Keep the main figure anatomically normal from the outside view. Do not use this structure for non-penetrative NSFW scenes.
 
 ## Spatial Contact Action Rules
 For actions where one object touches or targets a precise body part, encode all four elements:
@@ -444,8 +458,13 @@ export const DEFAULT_REGENERATE_SCENE_PROMPT = `<sandbox mode="cinematic_storybo
 - 【正反例对比（严格以此为基准）】：
   * 错误写法（含蓄修饰/艺术意境）：
     “楚门站在昏睡的天使少女身旁，神色急迫且带着一丝贪婪，正低头解开自己的裤带。画面构图将楚门平凡甚至有些猥琐的动作与少女圣洁、不可侵犯的姿态放在同一框内。”
-  * 正确写法（极其直白/物理机位）：
+ * 正确写法（极其直白/物理机位）：
     “楚门站在昏睡的天使少女身旁，神色急迫。他已经脱下了自己的裤子（裤子褪至大腿），露出了自己的勃起的性器官（雄根）。画面特写楚门暴露出来的性器官（雄根）和旁边昏睡的天使少女。”
+
+【插入场景局部放大规则】
+- 只有明确存在性器官插入/性交/penetration 时，才允许并应当规划“主图正常外视角 + 一个局部放大 inset”的构图。
+- inset 内可以使用 x-ray / cutaway / 剖面来说明插入点；主图本体禁止直接做 x-ray。
+- 非插入场景（手交、抚摸、接吻、脱衣、普通裸露、挑逗）禁止生成放大图或 x-ray。
 
 请严格以下方的 JSON 格式返回单个 JSON 对象，不要包装在数组中，不要输出任何解释或 Markdown 代码块：
 {

@@ -274,4 +274,25 @@ export class ProjectProgress {
       }
     }
   }
+
+  setCharacterDNATags(name, tags = "") {
+    if (!this.data || !name) return false;
+    const char = this.data.global_characters?.[name];
+    if (!char) return false;
+    char.tags = uniqueClean(String(tags || '').split(/[,，]/)).join(", ");
+    return true;
+  }
+
+  setCharacterDNAFeatures(name, features = {}) {
+    if (!this.data || !name) return false;
+    const char = this.data.global_characters?.[name];
+    if (!char) return false;
+    const defaultFeatures = Object.fromEntries(DNA_FEATURE_KEYS.map(key => [key, []]));
+    const mergedFeatures = mergeFeatureTags(defaultFeatures, features || {});
+    char.features = mergedFeatures;
+    char.tags = uniqueClean(
+      DNA_FEATURE_KEYS.flatMap(key => Array.isArray(mergedFeatures[key]) ? mergedFeatures[key] : [])
+    ).join(", ");
+    return true;
+  }
 }

@@ -563,9 +563,8 @@ export class PipelineManager {
         this.writeLog(`[Pipeline] 章节「${chap.chapter}」发生异常中断: ${error.message}`, "error");
         this.projectProgress.setChapterFailed(chapKey, error.message, scenes);
         await this.projectProgress.save();
-        this.isRunning = false;
         await this.runPriorityJobs();
-        throw error;
+        continue;
       }
     }
 
@@ -602,9 +601,19 @@ export class PipelineManager {
       }
     }
 
-    throw new Error(`场景 ${scene.scene_idx} 连续 3 次执行失败: ${lastError?.message || "未知错误"}`, {
-      cause: lastError
+    const finalErrorMessage = `场景 ${scene.scene_idx} 连续 3 次执行失败: ${lastError?.message || "未知错误"}`;
+    this.writeLog(`  [场景 ${scene.scene_idx}] ${finalErrorMessage}，已跳过当前场景继续流水线。`, "warning");
+    scene.status = 'FAILED';
+    this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
+    await this.projectProgress.save();
+    this.uiProgressCallback?.({
+      chapter: chap.chapter,
+      chapterKey: chapKey,
+      sceneIdx: scene.scene_idx,
+      totalScenes: scenes.length,
+      imagePath: 'failed'
     });
+    return false;
   }
 
   async generateSingleSceneAttempt(chap, scene, scenes, chapKey, llmModel, naiModel, attempt) {
@@ -998,8 +1007,12 @@ export class PipelineManager {
         await this.projectProgress.save();
 
         this.writeLog(`[Pipeline] 描述重构完成，开始重绘场景 #${sceneIdx}...`);
-        await this.generateSingleScene(chap, scene, scenes, chapKey, naiTagsModel, naiModel);
-        this.writeLog(`[Pipeline] 单场景重构并重绘成功: 章节「${chap.chapter}」场景 #${sceneIdx}`);
+        const ok = await this.generateSingleScene(chap, scene, scenes, chapKey, naiTagsModel, naiModel);
+        if (ok) {
+          this.writeLog(`[Pipeline] 单场景重构并重绘成功: 章节「${chap.chapter}」场景 #${sceneIdx}`);
+        } else {
+          this.writeLog(`[Pipeline] 单场景重构并重绘失败后已跳过: 章节「${chap.chapter}」场景 #${sceneIdx}`, "warning");
+        }
       } catch (err) {
         this.writeLog(`[Pipeline] 单场景重构并重绘失败: ${err.message}`, "error");
         scene.status = 'FAILED';
@@ -1017,6 +1030,63 @@ export class PipelineManager {
         this.isRunning = false;
       }
     })();
+  }
+
+  /**
+   * 删除单个场景，并清理对应图片与后续编号
+   */
+  async deleteScene(chapterKey, sceneIdx) {
+    await this.initialize();
+    if (this.isRunning) {
+      throw new Error("流水线正在运行中，请先暂停后再删除场景。");
+    }
+
+    const chap = this.chapters.find(c => {
+      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+      return this.projectProgress.normalizeKey(ck) === this.projectProgress.normalizeKey(chapterKey);
+    });
+    if (!chap) throw new Error(`找不到章节: ${chapterKey}`);
+
+    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const currentProgress = this.projectProgress.getCompletedChapters()[chapKey];
+    if (!currentProgress || !Array.isArray(currentProgress.scenes)) {
+      throw new Error(`该章节尚未生成过场景卡片，无法删除场景。`);
+    }
+
+    const scenes = currentProgress.scenes;
+    const targetIdx = scenes.findIndex(scene => scene.scene_idx === parseInt(sceneIdx));
+    if (targetIdx === -1) {
+      throw new Error(`找不到场景索引: ${sceneIdx}`);
+    }
+
+    const [removedScene] = scenes.splice(targetIdx, 1);
+    if (removedScene?.image_path) {
+      const projectRoot = path.resolve(this.projBase);
+      const imagePath = path.resolve(projectRoot, removedScene.image_path);
+      const relative = path.relative(projectRoot, imagePath);
+      if (!relative.startsWith('..') && !path.isAbsolute(relative) && existsSync(imagePath)) {
+        await fs.unlink(imagePath);
+      }
+    }
+
+    scenes.forEach((scene, index) => {
+      scene.scene_idx = index + 1;
+    });
+
+    const nextStatus = scenes.length === 0
+      ? 'pending'
+      : (scenes.every(scene => scene.status === 'SUCCESS') ? 'completed' : 'generating');
+
+    this.projectProgress.setChapterStatus(chapKey, nextStatus, scenes);
+    await this.projectProgress.save();
+
+    this.writeLog(`[Pipeline] 已删除场景: 章节「${chap.chapter}」场景 #${sceneIdx}`);
+    return {
+      chapter: chap.chapter,
+      chapterKey: chapKey,
+      deletedSceneIdx: parseInt(sceneIdx),
+      remainingScenes: scenes.length
+    };
   }
 
   async appendSelectedParagraphScenes(chapterKey, selections = []) {
@@ -1059,15 +1129,27 @@ export class PipelineManager {
 
     this.isRunning = true;
     try {
-      for (const selection of selectedParagraphs) {
-        const generated = await this.sceneExtractor.regenerateSingleSceneCard(
-          chap.chapter,
-          chap.content,
-          nextSceneIdx,
-          selection.text,
-          sceneModel,
-          selection.paragraph
-        );
+      const generatedScenes = await this.sceneExtractor.regenerateSelectedParagraphScenes(
+        chap.chapter,
+        chap.content,
+        selectedParagraphs,
+        sceneModel
+      );
+
+      for (let index = 0; index < selectedParagraphs.length; index++) {
+        const selection = selectedParagraphs[index];
+        const generated = generatedScenes[index] || normalizeSceneCard({
+          scene_idx: nextSceneIdx,
+          trigger_sentence: selection.text,
+          nsfw_rating: 'sfw',
+          visual_description: selection.paragraph || selection.text || chap.chapter,
+          environment: '',
+          cinematography: '',
+          characters: [],
+          interactions: '',
+          plot_traces: '',
+          text_elements: ''
+        });
         scenes.push({
           ...normalizeSceneCard(generated),
           scene_idx: nextSceneIdx,

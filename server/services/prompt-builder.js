@@ -8,22 +8,33 @@ import {
 import { applyRules } from './regex-mapper.js';
 
 // 常量定义
-const 自动去水印负面提示词 = 'text, typography, letters, words, numbers, caption, label, plaque, sign, inscription, Chinese characters, English letters, calligraphy, seal, stamp, watermark, signature, username, logo, artist name, web address, url, copyright, subtitle, subtitles, title, poster text, comic text, manga text, dialogue text, speech bubble, dialogue box, word balloon, UI overlay, interface text, date stamp, QR code, barcode, poster layout, magazine cover, comic page, comic panel, manga panel, callout, text box, white oval bubble, black outline bubble, overlay, title card, credits, framed text, floating label, name tag';
+const 自动去水印负面提示词 = 'text, watermark, signature, logo, subtitles, qr code';
 const 全局无文字正向提示词 = 'single coherent image, natural subject focus, clear silhouette';
 const 默认中国人物正向提示词 = 'Chinese person, East Asian facial features, Chinese facial structure, black or dark brown hair, dark brown eyes';
-const 默认中国人物负向提示词 = 'Caucasian face, European face, Western face, blonde hair, blue eyes, foreigner, white person, Nordic features';
+const 默认中国人物负向提示词 = 'western face, blonde hair, blue eyes';
 const 部位特写单图正向提示词 = 'single image, one frame, one subject only, extreme close-up macro crop, target fills the frame, plain blurred background, cohesive macro composition';
 const NSFW部位特写画质增强提示词 = 'adult character only, target anatomy only, macro anatomical close-up, ultra tight crop, wet skin texture, glistening moisture, natural skin folds, soft rim light, specular highlights, subsurface scattering, single private anatomy focus, no minors';
-const 部位特写反拼贴负面提示词 = 'multiple views, split screen, panel layout, comic panel, comic page, manga panel, story panels, collage, contact sheet, reference sheet, character sheet, turnaround, comparison sheet, montage, triptych, diptych, quadriptych, grid layout, tiled composition, thumbnails, bottom strip, inset image, duplicate anatomy, mirrored anatomy, repeated organ, multiple organs, multiple nipples, extra nipples, multiple genitals, extra genitals';
-const 默认NovelAI负面提示词 = 'photorealistic, realistic, 3d, rendering, unreal engine, octane render, real life, photography, bokeh, lowres, bad anatomy, bad hands, text, typography, letters, words, numbers, caption, label, plaque, sign, inscription, Chinese characters, English letters, calligraphy, seal, stamp, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, logo, blurry, artist name, border, out of frame, subtitles, title, poster text, speech bubble, dialogue box, word balloon, UI overlay, date stamp, QR code, barcode';
-const 默认表情稳定负面提示词 = 'bared teeth, clenched teeth, sharp teeth, fangs, crazy grin, exaggerated grin, distorted mouth, crooked mouth, facial distortion, grimace';
+const 部位特写反拼贴负面提示词 = 'multiple views, split screen, panel layout, comic panel, comic page, manga panel, collage, contact sheet, character sheet, duplicate anatomy, mirrored anatomy, multiple organs, extra organs, extra nipples';
+const 默认NovelAI负面提示词 = 'lowres, bad anatomy, bad hands, text, watermark, signature, blurry, extra fingers';
+const 默认表情稳定负面提示词 = 'bared teeth, clenched teeth, crazy grin, distorted mouth, grimace';
+const 插入局部放大正向提示词 = 'single inset image, magnified inset, penetration focus, x-ray inset, cutaway inset, external view main frame, main scene plus one inset, genital penetration visible in inset only';
+const 插入局部放大豁免负面词 = new Set([
+  'comic panel',
+  'comic page',
+  'manga panel',
+  'story panels',
+  'panel layout',
+  'inset image',
+  'callout',
+  'framed text'
+]);
 
 const 构图附加负面提示词映射 = {
-  头像: 'multiple people, two people, three people, group, crowd, extra person, extra face, extra head, duplicate face, twin, clones, split screen, collage, contact sheet, reference sheet, character sheet, multiple views, comic panel, manga panel, story panels, panel layout, poster layout, speech bubble, dialogue box, word balloon, UI overlay, text box',
-  半身: 'multiple people, two people, three people, group, crowd, extra person, extra face, extra head, duplicate body, twin, clones, split screen, collage, contact sheet, reference sheet, character sheet, multiple views, comic panel, manga panel, story panels, panel layout, poster layout, speech bubble, dialogue box, word balloon, UI overlay, text box',
-  立绘: 'multiple people, two people, three people, group, crowd, extra person, extra face, extra head, duplicate body, twin, clones, split screen, collage, contact sheet, reference sheet, character sheet, multiple views, comic panel, manga panel, story panels, panel layout, poster layout, speech bubble, dialogue box, word balloon, UI overlay, text box',
+  头像: 'multiple people, extra person, extra face, split screen, collage, contact sheet, comic panel, manga panel, text box',
+  半身: 'multiple people, extra person, extra face, split screen, collage, contact sheet, comic panel, manga panel, text box',
+  立绘: 'multiple people, extra person, extra face, split screen, collage, contact sheet, comic panel, manga panel, text box',
   部位特写: 部位特写反拼贴负面提示词,
-  场景: 'split screen, collage, contact sheet, comic panel, manga panel, story panels, panel layout, poster layout, speech bubble, dialogue box, word balloon, UI overlay, text box, character sheet, multiple views'
+  场景: 'split screen, collage, contact sheet, comic panel, manga panel, panel layout, text box, multiple views'
 };
 
 function 是否角色构图(composition) {
@@ -166,6 +177,33 @@ function 构建动作关系负面提示词(prompt = '') {
     return 'swinging sword, swinging weapon, sword pointing away, lowered sword, sheathed sword, sword on back, sword behind body, hidden blade, cropped weapon, missing sword, self-directed sword, sword near own neck, gap between sword and throat';
   }
   return '';
+}
+
+function 是插入局部放大场景({
+  sceneNsfwRating = 'sfw',
+  sceneDescription = '',
+  sceneInteractions = '',
+  sceneInteractionActions = [],
+  sceneMustShow = []
+} = {}) {
+  if (String(sceneNsfwRating || 'sfw') !== 'nsfw_explicit') return false;
+  const actionHit = (Array.isArray(sceneInteractionActions) ? sceneInteractionActions : [])
+    .some(action => /^(?:sex|penetration|vaginal|anal|paizuri|fellatio|irrumatio)$/i.test(String(action?.action || '').trim()));
+  const text = [
+    sceneDescription,
+    sceneInteractions,
+    ...(Array.isArray(sceneMustShow) ? sceneMustShow : [])
+  ].join(' ');
+  const negatedInsertion = /没有插入|未插入|无插入|非插入|not penetration|without penetration|no penetration/i.test(text);
+  const insertionHit = !negatedInsertion && /插入|交合|性交|肉棒插入|阴茎插入|penetration|inserted|vaginal_penetration|anal_penetration/i.test(text);
+  const nonPenetrativeOnly = /手交|handjob|footjob|乳交|paizuri|口交|fellatio|blowjob/i.test(text) && !insertionHit;
+  return !nonPenetrativeOnly && (actionHit || insertionHit);
+}
+
+function 允许插入放大图负面词(prompt = '') {
+  return 按逗号拆分提示词(prompt)
+    .filter(token => !插入局部放大豁免负面词.has(token.toLowerCase()))
+    .join(', ');
 }
 
 function 构建场景环境增强提示词(environment = '', description = '', composition = '场景') {
@@ -380,6 +418,11 @@ function 标准化互动动作(action = '') {
   return mappings.find(([pattern]) => pattern.test(String(action || '')))?.[1] || '';
 }
 
+function 是强方向性交互动作(action = '') {
+  const normalized = 标准化互动动作(action);
+  return /^(?:sex|penetration|vaginal(?:_penetration)?|anal(?:_penetration)?|handjob|footjob|blowjob|fellatio|irrumatio|paizuri|cunnilingus)$/i.test(normalized);
+}
+
 export function buildCharacterInteractionTags(sceneCharacters = [], interactionActions = [], structuredCharacterPrompts = []) {
   const characters = Array.isArray(sceneCharacters) ? sceneCharacters : [];
   const tags = characters.map(() => []);
@@ -390,7 +433,7 @@ export function buildCharacterInteractionTags(sceneCharacters = [], interactionA
     if (!action) continue;
     const sourceIndex = byName.get(String(item?.source || '').trim().toLowerCase());
     const targetIndex = byName.get(String(item?.target || '').trim().toLowerCase());
-    const isMutual = item?.mutual === true;
+    const isMutual = item?.mutual === true && !是强方向性交互动作(action);
     if (isMutual) {
       if (sourceIndex !== undefined) tags[sourceIndex].push(`mutual#${action}`);
       if (targetIndex !== undefined) tags[targetIndex].push(`mutual#${action}`);
@@ -413,6 +456,7 @@ export function buildCharacterInteractionTags(sceneCharacters = [], interactionA
       const role = String(interaction?.role || '').toLowerCase();
       const action = 标准化互动动作(interaction?.action);
       if (action && ['source', 'target', 'mutual'].includes(role)) {
+        if (role === 'mutual' && 是强方向性交互动作(action)) continue;
         tags[characterIndex].push(`${role}#${action}`);
       }
     }
@@ -460,7 +504,7 @@ function 构建互动自然语言(sceneCharacters = [], interactionActions = [])
     const sourceIndex = byName.get(String(interaction?.source || '').trim().toLowerCase());
     const targetIndex = byName.get(String(interaction?.target || '').trim().toLowerCase());
     const actionWords = action.replace(/_/g, ' ');
-    const isMutual = interaction?.mutual === true;
+    const isMutual = interaction?.mutual === true && !是强方向性交互动作(action);
     if (isMutual) {
       if (sourceIndex !== undefined && targetIndex !== undefined) {
         sentences[sourceIndex].push(`${subjectFor(characters[sourceIndex])} mutually performs ${actionWords} with ${partnerFor(characters[targetIndex], targetIndex)}${positionFor(characters[sourceIndex])}.`);
@@ -903,6 +947,13 @@ export function buildFinalImagePrompt(prompt, {
   const structuredPromptList = Array.isArray(structuredCharacterPrompts) ? structuredCharacterPrompts : [];
   const heightConstraints = 构建多人身高约束(sceneCharacterList, characterAnchors);
   const spatialGuidance = buildCharacterSpatialGuidance(sceneCharacterList, sceneInteractions, sceneInteractionActions);
+  const needsPenetrationInset = 是插入局部放大场景({
+    sceneNsfwRating,
+    sceneDescription,
+    sceneInteractions,
+    sceneInteractionActions,
+    sceneMustShow
+  });
   const interactionTags = buildCharacterInteractionTags(
     sceneCharacterList,
     sceneInteractionActions,
@@ -993,6 +1044,7 @@ export function buildFinalImagePrompt(prompt, {
     heightConstraints.basePrompt,
     spatialGuidance.basePrompt,
     balancedMultiCharacter.positive,
+    needsPenetrationInset ? 插入局部放大正向提示词 : '',
     postPositive,
     normalizedArtistStylePrompt
   );
@@ -1047,6 +1099,10 @@ export function buildFinalImagePrompt(prompt, {
     extraNegative
   )));
 
+  const resolvedFinalNegative = needsPenetrationInset
+    ? 允许插入放大图负面词(finalNegative)
+    : finalNegative;
+
   return {
     prePositive,
     mainPositive: cleanPrompt,
@@ -1057,7 +1113,7 @@ export function buildFinalImagePrompt(prompt, {
     characterCenters: spatialGuidance.centers,
     estimatedPromptTokens: budgetedPrompts.estimatedTokens,
     finalPositive,
-    finalNegative,
+    finalNegative: resolvedFinalNegative,
     size: finalSize,
     width,
     height
