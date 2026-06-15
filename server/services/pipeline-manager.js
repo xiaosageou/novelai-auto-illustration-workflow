@@ -96,7 +96,9 @@ export class PipelineManager {
       system_prompt_extract_scenes: this.config.system_prompt_extract_scenes || "",
       system_prompt_character_dna: this.config.system_prompt_character_dna || "",
       system_prompt_advanced_prompt: this.config.system_prompt_advanced_prompt || "",
-      danbooru_mcp_url: this.config.danbooru_mcp_url || ""
+      system_prompt_advanced_prompt_nl: this.config.system_prompt_advanced_prompt_nl || "",
+      danbooru_mcp_url: this.config.danbooru_mcp_url || "",
+      prompt_style: this.config.prompt_style || "natural_language"
     });
   }
 
@@ -686,7 +688,8 @@ export class PipelineManager {
       sceneMustShow: scene.must_show || [],
       sceneMustNotShow: scene.must_not_show || [],
       artistStylePrompt: this.config.artistStylePrompt || "",
-      useCharacterSegments: false
+      useCharacterSegments: false,
+      useNaturalLanguage: (this.config.prompt_style || "natural_language") === "natural_language"
     });
 
     // E. 更新 UI 冷却通知回调

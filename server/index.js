@@ -10,7 +10,7 @@ import { EPUBBuilder, insertIllustrationsAfterParagraphs } from './services/epub
 import { globalCooldownManager } from './utils/cooldown.js';
 import { readJson, writeJsonAtomic } from './utils/db.js';
 import { parseFile } from './utils/file-parser.js';
-import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT } from './utils/default-prompts.js';
+import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL, DEFAULT_ADVANCED_PROMPT_LEGACY } from './utils/default-prompts.js';
 
 const DEFAULT_CONFIG = {
   llm_url: "",
@@ -42,7 +42,9 @@ const DEFAULT_CONFIG = {
   nai_url: "https://image.novelai.net",
   system_prompt_extract_scenes: DEFAULT_EXTRACT_SCENES_PROMPT,
   system_prompt_character_dna: DEFAULT_CHARACTER_DNA_PROMPT,
-  system_prompt_advanced_prompt: DEFAULT_ADVANCED_PROMPT
+  system_prompt_advanced_prompt: DEFAULT_ADVANCED_PROMPT_LEGACY,
+  system_prompt_advanced_prompt_nl: DEFAULT_ADVANCED_PROMPT_V45_NL,
+  prompt_style: 'natural_language'
 };
 
 // Configure global proxy dispatcher for global fetch

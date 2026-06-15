@@ -7,6 +7,43 @@ import {
 } from '../utils/prompt-cleaner.js';
 import { applyRules } from './regex-mapper.js';
 
+/**
+ * V4.5 自然语言模式权重守卫
+ * - 将所有 X.XX:: 权重中超过 maxWeight 的部分除降到 maxWeight
+ * - 限制最多保留 maxCount 个权重注郊（保留权重值最高的）
+ * @param {string} prompt - 原始提示词字符串
+ * @param {number} maxWeight - 权重上限（默认 1.3）
+ * @param {number} maxCount - 最大权重注郊数量（默认 2）
+ */
+export function clampNaturalLanguageWeights(prompt, maxWeight = 1.3, maxCount = 2) {
+  if (!prompt) return prompt;
+  // 匹配类似 1.45::text:: 或 -3::text:: 的权重语法
+  const weightPattern = /(-?\d+(?:\.\d+)?)::(.*?)::/g;
+  const allWeights = [];
+  let match;
+  while ((match = weightPattern.exec(prompt)) !== null) {
+    const value = parseFloat(match[1]);
+    allWeights.push({ value, full: match[0], index: match.index });
+  }
+
+  if (allWeights.length === 0) return prompt;
+
+  // 正权重（>0）按权重值排序，只保留 maxCount 个
+  const positiveWeights = allWeights.filter(w => w.value > 0).sort((a, b) => b.value - a.value);
+  const keepSet = new Set(positiveWeights.slice(0, maxCount).map(w => w.full));
+
+  // 对整个字符串进行替换
+  let result = prompt.replace(/(-?\d+(?:\.\d+)?)::(.*?)::/g, (m, weight, text) => {
+    const value = parseFloat(weight);
+    if (value <= 0) return m; // 负权重保留不动
+    if (!keepSet.has(m)) return text; // 超出数量限制的，去掉权重只保留文本
+    if (value > maxWeight) return `${maxWeight}::${text}::`; // 将权重限制到上限
+    return m; // 保留不变
+  });
+
+  return result;
+}
+
 // 常量定义
 const 自动去水印负面提示词 = 'text, watermark, signature, logo, subtitles, qr code';
 const 全局无文字正向提示词 = 'single coherent image, natural subject focus, clear silhouette';
@@ -864,7 +901,8 @@ export function buildFinalImagePrompt(prompt, {
   sceneMustShow = [],
   sceneMustNotShow = [],
   artistStylePrompt = '', // 全局画师/风格串，追加在 NAI 正向提示词末尾
-  useCharacterSegments = true // 是否启用 NAI V4/V4.5 的角色分段语法 (|)
+  useCharacterSegments = true, // 是否启用 NAI V4/V4.5 的角色分段语法 (|)
+  useNaturalLanguage = false  // V4.5 自然语言模式：跳过标签清洗逻辑，启用权重守卫
 } = {}) {
   // 1. 尺寸自适应装配
   let finalSize = (size || '').trim();
@@ -908,11 +946,21 @@ export function buildFinalImagePrompt(prompt, {
     .sort((a, b) => a.center.x - b.center.x || a.center.y - b.center.y || a.index - b.index)
     .map(item => item.char);
   let cleanPrompt = conservativeCompletionNaiWeights(prompt);
-  const hardPositive = (Array.isArray(sceneMustShow) ? sceneMustShow : [])
+  const rawMustShow = (Array.isArray(sceneMustShow) ? sceneMustShow : [])
     .map(item => String(item || '').trim())
-    .filter(item => item && /^[\x20-\x7E]+$/.test(item))
-    .map(item => `1.45::${item}::`)
-    .join(', ');
+    .filter(item => item && /^[\x20-\x7E]+$/.test(item));
+
+  let hardPositive;
+  if (useNaturalLanguage) {
+    // V4.5 自然语言模式：将 must_show 元素用较低权重（1.2::）标注，最多取前 2 个
+    // 超过 2 个的元素直接以自然语言写入 cleanPrompt，不加权重
+    hardPositive = rawMustShow.slice(0, 2).map(item => `1.2::${item}::`).join(', ');
+    const extraMustShow = rawMustShow.slice(2).join(', ');
+    if (extraMustShow) cleanPrompt = mergePositivePromptParts(cleanPrompt, extraMustShow);
+  } else {
+    // 旧版标签模式：保留原有的 1.45:: 高权重逻辑
+    hardPositive = rawMustShow.map(item => `1.45::${item}::`).join(', ');
+  }
   cleanPrompt = mergePositivePromptParts(cleanPrompt, hardPositive);
   cleanPrompt = 移除无依据的高风险表情(cleanPrompt, sceneCharacterList);
   if (sceneCharacterList.length >= 2) {
@@ -1020,9 +1068,18 @@ export function buildFinalImagePrompt(prompt, {
     return finalCharPrompt;
   }).filter(Boolean);
 
-  let fallbackCharacterPrompts = (characterPrompts.length > 0 ? characterPrompts : charDnaTagsArray)
-    .map(removeNonEnglishPromptTokens)
-    .filter(Boolean);
+  let fallbackCharacterPrompts;
+  if (useNaturalLanguage) {
+    // V4.5 自然语言模式：不过滤中文（已经是英语句子），不过滤 non-English
+    // 但进行权重守卫
+    fallbackCharacterPrompts = (characterPrompts.length > 0 ? characterPrompts : charDnaTagsArray)
+      .map(p => clampNaturalLanguageWeights(p))
+      .filter(Boolean);
+  } else {
+    fallbackCharacterPrompts = (characterPrompts.length > 0 ? characterPrompts : charDnaTagsArray)
+      .map(removeNonEnglishPromptTokens)
+      .filter(Boolean);
+  }
   const characterCountPrompt = 构建人物数量标签(sceneCharacterList);
   const exactCharacterCountPrompt = 构建精确人物数量约束(sceneCharacterList);
   const actionEmphasisPrompt = 构建动作关系强调提示词(cleanPrompt);
@@ -1049,10 +1106,23 @@ export function buildFinalImagePrompt(prompt, {
     normalizedArtistStylePrompt
   );
   // 对 basePrompt 应用全局正则规则
-  basePrompt = removeNonEnglishPromptTokens(normalizeArtistTag(applyRules(prompt, basePrompt)));
-  const budgetedPrompts = enforceV45PromptBudget(basePrompt, fallbackCharacterPrompts);
-  basePrompt = budgetedPrompts.basePrompt;
-  fallbackCharacterPrompts = budgetedPrompts.characterPrompts;
+  if (useNaturalLanguage) {
+    // V4.5 自然语言模式：不过滤 non-English，只进行权重守卫
+    basePrompt = clampNaturalLanguageWeights(normalizeArtistTag(applyRules(prompt, basePrompt)));
+  } else {
+    basePrompt = removeNonEnglishPromptTokens(normalizeArtistTag(applyRules(prompt, basePrompt)));
+  }
+  if (useNaturalLanguage) {
+    // V4.5 自然语言模式：就算紧凑预算，也不对自然语言句子进行逆向拆分
+    // 只对画师风格串和验证不会化层的部分执行 budget
+    const budgetedPrompts = enforceV45PromptBudget(basePrompt, fallbackCharacterPrompts);
+    basePrompt = budgetedPrompts.basePrompt;
+    fallbackCharacterPrompts = budgetedPrompts.characterPrompts;
+  } else {
+    const budgetedPrompts = enforceV45PromptBudget(basePrompt, fallbackCharacterPrompts);
+    basePrompt = budgetedPrompts.basePrompt;
+    fallbackCharacterPrompts = budgetedPrompts.characterPrompts;
+  }
   let finalPositive = "";
 
   if (useCharacterSegments && fallbackCharacterPrompts.length > 0) {
@@ -1063,7 +1133,12 @@ export function buildFinalImagePrompt(prompt, {
     finalPositive = mergePositivePromptParts(basePrompt, joinedCharDna);
   }
 
-  finalPositive = removeNonEnglishPromptTokens(normalizeArtistTag(finalPositive));
+  if (useNaturalLanguage) {
+    // V4.5 自然语言模式：不过滤 non-English，对整个最终字符串执行权重守卫
+    finalPositive = clampNaturalLanguageWeights(normalizeArtistTag(finalPositive));
+  } else {
+    finalPositive = removeNonEnglishPromptTokens(normalizeArtistTag(finalPositive));
+  }
 
   // 6. 组合负面提示词：基础画质/文字压制 + 构图约束 + 全局/场景额外负面词
   let compositionNegative = 构图附加负面提示词映射[composition] || '';

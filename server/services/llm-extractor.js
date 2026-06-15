@@ -1,7 +1,7 @@
 import { robustJsonLoads, checkTextCompleteness } from '../utils/json-repair.js';
 import { conservativeCompletionNaiWeights, cleanCharacterDnaTags, isTransientTag, preserveTextForLlm } from '../utils/prompt-cleaner.js';
 import { normalizeSceneCard, buildSceneDescription, getSceneCharacters } from '../utils/scene-structure.js';
-import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_REGENERATE_SCENE_PROMPT } from '../utils/default-prompts.js';
+import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL, DEFAULT_ADVANCED_PROMPT_LEGACY, DEFAULT_REGENERATE_SCENE_PROMPT } from '../utils/default-prompts.js';
 import { searchTagsLocal, getRelatedTagsLocal } from './local-tag-searcher.js';
 import { searchTagsMcp, getRelatedTagsMcp } from './danbooru-mcp-searcher.js';
 
@@ -648,24 +648,28 @@ function buildSceneExtractionUserContent({
 }
 
 export class LLMExtractor {
-  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_regenerate_scene = "", danbooru_mcp_url = "" } = {}) {
+  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", danbooru_mcp_url = "", prompt_style = "natural_language" } = {}) {
     this.baseUrl = baseUrl.trim().replace(/\/+$/, "");
     this.apiKey = apiKey.trim();
     this.system_prompt_extract_scenes = system_prompt_extract_scenes;
     this.system_prompt_character_dna = system_prompt_character_dna;
     this.system_prompt_advanced_prompt = system_prompt_advanced_prompt;
+    this.system_prompt_advanced_prompt_nl = system_prompt_advanced_prompt_nl;
     this.system_prompt_regenerate_scene = system_prompt_regenerate_scene;
     this.danbooru_mcp_url = danbooru_mcp_url;
+    this.prompt_style = prompt_style || "natural_language";
   }
 
-  updateConfig(baseUrl, apiKey, system_prompt_extract_scenes, system_prompt_character_dna, system_prompt_advanced_prompt, system_prompt_regenerate_scene, danbooru_mcp_url) {
+  updateConfig(baseUrl, apiKey, system_prompt_extract_scenes, system_prompt_character_dna, system_prompt_advanced_prompt, system_prompt_regenerate_scene, danbooru_mcp_url, system_prompt_advanced_prompt_nl, prompt_style) {
     this.baseUrl = (baseUrl || "").trim().replace(/\/+$/, "");
     this.apiKey = (apiKey || "").trim();
     if (system_prompt_extract_scenes !== undefined) this.system_prompt_extract_scenes = system_prompt_extract_scenes;
     if (system_prompt_character_dna !== undefined) this.system_prompt_character_dna = system_prompt_character_dna;
     if (system_prompt_advanced_prompt !== undefined) this.system_prompt_advanced_prompt = system_prompt_advanced_prompt;
+    if (system_prompt_advanced_prompt_nl !== undefined) this.system_prompt_advanced_prompt_nl = system_prompt_advanced_prompt_nl;
     if (system_prompt_regenerate_scene !== undefined) this.system_prompt_regenerate_scene = system_prompt_regenerate_scene;
     if (danbooru_mcp_url !== undefined) this.danbooru_mcp_url = danbooru_mcp_url;
+    if (prompt_style !== undefined) this.prompt_style = prompt_style;
   }
 
   getHeaders() {
@@ -1387,14 +1391,19 @@ export class LLMExtractor {
    * @param {Array}  characterAnchors - 已匹配的角色 DNA 信息数组
    * @param {string} model - 使用的 LLM 模型名
    * @param {function} onProgressLog - UI 进度日志回调函数
+   * @param {string} promptStyleOverride - 可选覆盖 prompt 模式：'natural_language' | 'danbooru_tags'
    * @returns {{ orientation: string, prompt: string, negative_prompt: string }}
    */
-  async generateScenePromptAdvanced(sceneDesc, characterAnchors = [], model = "deepseek-chat", onProgressLog = null) {
+  async generateScenePromptAdvanced(sceneDesc, characterAnchors = [], model = "deepseek-chat", onProgressLog = null, promptStyleOverride = null) {
     if (!this.apiKey) {
       throw new Error("请先填写有效的 API Key！");
     }
 
-    // ── 1. 启动 DanbooruSearchOnline MCP 智能标签检索流 ──
+    // 决定当前使用的 prompt 模式
+    const promptStyle = promptStyleOverride || this.prompt_style || "natural_language";
+    const isNaturalLanguage = promptStyle === "natural_language";
+
+    // ── 1. 标签检索流（自然语言模式下跳过 MCP，因为 LLM 不再从候选中拼接标签）──
     let candidatesStr = "";
     const fallbackBaseTags = [];
     const fallbackCharacterTags = new Map();
@@ -1404,6 +1413,10 @@ export class LLMExtractor {
       target.push(value);
     };
     try {
+      // 自然语言模式下跳过 MCP 检索：LLM 直接使用自然语言描述，不需要 Danbooru 候选标签
+      if (isNaturalLanguage) {
+        onProgressLog?.(`[NL模式] 自然语言模式已启用，跳过 MCP 标签检索流。LLM 将直接生成自然语言描述。`);
+      } else {
       onProgressLog?.(`[MCP] 正在为场景启用 DanbooruSearchOnline MCP 智能标签检索流...`);
 
       const isStructuredScene = sceneDesc && typeof sceneDesc === 'object';
@@ -1522,6 +1535,8 @@ export class LLMExtractor {
         onProgressLog?.(`[MCP] DanbooruSearchOnline 检索完毕，未发现匹配的候选标签。`);
       }
 
+      } // end of !isNaturalLanguage block
+
     } catch (mcpErr) {
       onProgressLog?.(`[MCP] DanbooruSearchOnline 工作流异常或超时: ${mcpErr.message}，将优雅降级为大模型直译...`);
     }
@@ -1535,7 +1550,10 @@ export class LLMExtractor {
         const tags = anchor.正面提示词 || "";
         return `• ${name}：${tags}`;
       }).join("\n");
-      characterContext = `\n\n【本场景涉及角色外貌参考（已预先提取的 Danbooru tags）】\n${charLines}`;
+      const contextLabel = isNaturalLanguage
+        ? "【本场景涉及角色外貌参考（用于理解角色特征，请在自然语言句子中自然融入这些特征）】"
+        : "【本场景涉及角色外貌参考（已预先提取的 Danbooru tags）】";
+      characterContext = `\n\n${contextLabel}\n${charLines}`;
     }
 
     let mcpContext = "";
@@ -1543,20 +1561,49 @@ export class LLMExtractor {
       mcpContext = `\n\n【DanbooruSearchOnline MCP 标准标签参考】\n以下仅用于校验拼写或补充难以直译的服装、物件、动作标签。请以场景语义为主，只选择明确匹配的少量标签，禁止为了使用候选而引入无关概念。\n${candidatesStr}`;
     }
 
-    const systemPrompt = ensureAdvancedPromptContract(this.system_prompt_advanced_prompt || DEFAULT_ADVANCED_PROMPT);
+    // 根据 prompt_style 选择对应的 system prompt
+    let rawSystemPrompt;
+    if (isNaturalLanguage) {
+      // 自然语言模式：优先使用用户自定义 NL 版 system prompt，其次用内置 V45_NL 版
+      rawSystemPrompt = this.system_prompt_advanced_prompt_nl || DEFAULT_ADVANCED_PROMPT_V45_NL;
+    } else {
+      // 旧版标签模式：使用用户自定义 legacy 版 system prompt，其次用内置 LEGACY 版
+      rawSystemPrompt = this.system_prompt_advanced_prompt || DEFAULT_ADVANCED_PROMPT_LEGACY;
+    }
+    const systemPrompt = ensureAdvancedPromptContract(rawSystemPrompt);
     const scenePayload = this.formatStructuredSceneForLlm(sceneDesc);
 
     // 提取 nsfw_rating 和 plot_traces，显式告知 LLM
     const nsfwRating = (typeof sceneDesc === 'object' ? sceneDesc.nsfw_rating : '') || 'sfw';
     const plotTraces = (typeof sceneDesc === 'object' ? sceneDesc.plot_traces : '') || '';
-    const nsfwLine = `【NSFW 等级】${nsfwRating}（请严格按照系统 Prompt 中对该等级的 tag 规则生成，不得遗漏也不得升级）`;
+    const nsfwLine = isNaturalLanguage
+      ? `【NSFW 等级】${nsfwRating}（请严格按照 system prompt 中对该等级的描述规则，使用自然语言描述对应的视觉状态，不得遗漏也不得升级）`
+      : `【NSFW 等级】${nsfwRating}（请严格按照系统 Prompt 中对该等级的 tag 规则生成，不得遗漏也不得升级）`;
     const nsfwPerspectiveLine = nsfwRating !== 'sfw'
-      ? "【NSFW 透视与机位（必须）】base_prompt 必须根据人物相对位置与动作接触关系加入一个明确主视角（如 pov、from_above、from_below、side_view、over_the_shoulder、three-quarter_view），并加入至少一个空间透视 tag（如 dynamic_perspective、foreshortening、depth_of_field、foreground_background）。必须让关键身体互动、遮挡层次和接触点清楚可见；只能使用一套连贯机位，禁止 multiple_views、split_screen 或互相矛盾的角度。"
+      ? (isNaturalLanguage
+          ? "【NSFW 镜头机位（必须）】base_prompt 中必须用自然语言描述一个明确的主视角（如 'viewed from a three-quarter angle'、'shot from slightly above'、'side view showing both characters'），并描述至少一个空间纵深细节（如 'with foreground/background depth'、'foreshortening visible'）。必须让关键身体互动、遮挡层次和接触点清楚可读；只描述一套连贯机位，禁止矛盾的视角描述。"
+          : "【NSFW 透视与机位（必须）】base_prompt 必须根据人物相对位置与动作接触关系加入一个明确主视角（如 pov、from_above、from_below、side_view、over_the_shoulder、three-quarter_view），并加入至少一个空间透视 tag（如 dynamic_perspective、foreshortening、depth_of_field、foreground_background）。必须让关键身体互动、遮挡层次和接触点清楚可见；只能使用一套连贯机位，禁止 multiple_views、split_screen 或互相矛盾的角度。")
       : '';
     const penetrationInsetLine = nsfwRating === 'nsfw_explicit'
       ? "【插入场景放大图规则（必须判断）】若场景包含真实的性器官插入/性交/penetration，必须采用“主图正常外视角 + 仅一个局部放大 inset”的结构：主图中禁止直接做 x-ray/cutaway，x-ray 或剖面只能出现在放大 inset 内，并聚焦插入接触点。若不是插入场景（如手交、抚摸、接吻、脱衣、非插入式口交/挑逗），则禁止加入 inset_image、magnified_inset、xray_inset。"
       : '';
-    const plotTracesLine = plotTraces ? `【剧情痕迹 tags（必须全部写入对应角色的 prompt 中）】${plotTraces}` : '';
+    const plotTracesLine = plotTraces
+      ? (isNaturalLanguage
+          ? `【剧情痕迹（必须融入对应角色的自然语言描述中）】${plotTraces}  — 请用自然语言句子表达这些细节，例如 'Her hair is disheveled, with tears still drying on her cheeks.'，而不是把 tags 直接拼到 prompt 里。`
+          : `【剧情痕迹 tags（必须全部写入对应角色的 prompt 中）】${plotTraces}`)
+      : '';
+
+    // 自然语言模式下的额外强制指令
+    const nlModeEnforcementLine = isNaturalLanguage
+      ? [
+          "【⚠️ 自然语言模式 — 强制规则】",
+          "1. 输出的 base_prompt 和每个 character_prompts[].prompt 必须是连贯的英文句子或短语，绝对禁止使用逗号分隔的 Danbooru 标签列表。",
+          "2. 权重语法 :: 最多使用 2 次，且数值必须在 1.1 到 1.3 之间，绝对禁止超过 1.3 的权重。只对极难生成的关键元素使用权重。",
+          "3. 每个概念只描述一次，绝对禁止在 base_prompt 和 character_prompts 之间重复同一特征。",
+          "4. negative_prompt 保持简短精准（一句话或几个词），绝对禁止输出 300 词的万能负面词列表。",
+          "5. interaction_actions[].action 字段仍必须是 Danbooru 标签格式（如 sword_tip_touching_throat），因为 pipeline 需要这些标签来注入 source#/target# 前缀。这是唯一允许使用标签的字段。"
+        ].join("\n")
+      : '';
 
     const userMessage = [
       "请为以下中文小说插画场景生成 NovelAI 生图参数。",
@@ -1573,6 +1620,7 @@ export class LLMExtractor {
       nsfwPerspectiveLine,
       penetrationInsetLine,
       plotTracesLine,
+      nlModeEnforcementLine,
       "",
       "【结构化/兼容场景描述】",
       scenePayload,

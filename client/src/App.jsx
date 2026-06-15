@@ -36,7 +36,9 @@ function App() {
     vibeNormalizeStrengths: true,
     danbooru_mcp_url: "https://sakizuki-danboorusearch.hf.space/mcp/mcp,https://sakizuki-danboorusearchonline.ms.show/mcp/mcp",
     nai_url: "https://image.novelai.net",
-    artistStylePrompt: ""
+    artistStylePrompt: "",
+    prompt_style: "natural_language",
+    system_prompt_advanced_prompt_nl: ""
   });
 
   const [projects, setProjects] = useState([]);
@@ -2192,8 +2194,69 @@ function App() {
                       style={{ width: '100%', height: '170px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
                     />
                   </div>
+
+                  {/* 生图模式开关 */}
+                  <div style={{ background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.3)', borderRadius: '8px', padding: '12px 14px' }}>
+                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '8px', fontWeight: '600' }}>生图 Prompt 风格模式</label>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      <label
+                        style={{
+                          flex: 1, display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px',
+                          borderRadius: '6px', cursor: 'pointer',
+                          background: config.prompt_style !== 'danbooru_tags' ? 'rgba(168,85,247,0.2)' : 'rgba(255,255,255,0.04)',
+                          border: config.prompt_style !== 'danbooru_tags' ? '1px solid rgba(168,85,247,0.6)' : '1px solid var(--border-light)',
+                          transition: 'all 0.2s'
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="prompt_style"
+                          value="natural_language"
+                          checked={config.prompt_style !== 'danbooru_tags'}
+                          onChange={() => setConfig({ ...config, prompt_style: 'natural_language' })}
+                          style={{ accentColor: 'var(--color-pink)' }}
+                        />
+                        <div>
+                          <div style={{ fontSize: '0.82rem', fontWeight: '600', color: 'white' }}>✨ V4.5 自然语言模式（推荐）</div>
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>LLM 输出连贯英文短句，适配 T5 编码器。跳过 MCP 标签检索。权重语法最高 1.3。</div>
+                        </div>
+                      </label>
+                      <label
+                        style={{
+                          flex: 1, display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px',
+                          borderRadius: '6px', cursor: 'pointer',
+                          background: config.prompt_style === 'danbooru_tags' ? 'rgba(168,85,247,0.2)' : 'rgba(255,255,255,0.04)',
+                          border: config.prompt_style === 'danbooru_tags' ? '1px solid rgba(168,85,247,0.6)' : '1px solid var(--border-light)',
+                          transition: 'all 0.2s'
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="prompt_style"
+                          value="danbooru_tags"
+                          checked={config.prompt_style === 'danbooru_tags'}
+                          onChange={() => setConfig({ ...config, prompt_style: 'danbooru_tags' })}
+                          style={{ accentColor: 'var(--color-pink)' }}
+                        />
+                        <div>
+                          <div style={{ fontSize: '0.82rem', fontWeight: '600', color: 'white' }}>🏷️ Danbooru 标签模式（旧版）</div>
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>LLM 输出逗号分隔的 Danbooru 标签串。使用 MCP 检索标签候选。</div>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>3. 高级生图参数生成 System Prompt</label>
+                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>3a. 高级生图参数生成 System Prompt（✨ V4.5 自然语言版）</label>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>LLM 使用自然语言句子描述场景和角色。适用于 V4.5 Full / T5 编码器模型。权重上限 1.3。</div>
+                    <textarea 
+                      value={config.system_prompt_advanced_prompt_nl || ""}
+                      onChange={(e) => setConfig({ ...config, system_prompt_advanced_prompt_nl: e.target.value })}
+                      style={{ width: '100%', height: '200px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(168,85,247,0.35)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>3b. 高级生图参数生成 System Prompt（🏷️ 旧版 Danbooru 标签版）</label>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>用于将具体的场景描述加人物 DNA 信息转换为结构化生图参数（正向、负向与构图）</div>
                     <textarea 
                       value={config.system_prompt_advanced_prompt || ""}
