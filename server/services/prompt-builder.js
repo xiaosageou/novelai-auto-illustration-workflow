@@ -840,22 +840,50 @@ function 构建后置正向提示词(options) {
   const characterCount = Array.isArray(options?.角色列表) ? options.角色列表.length : 0;
   const promptText = String(options?.主体提示词 || '');
   const isMultiCharacter = characterCount >= 2 || /\b(2girls|3girls|4girls|5girls|6girls|2boys|3boys|4boys|5boys|6boys|1girl\s*,\s*1boy|1boy\s*,\s*1girl|multiple characters|group)\b/i.test(promptText);
+  const useNL = options?.useNaturalLanguage;
 
-  const 单人角色构图增强 = isMultiCharacter ? '' : options?.构图 === '头像'
-    ? 'single character only, solo portrait, one face, one head, centered headshot, no other people'
-    : options?.构图 === '半身'
-      ? 'single character only, solo upper body portrait, one person, no other people'
-      : options?.构图 === '立绘'
-        ? 'single character only, solo full body character, one person, no other people, detailed background'
-        : options?.构图 === '场景'
-          ? 'wide establishing shot, detailed environment, immersive atmosphere, cinematic composition, scenic view'
-          : '';
+  let 单人角色构图增强 = '';
+  if (useNL) {
+    单人角色构图增强 = isMultiCharacter ? '' : options?.构图 === '头像'
+      ? 'solo portrait.'
+      : options?.构图 === '半身'
+        ? 'solo upper body portrait.'
+        : options?.构图 === '立绘'
+          ? 'solo full body character.'
+          : options?.构图 === '场景'
+            ? 'wide establishing shot, cinematic composition.'
+            : 'single character only.';
+  } else {
+    单人角色构图增强 = isMultiCharacter ? '' : options?.构图 === '头像'
+      ? 'single character only, solo portrait, one face, one head, centered headshot, no other people'
+      : options?.构图 === '半身'
+        ? 'single character only, solo upper body portrait, one person, no other people'
+        : options?.构图 === '立绘'
+          ? 'single character only, solo full body character, one person, no other people, detailed background'
+          : options?.构图 === '场景'
+            ? 'wide establishing shot, detailed environment, immersive atmosphere, cinematic composition, scenic view'
+            : '';
+  }
+
+  const 无文字提示词 = useNL ? 'single coherent image.' : 全局无文字正向提示词;
+
+  let 部位特写画质 = '';
+  let 部写单图 = '';
+  if (options?.构图 === '部位特写') {
+    if (useNL) {
+      部位特写画质 = 'macro close-up focus, wet skin texture, rim light.';
+      部写单图 = 'single image macro crop.';
+    } else {
+      部位特写画质 = NSFW部位特写画质增强提示词;
+      部写单图 = 部位特写单图正向提示词;
+    }
+  }
   
   return mergePositivePromptParts(
     单人角色构图增强,
-    全局无文字正向提示词,
-    options?.构图 === '部位特写' ? NSFW部位特写画质增强提示词 : '',
-    options?.构图 === '部位特写' ? 部位特写单图正向提示词 : ''
+    无文字提示词,
+    部位特写画质,
+    部写单图
   );
 }
 
@@ -973,9 +1001,13 @@ export function buildFinalImagePrompt(prompt, {
   const needsChinesePerson = 是否角色构图(composition)
     && !提示词明确外国人(`${extraPositive}, ${cleanPrompt}`);
 
+  const finalChinesePersonPrompt = needsChinesePerson
+    ? (useNaturalLanguage ? 'East Asian features' : 默认中国人物正向提示词)
+    : '';
+
   const prePositive = mergePositivePromptParts(
     extraPositive,
-    needsChinesePerson ? 默认中国人物正向提示词 : ''
+    finalChinesePersonPrompt
   );
 
   const postPositive = 构建后置正向提示词({
@@ -983,7 +1015,8 @@ export function buildFinalImagePrompt(prompt, {
     场景类型: sceneType,
     尺寸: finalSize,
     角色列表: sceneCharacterList,
-    主体提示词: cleanPrompt
+    主体提示词: cleanPrompt,
+    useNaturalLanguage: useNaturalLanguage
   });
 
   // 4. 角色 DNA 标签 (Prompts Bundle) 计算与注入
@@ -1028,13 +1061,23 @@ export function buildFinalImagePrompt(prompt, {
     const scanText = `${char?.appearance || ''} ${char?.clothing || ''} ${char?.pose || ''}`;
 
     let finalCharPrompt;
-    if (structuredPrompt) {
-      // 有 LLM 英文 structured prompt：直接使用，再叠加 DNA 锚点
-      finalCharPrompt = mergePositivePromptParts(structuredPrompt, dnaTags);
+    if (useNaturalLanguage) {
+      if (structuredPrompt) {
+        // 自然语言模式：直接使用 LLM 输出的英文描述，不拼接原始逗号分隔的 DNA 标签
+        finalCharPrompt = structuredPrompt;
+      } else {
+        const genderTag = 角色性别标签(char?.gender);
+        finalCharPrompt = mergePositivePromptParts(genderTag, dnaTags);
+      }
     } else {
-      // 无 structured prompt：仅使用 DNA 锚点，添加性别标签
-      const genderTag = 角色性别标签(char?.gender);
-      finalCharPrompt = mergePositivePromptParts(genderTag, dnaTags);
+      if (structuredPrompt) {
+        // 旧版标签模式：直接使用，再叠加 DNA 锚点
+        finalCharPrompt = mergePositivePromptParts(structuredPrompt, dnaTags);
+      } else {
+        // 无 structured prompt：仅使用 DNA 锚点，添加性别标签
+        const genderTag = 角色性别标签(char?.gender);
+        finalCharPrompt = mergePositivePromptParts(genderTag, dnaTags);
+      }
     }
 
     finalCharPrompt = 应用角色场景状态覆盖(finalCharPrompt, char);
@@ -1098,10 +1141,10 @@ export function buildFinalImagePrompt(prompt, {
     cleanPrompt,
     actionEmphasisPrompt,
     environmentEnhancementPrompt,
-    heightConstraints.basePrompt,
+    useNaturalLanguage ? 'consistent character scale, same ground plane.' : heightConstraints.basePrompt,
     spatialGuidance.basePrompt,
-    balancedMultiCharacter.positive,
-    needsPenetrationInset ? 插入局部放大正向提示词 : '',
+    useNaturalLanguage ? 'single unified composition, shared central action, overlapping silhouettes, connected pose.' : balancedMultiCharacter.positive,
+    needsPenetrationInset ? (useNaturalLanguage ? 'single magnified inset showing cross-section penetration focus.' : 插入局部放大正向提示词) : '',
     postPositive,
     normalizedArtistStylePrompt
   );
@@ -1112,14 +1155,15 @@ export function buildFinalImagePrompt(prompt, {
   } else {
     basePrompt = removeNonEnglishPromptTokens(normalizeArtistTag(applyRules(prompt, basePrompt)));
   }
+  let budgetedPrompts;
   if (useNaturalLanguage) {
     // V4.5 自然语言模式：就算紧凑预算，也不对自然语言句子进行逆向拆分
     // 只对画师风格串和验证不会化层的部分执行 budget
-    const budgetedPrompts = enforceV45PromptBudget(basePrompt, fallbackCharacterPrompts);
+    budgetedPrompts = enforceV45PromptBudget(basePrompt, fallbackCharacterPrompts);
     basePrompt = budgetedPrompts.basePrompt;
     fallbackCharacterPrompts = budgetedPrompts.characterPrompts;
   } else {
-    const budgetedPrompts = enforceV45PromptBudget(basePrompt, fallbackCharacterPrompts);
+    budgetedPrompts = enforceV45PromptBudget(basePrompt, fallbackCharacterPrompts);
     basePrompt = budgetedPrompts.basePrompt;
     fallbackCharacterPrompts = budgetedPrompts.characterPrompts;
   }

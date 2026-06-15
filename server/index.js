@@ -48,7 +48,7 @@ const DEFAULT_CONFIG = {
 };
 
 // Configure global proxy dispatcher for global fetch
-const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || 'http://127.0.0.1:7890';
+const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
 if (proxyUrl) {
   try {
     const proxyAgent = new ProxyAgent(proxyUrl);
@@ -637,6 +637,65 @@ app.post('/api/projects/:projectName/chapters/:chapterKey/generate', async (req,
   }
 });
 
+const selectedScenesQueues = new Map();
+
+function getSelectedScenesQueue(projectName) {
+  if (!selectedScenesQueues.has(projectName)) {
+    selectedScenesQueues.set(projectName, {
+      running: false,
+      items: []
+    });
+  }
+  return selectedScenesQueues.get(projectName);
+}
+
+async function processSelectedScenesQueue(projectName) {
+  const queue = getSelectedScenesQueue(projectName);
+  if (queue.running) return;
+  queue.running = true;
+
+  let pipeline;
+  try {
+    pipeline = await getPipeline(projectName);
+
+    while (queue.items.length > 0) {
+      if (pipeline.isRunning) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+
+      const job = queue.items.shift();
+      try {
+        console.log(`[Queue] 开始处理排队中的选段生图任务 (项目: ${projectName}, 章节: ${job.chapterKey})`);
+        broadcastSSE('pipeline_started', { projectName });
+        const result = await pipeline.appendSelectedParagraphScenes(job.chapterKey, job.selections);
+        if (queue.items.length === 0) {
+          broadcastSSE('pipeline_completed', { projectName, type: 'selected_scenes', ...result });
+        } else {
+          broadcastSSE('log', { text: `🟢 选段生图任务已完成，队列中还剩 ${queue.items.length} 个任务等待执行...`, type: 'info' });
+        }
+      } catch (error) {
+        console.error(`[Queue] 选段生图任务异常:`, error);
+        if (queue.items.length === 0) {
+          broadcastSSE('pipeline_failed', { projectName, message: error.message });
+        } else {
+          broadcastSSE('log', { text: `❌ 选段生图任务失败: ${error.message}，将继续处理下一个排队任务。`, type: 'error' });
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[Queue] 选段生成队列执行异常:`, err);
+  } finally {
+    queue.running = false;
+    if (pipeline) {
+      const redrawQueue = getRedrawQueue(projectName);
+      if (redrawQueue && redrawQueue.items.length > 0 && !pipeline.isRunning) {
+        void processRedrawQueue(projectName, pipeline, redrawQueue);
+      }
+    }
+  }
+}
+
 app.post('/api/projects/:projectName/chapters/:chapterKey/selected-scenes', async (req, res) => {
   try {
     const { projectName, chapterKey } = req.params;
@@ -644,19 +703,14 @@ app.post('/api/projects/:projectName/chapters/:chapterKey/selected-scenes', asyn
     if (selections.length === 0) {
       return res.status(400).json({ error: "请至少选择一段正文" });
     }
-    const pipeline = await getPipeline(projectName);
-    if (pipeline.isRunning) {
-      return res.status(400).json({ error: "流水线正在运行中，请稍后再提交正文选段" });
-    }
 
-    pipeline.appendSelectedParagraphScenes(chapterKey, selections)
-      .then(result => {
-        broadcastSSE('pipeline_completed', { projectName, type: 'selected_scenes', ...result });
-      })
-      .catch(error => {
-        broadcastSSE('pipeline_failed', { projectName, message: error.message });
-      });
-    res.json({ success: true, message: `已提交 ${selections.length} 处正文选段，正在一次性生成全部场景与插图` });
+    const queue = getSelectedScenesQueue(projectName);
+    queue.items.push({ chapterKey, selections });
+
+    // 异步执行队列处理
+    void processSelectedScenesQueue(projectName);
+
+    res.json({ success: true, message: `已提交 ${selections.length} 处正文选段，已加入生图队列（当前排队位置: ${queue.items.length}）` });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

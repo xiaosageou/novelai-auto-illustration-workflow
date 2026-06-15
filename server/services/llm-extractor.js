@@ -758,11 +758,14 @@ export class LLMExtractor {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         onProgressLog?.(`[LLM] 场景提炼第 ${attempt}/3 次请求...`);
-        const res = await fetch(url, {
-          method: "POST",
+        const res = await postChatCompletionWith429Retry({
+          url,
           headers: this.getHeaders(),
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(180000) // 180s 超时
+          payload,
+          timeoutMs: 180000,
+          max429Retries: 5,
+          initialDelaySeconds: 10,
+          logPrefix: "[LLM Extractor] 场景提炼"
         });
 
         if (res.status !== 200) {
@@ -796,6 +799,9 @@ export class LLMExtractor {
         return parsed;
       } catch (error) {
         lastError = error;
+        if (error?.code === 'LLM_429_EXHAUSTED') {
+          break;
+        }
         if (attempt < 3) {
           onProgressLog?.(`[LLM] 第 ${attempt}/3 次场景提炼失败，优先重试: ${error.message}`, "warning");
           console.warn(`[LLM Extractor] 场景提炼第 ${attempt}/3 次失败: ${error.message}`);
@@ -882,7 +888,7 @@ export class LLMExtractor {
             { role: "user", content: buildUserContent(attempt) }
           ],
           temperature: attempt === 1 ? 0.3 : 0.1,
-          max_tokens: attempt === 1 ? 4000 : 2400,
+          max_tokens: 32768,
           stream: false
         };
 
@@ -1118,11 +1124,14 @@ export class LLMExtractor {
     console.log(`[LLM Extractor] 正在提取全局角色 DNA (切片长度: ${sliceText.length} 字)...`);
 
     try {
-      const res = await fetch(url, {
-        method: "POST",
+      const res = await postChatCompletionWith429Retry({
+        url,
         headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(180000)
+        payload,
+        timeoutMs: 180000,
+        max429Retries: 5,
+        initialDelaySeconds: 10,
+        logPrefix: "[LLM Extractor] 角色DNA提取"
       });
 
       if (res.status !== 200) {
@@ -1233,11 +1242,14 @@ export class LLMExtractor {
     };
 
     try {
-      const res = await fetch(url, {
-        method: "POST",
+      const res = await postChatCompletionWith429Retry({
+        url,
         headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(60000)
+        payload,
+        timeoutMs: 60000,
+        max429Retries: 5,
+        initialDelaySeconds: 10,
+        logPrefix: "[LLM Extractor] 检索分词重写"
       });
       if (res.status === 200) {
         const resData = await res.json();
@@ -1636,7 +1648,7 @@ export class LLMExtractor {
         { role: "user", content: userMessage }
       ],
       temperature: 0.3,
-      max_tokens: 4000,
+      max_tokens: 32768,
       stream: false
     };
 
@@ -1825,16 +1837,19 @@ export class LLMExtractor {
                 { role: "user", content: retryUserMessage }
               ],
               temperature: 0.1,
-              max_tokens: 4000,
+              max_tokens: 32768,
               stream: false
             };
 
         try {
-          const res = await fetch(url, {
-            method: "POST",
+          const res = await postChatCompletionWith429Retry({
+            url,
             headers: this.getHeaders(),
-            body: JSON.stringify(attemptPayload),
-            signal: AbortSignal.timeout(120000)
+            payload: attemptPayload,
+            timeoutMs: 120000,
+            max429Retries: 5,
+            initialDelaySeconds: 10,
+            logPrefix: "[LLM Extractor] 高级参数生成"
           });
           if (res.status !== 200) throw new Error(`HTTP Error ${res.status}`);
 
@@ -1858,6 +1873,9 @@ export class LLMExtractor {
           return normalized;
         } catch (attemptError) {
           lastAttemptError = attemptError;
+          if (attemptError?.code === 'LLM_429_EXHAUSTED') {
+            break;
+          }
           if (attempt < 3) {
             onProgressLog?.(
               `[LLM] 第 ${attempt}/3 次参数生成失败，优先重试（下一次使用精简上下文）: ${attemptError.message}`,
@@ -1937,11 +1955,14 @@ export class LLMExtractor {
     };
 
     try {
-      const res = await fetch(url, {
-        method: "POST",
+      const res = await postChatCompletionWith429Retry({
+        url,
         headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(120000)
+        payload,
+        timeoutMs: 120000,
+        max429Retries: 5,
+        initialDelaySeconds: 10,
+        logPrefix: "[LLM Extractor] 词组转化"
       });
 
       if (res.status !== 200) {

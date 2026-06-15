@@ -221,6 +221,8 @@ function App() {
         return;
       }
 
+      setPipelineRunning(true);
+
       const sceneKey = `${data.chapterKey}_${data.sceneIdx}`;
       
       if (data.imagePath === null) {
@@ -287,6 +289,10 @@ function App() {
       if (activeProject) {
         fetchProjectDetails(activeProject);
       }
+    });
+
+    eventSource.addEventListener('pipeline_started', (e) => {
+      setPipelineRunning(true);
     });
 
     eventSource.addEventListener('pipeline_completed', (e) => {
@@ -1795,7 +1801,7 @@ function App() {
                     </div>
                     <button
                       className="btn-primary"
-                      disabled={!textSelections.length || pipelineRunning || isSubmittingSelections}
+                      disabled={!textSelections.length || isSubmittingSelections}
                       onClick={generateSelectedParagraphs}
                     >
                       <Sparkles size={15} />

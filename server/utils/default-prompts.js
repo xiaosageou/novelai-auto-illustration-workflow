@@ -363,7 +363,7 @@ You MUST output a single valid JSON object (no markdown fences, no extra text):
     }
   ],
   "prompt": "fallback combined comma-separated English Danbooru tags (used when character segments are disabled)",
-  "negative_prompt": "comma-separated English tags to add to negative prompt (leave empty string if nothing special)"
+  "negative_prompt": "comma-separated English tags to add to negative prompt (leave empty string if nothing special. For private/secluded scenes, you MUST include 'silhouette, shadow, shadowy figure, outline of person, foreground silhouette, foreground shadow' to prevent unwanted foreground outlines/shadowy figures)"
 }
 
 ## Orientation Selection Rules
@@ -437,8 +437,11 @@ Use "touching/pressed against" for contact. Do not use "near", which permits a v
 
 ## Negative Prompt Rules
 Only add scene-specific negatives relevant to this particular scene.
-Examples: if scene is daytime → add night, dark; if single character → add multiple_characters; if indoor → add outdoors.
-Leave empty string "" if no specific negatives are needed beyond pipeline defaults.
+- Examples: if scene is daytime → add night, dark; if single character → add multiple_characters; if indoor → add outdoors.
+- Environmental Privacy Evaluation: Evaluate if the scene takes place in a private, secluded environment where no other people / onlookers are present or expected (e.g., a private bedroom, study room, private bath).
+  * If it is a private/secluded scene, you MUST include the following tags in the global 'negative_prompt' to prevent unwanted foreground outlines or shadowy figures blocking the view: "silhouette, shadow, shadowy figure, outline of person, foreground silhouette, foreground shadow".
+  * If the scene takes place in a public or semi-public environment (even if NSFW/explicit, e.g., outdoors, public streets, corridors, classrooms, public transport), do NOT add these silhouette prevention tags, as background/foreground silhouettes or shadows of other people are allowed or expected.
+Leave empty string "" if no specific negatives are needed beyond pipeline defaults (except for private scenes where the silhouette prevention tags are mandatory).
 
 ## Critical
 Output ONLY the JSON object. No explanations, no markdown, no extra text whatsoever.`;
@@ -490,6 +493,11 @@ Before writing your final output, silently check:
 | nsfw_moderate   | Add "nsfw" as a global note in base_prompt. Describe exposed areas naturally: bare back visible, chest partially uncovered, etc. |
 | nsfw_explicit   | Add "nsfw, explicit" in base_prompt. Describe the explicit physical state in direct, objective language. Match the source exactly — do NOT invent acts not in the source. |
 
+## Environmental Privacy Evaluation (MANDATORY)
+Evaluate if the scene takes place in a private, secluded environment where no other people / onlookers are present or expected (e.g., a private bedroom, study room, private bath).
+- If it is a private/secluded scene, you MUST include the following tags in the global 'negative_prompt' to prevent unwanted foreground outlines or shadowy figures blocking the view: "silhouette, shadow, shadowy figure, outline of person, foreground silhouette, foreground shadow".
+- If the scene takes place in a public or semi-public environment (even if NSFW/explicit, e.g., outdoors, public streets, corridors, classrooms, public transport), do NOT add these silhouette prevention tags, as background/foreground silhouettes or shadows of other people are allowed or expected.
+
 ## Penetration Inset Rule (MANDATORY — unchanged)
 For scenes with actual genital penetration, describe a main external scene plus one localized magnified inset focused on the penetration site. Write this in natural language in base_prompt, e.g., "The main scene shows a full external view, with a single magnified inset revealing the penetration contact point in cross-section."
 
@@ -529,7 +537,7 @@ You MUST output a single valid JSON object (no markdown fences, no extra text):
       ]
     }
   ],
-  "negative_prompt": "A short, precise negative phrase for scene-specific problems only (e.g., 'daylight, cheerful mood' for a night scene). Do NOT use a generic 300-word tag list. Leave empty string if nothing specific is needed."
+  "negative_prompt": "A short, precise negative phrase for scene-specific problems only. For private/secluded scenes, you MUST include 'silhouette, shadow, shadowy figure, outline of person, foreground silhouette, foreground shadow' to prevent unwanted foreground outlines/shadowy figures."
 }
 
 ## Character Writing Guide
@@ -549,7 +557,7 @@ The interaction_actions[].action and interaction_requirements[].action fields mu
 - Do NOT add quality booster tags (masterpiece, best quality) — the pipeline handles these.
 - base_prompt must be a non-empty string.
 - character_prompts must have exactly one entry per visible scene character, in scene-card order.
-- negative_prompt must be short and scene-specific, NOT a generic tag dump.
+- negative_prompt must be short and scene-specific. For private/secluded scenes, it must include the silhouette prevention tags.
 Output ONLY the JSON object. No explanations, no markdown, no extra text whatsoever.`;
 
 // DEFAULT_ADVANCED_PROMPT 默认指向自然语言版；旧版可通过 DEFAULT_ADVANCED_PROMPT_LEGACY 访问
