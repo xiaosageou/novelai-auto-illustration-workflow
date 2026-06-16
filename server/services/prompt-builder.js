@@ -150,13 +150,6 @@ function 构建人物数量标签(sceneCharacters = []) {
 }
 
 function 构建精确人物数量约束(sceneCharacters = []) {
-  const count = Array.isArray(sceneCharacters) ? sceneCharacters.length : 0;
-  if (count === 2) {
-    return '1.45::exactly two characters::, only two people, no extra people';
-  }
-  if (count === 3) {
-    return '1.35::exactly three characters::, only three people, no extra people';
-  }
   return '';
 }
 

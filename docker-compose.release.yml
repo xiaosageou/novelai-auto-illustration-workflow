@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  novelai-illustrator:
+    # 使用在 GitHub Packages (ghcr.io) 上预编译构建好的镜像进行一键部署
+    # 部署时请根据自己上传后的仓库路径进行替换，例如: ghcr.io/your_github_username/novelai-auto-illustration-workflow:latest
+    image: ghcr.io/your_github_username/novelai-auto-illustration-workflow:latest
+    container_name: novelai-illustrator
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./projects:/app/projects
+      - ./illustrator_config.json:/app/illustrator_config.json
+    restart: always
+    environment:
+      - PORT=5001
+      - NODE_ENV=production

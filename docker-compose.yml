@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  novelai-illustrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: novelai-illustrator:latest
+    container_name: novelai-illustrator
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./projects:/app/projects
+      - ./illustrator_config.json:/app/illustrator_config.json
+    restart: always
+    environment:
+      - PORT=5001
+      - NODE_ENV=production

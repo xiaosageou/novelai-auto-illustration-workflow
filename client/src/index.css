@@ -300,6 +300,10 @@ h1, h2, h3, h4 {
   animation: pulse-left-border 2s infinite;
 }
 
+.scene-card.prompt-ready::before {
+  background: var(--color-purple);
+}
+
 @keyframes pulse-left-border {
   0%, 100% { opacity: 0.5; }
   50% { opacity: 1; }

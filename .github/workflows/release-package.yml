@@ -1,0 +1,60 @@
+name: Draft Precompiled Release Assets
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-release-zip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: 'client/package-lock.json'
+
+      - name: Install and Build Frontend
+        run: |
+          cd client
+          npm install
+          npm run build
+
+      - name: Install Production Backend Dependencies
+        run: |
+          cd server
+          npm install --omit=dev
+
+      - name: Create Precompiled Archive
+        run: |
+          mkdir -p dist_release/client
+          mkdir -p dist_release/server
+          
+          # Copy compiled frontend
+          cp -r client/dist dist_release/client/dist
+          
+          # Copy backend server files (including node_modules for zero-setup plug-and-play)
+          cp -r server/node_modules dist_release/server/node_modules
+          cp -r server/services dist_release/server/services
+          cp -r server/utils dist_release/server/utils
+          cp -r server/database dist_release/server/database
+          cp -r server/index.js dist_release/server/index.js
+          cp -r server/package.json dist_release/server/package.json
+          
+          # Copy config template
+          cp illustrator_config.example.json dist_release/
+          
+          # Pack
+          cd dist_release
+          zip -r ../novelai-illustrator-precompiled.zip .
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: novelai-illustrator-precompiled.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

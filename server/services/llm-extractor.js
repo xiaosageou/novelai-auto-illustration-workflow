@@ -18,7 +18,7 @@ export function withSystemPrefix(taskPrompt) {
 ---
 
 【当前流水线任务】
-以下任务约束与机器可读输出格式优先于上方的日常对话、颜文字、称呼和结尾互动格式。只输出当前任务明确要求的 JSON 或标签，不要添加寒暄、称呼、颜文字、解释、求夸奖或反问。
+以下任务约束与机器可读输出格式优先于上方的通用系统指令。只输出当前任务明确要求的 JSON 或标签，绝对不要添加任何寒暄、解释或代码围栏。
 
 ${prompt}`;
 }
@@ -188,7 +188,80 @@ function waitMs(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+class GlobalRateLimiter {
+  constructor(limit = 3, intervalMs = 60000) {
+    this.limit = limit;
+    this.intervalMs = intervalMs;
+    this.requests = []; // 存储请求时间戳
+    this.queue = [];    // 异步排队队列
+    this.freezeUntil = 0; // 冻结截止时间戳
+  }
+
+  // 外部通知触发了 429，锁定冻结队列一段时间以进行 API 冷却
+  notify429(penaltyMs = 20000) {
+    const newFreeze = Date.now() + penaltyMs;
+    if (newFreeze > this.freezeUntil) {
+      this.freezeUntil = newFreeze;
+      console.warn(`[LLM Rate Limiter] 外部通知触发了 429 限制。全局限流队列将锁定冻结 ${(penaltyMs / 1000).toFixed(1)} 秒以冷却 API 频控...`);
+    }
+  }
+
+  async acquire() {
+    return new Promise(async (resolve) => {
+      this.queue.push(resolve);
+      this.processQueue();
+    });
+  }
+
+  async processQueue() {
+    if (this.queue.length === 0) return;
+
+    const now = Date.now();
+
+    // 1. 如果当前处于冷却冻结状态
+    if (now < this.freezeUntil) {
+      const waitTime = this.freezeUntil - now + 100;
+      setTimeout(() => {
+        this.processQueue();
+      }, waitTime);
+      return;
+    }
+
+    // 清理窗口过期的记录
+    this.requests = this.requests.filter(timestamp => now - timestamp < this.intervalMs);
+
+    // 2. 如果未达到上限，则立即释放队列最前列的一个请求
+    if (this.requests.length < this.limit) {
+      const resolve = this.queue.shift();
+      if (resolve) {
+        this.requests.push(Date.now());
+        resolve();
+        // 递归继续处理队列中剩下的请求
+        this.processQueue();
+      }
+      return;
+    }
+
+    // 3. 若达到上限，计算需要等待多长时间（最早那次请求过期出的时间）
+    const earliestRequest = this.requests[0];
+    const waitTime = Math.max(0, this.intervalMs - (now - earliestRequest)) + 100; // 增加 100ms 缓冲余量
+
+    console.log(`[LLM Rate Limiter] 当前已达到并发上限 (${this.limit} RPM)，进入限流排队中，需等待 ${(waitTime / 1000).toFixed(1)} 秒...`);
+    
+    // 异步延迟后再重新尝试处理队列
+    setTimeout(() => {
+      this.processQueue();
+    }, waitTime);
+  }
+}
+
+// 实例化全局 3 RPM 限流排队器
+const llmRateLimiter = new GlobalRateLimiter(3, 60000);
+
 async function postChatCompletionWith429Retry({ url, headers, payload, timeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]" }) {
+  // 在发起真正网络请求前，强制通过全局 3 RPM 速率限制器排队
+  await llmRateLimiter.acquire();
+
   let delaySeconds = initialDelaySeconds;
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(url, {
@@ -210,6 +283,10 @@ async function postChatCompletionWith429Retry({ url, headers, payload, timeoutMs
     }
 
     console.warn(`${logPrefix} 触发 429，${delaySeconds} 秒后重试（${attempt + 1}/${max429Retries}）...`);
+    
+    // 触发 429 时，通知全局限流器同步进行冷却冻结，挂起所有新并发请求
+    llmRateLimiter.notify429(delaySeconds * 1000);
+
     await waitMs(delaySeconds * 1000);
     delaySeconds *= 2;
   }
@@ -347,7 +424,19 @@ ${SCENES_JSON_END}`);
 }
 
 export function extractBoundedScenesJson(rawContent = '') {
-  const text = String(rawContent || '').trim();
+  let text = String(rawContent || '').trim();
+
+  // 兼容 think 标签，剥离思维链部分，仅对实际任务输出内容进行首尾起止符校验
+  if (text.includes('</think>')) {
+    const thinkEndIdx = text.indexOf('</think>') + 8;
+    text = text.substring(thinkEndIdx).trim();
+  } else if (text.startsWith('<think>')) {
+    const thinkEndIdx = text.indexOf('</think>');
+    if (thinkEndIdx !== -1) {
+      text = text.substring(thinkEndIdx + 8).trim();
+    }
+  }
+
   if (!text.startsWith(SCENES_JSON_START)) {
     throw new Error(`缺少场景输出起始符 ${SCENES_JSON_START}`);
   }
@@ -483,7 +572,7 @@ function mapCharacterTextToTags(char = {}) {
   ];
   tags.push(...rules.filter(([pattern]) => pattern.test(source)).map(([, tag]) => tag));
   if (!/龇牙|露齿|咬牙|狂笑|大笑|狞笑|张嘴/i.test(char.expression || '')) {
-    tags.push('closed_mouth', 'natural_expression');
+    tags.push('natural_expression');
   }
   return uniqueTags(tags);
 }
@@ -512,7 +601,7 @@ export function countEnglishWords(text = '') {
   return String(text || '').match(/[A-Za-z]+(?:['’-][A-Za-z]+)*/g)?.length || 0;
 }
 
-export function getSceneCountMetrics(text = '') {
+export function getSceneCountMetrics(text = '', cjkDivisor = 600, englishDivisor = 350) {
   const source = String(text || '');
   const englishWordCount = countEnglishWords(source);
   const latinLetterCount = source.match(/[A-Za-z]/g)?.length || 0;
@@ -520,27 +609,29 @@ export function getSceneCountMetrics(text = '') {
   const isEnglish = englishWordCount > 0 && latinLetterCount > cjkCharacterCount;
 
   if (isEnglish) {
+    const div = Number(englishDivisor) || 350;
     return {
       language: 'english',
       unit: 'words',
       count: englishWordCount,
-      divisor: 350,
-      sceneCount: Math.max(1, Math.ceil(englishWordCount / 350))
+      divisor: div,
+      sceneCount: Math.max(1, Math.ceil(englishWordCount / div))
     };
   }
 
   const characterCount = countChapterCharacters(source);
+  const div = Number(cjkDivisor) || 600;
   return {
     language: 'cjk',
     unit: 'characters',
     count: characterCount,
-    divisor: 600,
-    sceneCount: Math.max(1, Math.ceil(characterCount / 600))
+    divisor: div,
+    sceneCount: Math.max(1, Math.ceil(characterCount / div))
   };
 }
 
-export function calculateSceneCount(text = '') {
-  return getSceneCountMetrics(text).sceneCount;
+export function calculateSceneCount(text = '', cjkDivisor = 600, englishDivisor = 350) {
+  return getSceneCountMetrics(text, cjkDivisor, englishDivisor).sceneCount;
 }
 
 function compileScenePromptDeterministically(sceneInput = {}) {
@@ -1620,7 +1711,7 @@ export class LLMExtractor {
     const userMessage = [
       "请为以下中文小说插画场景生成 NovelAI 生图参数。",
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
-      "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局标签（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪，优先使用轻微微笑、担忧、羞涩、惊讶、恼怒、悲伤、疲惫、坚定等克制但明确的表情，并用眼神、眉形和轻微嘴角变化表现；不要把所有角色都写成 calm、expressionless 或 natural_expression。除非原文明确要求露齿、咬牙、狂笑或尖牙，否则保持 closed_mouth / relaxed_lips，禁止 bared_teeth、clenched_teeth、sharp_teeth、fang、crazy_grin、distorted_mouth。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。",
+      "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局标签（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪，优先使用轻微微笑、担忧、羞涩、惊讶、恼怒、悲伤、疲惫、坚定等克制但明确的表情，并用眼神、眉形和轻微嘴角变化表现；不要把所有角色都写成 calm、expressionless 或 natural_expression。禁止无端生成 bared_teeth、clenched_teeth、sharp_teeth、fang、crazy_grin、distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。",
       "NSFW 场景的角色表情必须针对当前情境生成：可使用 restrained pleasured_expression、half-closed_eyes、bedroom_eyes、deep_blush、embarrassed、pained_expression、dazed_expression、unfocused_eyes、teasing_expression、satisfied_expression、slightly_parted_lips 或 biting_lip；根据角色实际状态选择一个主情绪，禁止所有角色复用同一副表情，也禁止无依据的 ahegao、crazy_grin 或 distorted_face。",
       "背景不是硬性要求。根据原文与构图需要选择详细环境、简洁背景或纯色背景；近景、动作特写和角色主导画面可以使用 simple_background、plain_background、white_background、black_background、gradient_background 或 backgroundless。不要为了凑背景标签挤占主体动作与角色细节。",
       "精确接触动作必须写清：谁持有什么物体、对准谁、接触哪个身体部位、用什么镜头清楚显示接触点。剑尖抵喉必须使用 sword_tip_touching_throat / blade_pressed_against_neck / visible_throat_contact，不能只写 holding_sword、confrontation 或 attacking。",

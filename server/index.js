@@ -12,10 +12,14 @@ import { readJson, writeJsonAtomic } from './utils/db.js';
 import { parseFile } from './utils/file-parser.js';
 import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL, DEFAULT_ADVANCED_PROMPT_LEGACY } from './utils/default-prompts.js';
 
+const BASE_DIR = process.cwd();
+const CONFIG_PATH = path.join(BASE_DIR, 'illustrator_config.json');
+
 const DEFAULT_CONFIG = {
   llm_url: "",
   llm_key: "",
   llm_model: "deepseek-chat",
+  llm_api_presets: [],
   llm_character_dna_url: "",
   llm_character_dna_key: "",
   llm_character_dna_model: "",
@@ -32,6 +36,9 @@ const DEFAULT_CONFIG = {
   scale: 5.5,
   sampler: "k_euler_ancestral",
   noiseSchedule: "karras",
+  cjk_scene_divisor: 600,
+  english_scene_divisor: 350,
+  proxy_url: "",
   danbooru_mcp_url: "https://sakizuki-danboorusearch.hf.space/mcp/mcp,https://sakizuki-danboorusearchonline.ms.show/mcp/mcp",
   useVibeTransfer: false,
   vibeBundlePath: "2026-06-04.naiv4vibebundle",
@@ -48,21 +55,41 @@ const DEFAULT_CONFIG = {
 };
 
 // Configure global proxy dispatcher for global fetch
-const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-if (proxyUrl) {
-  try {
-    const proxyAgent = new ProxyAgent(proxyUrl);
-    setGlobalDispatcher(proxyAgent);
-    console.log(`[Proxy] 已成功加载全局 Fetch 代理: ${proxyUrl}`);
-  } catch (err) {
-    console.error(`[Proxy] 载入代理失败: ${err.message}`);
+function applyProxy(proxyUrl) {
+  if (proxyUrl) {
+    try {
+      const proxyAgent = new ProxyAgent(proxyUrl);
+      setGlobalDispatcher(proxyAgent);
+      console.log(`[Proxy] 已成功加载全局 Fetch 代理: ${proxyUrl}`);
+    } catch (err) {
+      console.error(`[Proxy] 载入代理失败: ${err.message}`);
+    }
   }
 }
 
+// 尝试从环境变量和配置文件中加载代理
+(async () => {
+  try {
+    let proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+    if (existsSync(CONFIG_PATH)) {
+      const content = await fs.readFile(CONFIG_PATH, 'utf8');
+      if (content.trim()) {
+        const config = JSON.parse(content);
+        if (config.proxy_url) {
+          proxyUrl = config.proxy_url;
+        }
+      }
+    }
+    if (proxyUrl) {
+      applyProxy(proxyUrl);
+    }
+  } catch (err) {
+    console.error(`[Proxy] 初始化代理失败: ${err.message}`);
+  }
+})();
+
 const app = express();
 const PORT = process.env.PORT || 5000;
-const BASE_DIR = process.cwd();
-const CONFIG_PATH = path.join(BASE_DIR, 'illustrator_config.json');
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -70,6 +97,13 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // 静态托管项目资源（可直接通过 /projects/项目名/illustrations/图片名 加载图片）
 app.use('/projects', express.static(path.join(BASE_DIR, 'projects')));
+
+// 自动检测并静态托管前端构建好的网页资源，以便 Docker 单容器部署
+const CLIENT_DIST = path.join(BASE_DIR, 'client', 'dist');
+if (existsSync(CLIENT_DIST)) {
+  app.use(express.static(CLIENT_DIST));
+  console.log(`[Static] 已激活前端静态资源托管: ${CLIENT_DIST}`);
+}
 
 // 缓存全局活动中的 Pipeline 实例
 const activePipelines = {};
@@ -259,6 +293,12 @@ app.post('/api/config', async (req, res) => {
   try {
     const newConfig = req.body;
     await writeJsonAtomic(CONFIG_PATH, newConfig);
+    
+    // 动态应用网络代理配置
+    if (newConfig.proxy_url) {
+      applyProxy(newConfig.proxy_url);
+    }
+    
     globalCooldownManager.setBaseCooldownSeconds(newConfig.nai_cooldown_seconds ?? 15);
 
     // 动态同步更新所有已激活的管道配置

@@ -5,7 +5,7 @@ import {
   Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil
 } from 'lucide-react';
 
-const API_BASE = "http://localhost:5001";
+const API_BASE = import.meta.env.DEV ? "http://localhost:5001" : "";
 
 function App() {
   // 核心业务状态
@@ -13,6 +13,7 @@ function App() {
     llm_url: "",
     llm_key: "",
     llm_model: "deepseek-chat",
+    llm_api_presets: [],
     llm_character_dna_url: "",
     llm_character_dna_key: "",
     llm_character_dna_model: "",
@@ -29,6 +30,9 @@ function App() {
     scale: 5.5,
     sampler: "k_euler_ancestral",
     noiseSchedule: "karras",
+    cjk_scene_divisor: 600,
+    english_scene_divisor: 350,
+    proxy_url: "",
     useVibeTransfer: false,
     vibeBundlePath: "2026-06-04.naiv4vibebundle",
     vibeStrength: 0.45,
@@ -64,6 +68,7 @@ function App() {
     degradedSuccesses: 0
   });
   const [logs, setLogs] = useState([]);
+  const [naiLogs, setNaiLogs] = useState([]);
 
   // 弹窗状态
   const [isConfigOpen, setIsConfigOpen] = useState(false);
@@ -185,6 +190,7 @@ function App() {
   };
 
   const logsEndRef = useRef(null);
+  const naiLogsEndRef = useRef(null);
 
   // 初始化加载
   useEffect(() => {
@@ -225,8 +231,16 @@ function App() {
 
       const sceneKey = `${data.chapterKey}_${data.sceneIdx}`;
       
-      if (data.imagePath === null) {
+      if (data.imagePath === 'prompt_ready') {
+        addLog(`⚡ 章节「${data.chapter}」[场景 ${data.sceneIdx}/${data.totalScenes}] Prompt 已就绪，已推入生图队列。`);
+        setLoadingScenes(prev => {
+          const copy = { ...prev };
+          delete copy[sceneKey];
+          return copy;
+        });
+      } else if (data.imagePath === null) {
         addLog(`⏳ 章节「${data.chapter}」[场景 ${data.sceneIdx}/${data.totalScenes}] 开始生图中...`);
+        setLoadingScenes(prev => ({ ...prev, [sceneKey]: true }));
       } else if (data.imagePath === 'failed') {
         addLog(`❌ 章节「${data.chapter}」[场景 ${data.sceneIdx}/${data.totalScenes}] 生成失败！`, 'error');
         setLoadingScenes(prev => {
@@ -328,6 +342,10 @@ function App() {
   }, [logs]);
 
   useEffect(() => {
+    naiLogsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [naiLogs]);
+
+  useEffect(() => {
     if (!activeProject || !selectedChapter) {
       setChapterContent(null);
       setTextSelections([]);
@@ -352,7 +370,12 @@ function App() {
 
   const addLog = (text, type = 'info') => {
     const time = new Date().toLocaleTimeString();
-    setLogs(prev => [...prev, { time, text, type }]);
+    const isNaiLog = /\[NAI\]|\[Pipeline NAI\]|NAI 生图|生图中|生图成功|生成失败|插图已存盘|冷却|cooldown/i.test(text);
+    if (isNaiLog) {
+      setNaiLogs(prev => [...prev, { time, text, type }].slice(-200));
+    } else {
+      setLogs(prev => [...prev, { time, text, type }].slice(-200));
+    }
   };
 
   const fetchConfig = async () => {
@@ -1393,10 +1416,26 @@ function App() {
                         const sceneKey = `${chapKey}_${scene.scene_idx}`;
                         const isSceneLoading = loadingScenes[sceneKey];
 
+                        // 统一参数取值以支持 PROMPT_READY 状态下的无图预览
+                        const finalPrompt = scene.final_prompt || scene.prepared_prompt?.finalPositive;
+                        const basePrompt = scene.base_prompt || scene.prepared_prompt?.basePrompt;
+                        const characterPrompts = scene.character_prompts || scene.prepared_prompt?.characterPrompts;
+                        const finalNegative = scene.final_negative || scene.prepared_prompt?.finalNegative;
+                        const width = scene.width || scene.prepared_prompt?.width;
+                        const height = scene.height || scene.prepared_prompt?.height;
+
                         return (
                           <div 
                             key={scene.scene_idx} 
-                            className={`scene-card glass-panel ${scene.status === 'SUCCESS' && !isSceneLoading ? 'success' : isSceneLoading ? 'generating' : ''}`}
+                            className={`scene-card glass-panel ${
+                              scene.status === 'SUCCESS' && !isSceneLoading 
+                                ? 'success' 
+                                : isSceneLoading 
+                                  ? 'generating' 
+                                  : scene.status === 'PROMPT_READY'
+                                    ? 'prompt-ready'
+                                    : ''
+                            }`}
                           >
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ fontWeight: '600', color: 'var(--color-purple)' }}>场景 #{scene.scene_idx}</span>
@@ -1418,6 +1457,8 @@ function App() {
                                   '已完成'
                                 ) : scene.status === 'failed' ? (
                                   '失败'
+                                ) : scene.status === 'PROMPT_READY' ? (
+                                  <span style={{ color: 'var(--color-purple)', fontWeight: '600' }}>⚡ Prompt 已就绪</span>
                                 ) : (
                                   '待处理'
                                 )}
@@ -1432,17 +1473,25 @@ function App() {
                             {scene.scene_desc}
                           </div>
 
-                          {scene.image_path && (
-                            <div style={{ marginTop: '10px', display: 'flex', gap: '16px', alignItems: 'center' }}>
-                              <img 
-                                src={encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`)} 
-                                alt="插画"
-                                onClick={() => setPreviewImage(encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`))}
-                                style={{ width: '120px', height: '120px', borderRadius: '8px', objectFit: 'cover', border: '1px solid var(--border-light)', cursor: 'zoom-in' }} 
-                                title="点击放大预览"
-                              />
-                              <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', flex: 1, minWidth: 0 }}>
-                                <div><b>输出路径:</b> {scene.image_path}</div>
+                          {(scene.image_path || scene.prepared_prompt) && (
+                            <div style={{ 
+                              marginTop: '10px', 
+                              display: 'flex', 
+                              gap: '16px', 
+                              alignItems: scene.image_path ? 'center' : 'flex-start',
+                              flexDirection: scene.image_path ? 'row' : 'column'
+                            }}>
+                              {scene.image_path && (
+                                <img 
+                                  src={encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`)} 
+                                  alt="插画"
+                                  onClick={() => setPreviewImage(encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`))}
+                                  style={{ width: '120px', height: '120px', borderRadius: '8px', objectFit: 'cover', border: '1px solid var(--border-light)', cursor: 'zoom-in' }} 
+                                  title="点击放大预览"
+                                />
+                              )}
+                              <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', flex: 1, minWidth: 0, width: '100%' }}>
+                                {scene.image_path && <div><b>输出路径:</b> {scene.image_path}</div>}
                                 <div 
                                   style={{ 
                                     marginTop: '6px', 
@@ -1501,7 +1550,7 @@ function App() {
                                             className="btn-secondary"
                                             style={{ padding: '2px 6px', fontSize: '0.75rem', height: '22px', display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}
                                             onClick={() => {
-                                              navigator.clipboard.writeText(scene.final_prompt || '');
+                                              navigator.clipboard.writeText(finalPrompt || '');
                                               addLog(`📋 已复制场景 #${scene.scene_idx} 正向提示词到剪贴板！`, 'success');
                                             }}
                                           >
@@ -1520,12 +1569,12 @@ function App() {
                                           borderRadius: '4px',
                                           border: '1px solid rgba(255,255,255,0.03)'
                                         }}>
-                                          {scene.final_prompt || '无'}
+                                          {finalPrompt || '无'}
                                         </div>
                                       </div>
 
                                       {/* NovelAI V4 实际结构化正向参数 */}
-                                      {scene.base_prompt && (
+                                      {basePrompt && (
                                         <div>
                                           <div style={{ fontSize: '0.8rem', color: 'var(--color-blue)', fontWeight: '600', marginBottom: '4px' }}>
                                             V4 Base Prompt:
@@ -1542,17 +1591,17 @@ function App() {
                                             borderRadius: '4px',
                                             border: '1px solid rgba(255,255,255,0.03)'
                                           }}>
-                                            {scene.base_prompt}
+                                            {basePrompt}
                                           </div>
                                         </div>
                                       )}
 
-                                      {Array.isArray(scene.character_prompts) && scene.character_prompts.length > 0 && (
+                                      {Array.isArray(characterPrompts) && characterPrompts.length > 0 && (
                                         <div>
                                           <div style={{ fontSize: '0.8rem', color: 'var(--color-blue)', fontWeight: '600', marginBottom: '4px' }}>
                                             V4 Character Prompts:
                                           </div>
-                                          {scene.character_prompts.map((characterPrompt, index) => (
+                                          {characterPrompts.map((characterPrompt, index) => (
                                             <div
                                               key={`${scene.scene_idx}-character-prompt-${index}`}
                                               style={{
@@ -1564,7 +1613,7 @@ function App() {
                                                 fontSize: '0.75rem',
                                                 background: 'rgba(0, 0, 0, 0.2)',
                                                 padding: '6px 8px',
-                                                marginBottom: index === scene.character_prompts.length - 1 ? 0 : '6px',
+                                                marginBottom: index === characterPrompts.length - 1 ? 0 : '6px',
                                                 borderRadius: '4px',
                                                 border: '1px solid rgba(255,255,255,0.03)'
                                               }}
@@ -1576,7 +1625,7 @@ function App() {
                                       )}
 
                                       {/* 负向提示词 (防呆兼容老数据) */}
-                                      {scene.final_negative && (
+                                      {finalNegative && (
                                         <div>
                                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
                                             <span style={{ fontSize: '0.8rem', color: 'var(--color-orange)', fontWeight: '600' }}>负向提示词 (Negative Prompt):</span>
@@ -1584,7 +1633,7 @@ function App() {
                                               className="btn-secondary"
                                               style={{ padding: '2px 6px', fontSize: '0.75rem', height: '22px', display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}
                                               onClick={() => {
-                                                navigator.clipboard.writeText(scene.final_negative || '');
+                                                navigator.clipboard.writeText(finalNegative || '');
                                                 addLog(`📋 已复制场景 #${scene.scene_idx} 负向提示词到剪贴板！`, 'success');
                                               }}
                                             >
@@ -1603,7 +1652,7 @@ function App() {
                                             borderRadius: '4px',
                                             border: '1px solid rgba(255,255,255,0.03)'
                                           }}>
-                                            {scene.final_negative || '无'}
+                                            {finalNegative || '无'}
                                           </div>
                                         </div>
                                       )}
@@ -1611,9 +1660,9 @@ function App() {
                                       {/* 物理分辨率与底部一键复制 */}
                                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                                         <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                          {scene.width && scene.height ? (
+                                          {width && height ? (
                                             <>
-                                              物理分辨率: <span style={{ color: 'var(--color-blue)', fontWeight: '500' }}>{scene.width} x {scene.height}</span>
+                                              物理分辨率: <span style={{ color: 'var(--color-blue)', fontWeight: '500' }}>{width} x {height}</span>
                                             </>
                                           ) : (
                                             <span style={{ fontStyle: 'italic' }}>老数据未记录分辨率/负向提示词</span>
@@ -1625,13 +1674,13 @@ function App() {
                                           style={{ padding: '4px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px', height: '26px', background: 'linear-gradient(135deg, var(--color-purple), var(--color-pink))', boxShadow: 'none' }}
                                           onClick={() => {
                                             const parts = [];
-                                            if (scene.final_prompt) parts.push(`正向提示词:\n${scene.final_prompt}`);
-                                            if (scene.base_prompt) parts.push(`V4 Base Prompt:\n${scene.base_prompt}`);
-                                            if (Array.isArray(scene.character_prompts) && scene.character_prompts.length > 0) {
-                                              parts.push(`V4 Character Prompts:\n${scene.character_prompts.map((prompt, index) => `Character Prompt ${index + 1}: ${prompt}`).join('\n')}`);
+                                            if (finalPrompt) parts.push(`正向提示词:\n${finalPrompt}`);
+                                            if (basePrompt) parts.push(`V4 Base Prompt:\n${basePrompt}`);
+                                            if (Array.isArray(characterPrompts) && characterPrompts.length > 0) {
+                                              parts.push(`V4 Character Prompts:\n${characterPrompts.map((prompt, index) => `Character Prompt ${index + 1}: ${prompt}`).join('\n')}`);
                                             }
-                                            if (scene.final_negative) parts.push(`负向提示词:\n${scene.final_negative}`);
-                                            if (scene.width && scene.height) parts.push(`物理分辨率: ${scene.width} x ${scene.height}`);
+                                            if (finalNegative) parts.push(`负向提示词:\n${finalNegative}`);
+                                            if (width && height) parts.push(`物理分辨率: ${width} x ${height}`);
                                             
                                             const fullText = parts.join('\n\n');
                                             navigator.clipboard.writeText(fullText);
@@ -1660,7 +1709,7 @@ function App() {
                                       }}
                                       title="点击展开完整提示词"
                                     >
-                                      {scene.final_prompt || '无'}
+                                      {finalPrompt || '无'}
                                     </div>
                                   )}
                                 </div>
@@ -1886,15 +1935,37 @@ function App() {
             <span>{cooldown > 0 ? `${Math.ceil(cooldown)}s` : `${cooldownState.cooldownSeconds || 15}s`}</span>
           </div>
         </div>
-        <div className="column-body">
-          <div className="glass-panel" style={{ height: '100%', overflowY: 'auto', padding: '12px', fontFamily: 'var(--font-title)', fontSize: '0.8rem' }}>
-            {logs.map((log, idx) => (
-              <div key={idx} style={{ marginBottom: '6px', lineHeight: '1.4', color: log.type === 'error' ? 'var(--color-pink)' : log.type === 'warning' ? 'var(--color-orange)' : log.type === 'success' ? 'var(--color-green)' : 'var(--text-secondary)' }}>
-                <span style={{ color: 'var(--text-muted)', marginRight: '6px' }}>[{log.time}]</span>
-                {log.text}
-              </div>
-            ))}
-            <div ref={logsEndRef} />
+        <div className="column-body" style={{ display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', minHeight: 0 }}>
+          {/* 上半部分：常规/LLM日志 */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span>⚙️ 流水线与 LLM 日志</span>
+            </div>
+            <div className="glass-panel" style={{ flex: 1, overflowY: 'auto', padding: '10px', fontFamily: 'var(--font-title)', fontSize: '0.8rem' }}>
+              {logs.map((log, idx) => (
+                <div key={idx} style={{ marginBottom: '6px', lineHeight: '1.4', color: log.type === 'error' ? 'var(--color-pink)' : log.type === 'warning' ? 'var(--color-orange)' : log.type === 'success' ? 'var(--color-green)' : 'var(--text-secondary)' }}>
+                  <span style={{ color: 'var(--text-muted)', marginRight: '6px' }}>[{log.time}]</span>
+                  {log.text}
+                </div>
+              ))}
+              <div ref={logsEndRef} />
+            </div>
+          </div>
+
+          {/* 下半部分：NAI日志 */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span>🎨 NovelAI 生图日志</span>
+            </div>
+            <div className="glass-panel" style={{ flex: 1, overflowY: 'auto', padding: '10px', fontFamily: 'var(--font-title)', fontSize: '0.8rem' }}>
+              {naiLogs.map((log, idx) => (
+                <div key={idx} style={{ marginBottom: '6px', lineHeight: '1.4', color: log.type === 'error' ? 'var(--color-pink)' : log.type === 'warning' ? 'var(--color-orange)' : log.type === 'success' ? 'var(--color-green)' : 'var(--text-secondary)' }}>
+                  <span style={{ color: 'var(--text-muted)', marginRight: '6px' }}>[{log.time}]</span>
+                  {log.text}
+                </div>
+              ))}
+              <div ref={naiLogsEndRef} />
+            </div>
           </div>
         </div>
       </div>
@@ -1963,6 +2034,83 @@ function App() {
             <form onSubmit={saveConfig} style={{ display: 'flex', flexDirection: 'column', gap: '14px', flex: 1, overflowY: 'auto', paddingRight: '4px' }}>
               {configTab === 'basic' ? (
                 <>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '4px', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px', padding: '12px', background: 'rgba(255,255,255,0.015)' }}>
+                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 'bold' }}>API 预设与一键载入</label>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <select
+                        value=""
+                        onChange={(e) => {
+                          const presetId = e.target.value;
+                          if (!presetId) return;
+                          const preset = (config.llm_api_presets || []).find(p => p.id === presetId);
+                          if (preset) {
+                            setConfig({
+                              ...config,
+                              llm_url: preset.url,
+                              llm_key: preset.key,
+                              llm_model: preset.model
+                            });
+                          }
+                          // 重置下拉菜单选择
+                          e.target.value = "";
+                        }}
+                        style={{ flex: 1, background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white', cursor: 'pointer', outline: 'none' }}
+                      >
+                        <option value="">-- 选择并载入已保存的 API 预设 --</option>
+                        {(config.llm_api_presets || []).map(preset => (
+                          <option key={preset.id} value={preset.id}>
+                            {preset.name} ({preset.model})
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => {
+                          const name = prompt("请输入此 API 预设的名称：");
+                          if (!name || !name.trim()) return;
+                          const newPreset = {
+                            id: Date.now().toString(),
+                            name: name.trim(),
+                            url: config.llm_url || "",
+                            key: config.llm_key || "",
+                            model: config.llm_model || ""
+                          };
+                          const presets = [...(config.llm_api_presets || []), newPreset];
+                          setConfig({ ...config, llm_api_presets: presets });
+                        }}
+                        style={{ whiteSpace: 'nowrap', padding: '8px 12px', fontSize: '0.8rem', cursor: 'pointer' }}
+                      >
+                        保存当前
+                      </button>
+                      {(config.llm_api_presets || []).length > 0 && (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => {
+                            const presets = config.llm_api_presets || [];
+                            const selectToDelete = prompt("请输入要删除的预设名称 (或输入 'all' 清空所有)：");
+                            if (!selectToDelete || !selectToDelete.trim()) return;
+                            if (selectToDelete.trim().toLowerCase() === 'all') {
+                              if (confirm("确定要清空所有的 API 预设吗？")) {
+                                setConfig({ ...config, llm_api_presets: [] });
+                              }
+                              return;
+                            }
+                            const updated = presets.filter(p => p.name !== selectToDelete.trim());
+                            if (updated.length === presets.length) {
+                              alert("没有找到该预设！");
+                            } else {
+                              setConfig({ ...config, llm_api_presets: updated });
+                            }
+                          }}
+                          style={{ whiteSpace: 'nowrap', padding: '8px 12px', fontSize: '0.8rem', cursor: 'pointer', color: '#ff4d4f' }}
+                        >
+                          删除
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   <div>
                     <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>LLM Base URL</label>
                     <input 
@@ -2065,6 +2213,19 @@ function App() {
                     />
                   </div>
                   <div>
+                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>网络代理地址 (Proxy)</label>
+                    <input
+                      type="text"
+                      placeholder="例如 http://127.0.0.1:7890"
+                      value={config.proxy_url || ""}
+                      onChange={(e) => setConfig({ ...config, proxy_url: e.target.value })}
+                      style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                    />
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                      如国内连接 NovelAI 官方生图接口超时，请在此处填写本地代理地址。
+                    </div>
+                  </div>
+                  <div>
                     <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>基础生图间隔（秒）</label>
                     <input
                       type="number"
@@ -2102,6 +2263,32 @@ function App() {
                         onChange={(e) => setConfig({ ...config, scale: Number(e.target.value) })}
                         style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                       />
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>中文分镜字数除数</label>
+                      <input
+                        type="number"
+                        min="100"
+                        max="5000"
+                        value={config.cjk_scene_divisor ?? 600}
+                        onChange={(e) => setConfig({ ...config, cjk_scene_divisor: Number(e.target.value) })}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                      />
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>每 600 字(默认)生成一个分镜</div>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>英文分镜词数除数</label>
+                      <input
+                        type="number"
+                        min="50"
+                        max="3000"
+                        value={config.english_scene_divisor ?? 350}
+                        onChange={(e) => setConfig({ ...config, english_scene_divisor: Number(e.target.value) })}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                      />
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>每 350 词(默认)生成一个分镜</div>
                     </div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
