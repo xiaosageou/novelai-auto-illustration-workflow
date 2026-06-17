@@ -85,6 +85,7 @@ function App() {
   const [expandedPrompt, setExpandedPrompt] = useState(null);
   const [previewImage, setPreviewImage] = useState(null);
   const [loadingScenes, setLoadingScenes] = useState({});
+  const [chapterQueueStates, setChapterQueueStates] = useState({});
   const [dnaUpdatePrompt, setDnaUpdatePrompt] = useState(null);
   const [editingCharacterName, setEditingCharacterName] = useState("");
   const [editingCharacterFeatures, setEditingCharacterFeatures] = useState(null);
@@ -103,6 +104,25 @@ function App() {
   const getReaderSelectionStorageKey = (projectName, chapterKey) => (
     projectName && chapterKey ? `reader-selections::${projectName}::${chapterKey}` : ""
   );
+  const getChapterQueueStateKey = (projectName, chapterKey) => (
+    projectName && chapterKey ? `${projectName}::${chapterKey}` : ""
+  );
+
+  const replaceProjectChapterQueueStates = (projectName, nextChapterStates = {}) => {
+    if (!projectName) return;
+    setChapterQueueStates(prev => {
+      const next = Object.fromEntries(
+        Object.entries(prev).filter(([key]) => !key.startsWith(`${projectName}::`))
+      );
+      for (const [chapterKey, state] of Object.entries(nextChapterStates)) {
+        const compositeKey = getChapterQueueStateKey(projectName, chapterKey);
+        if (compositeKey && state) {
+          next[compositeKey] = state;
+        }
+      }
+      return next;
+    });
+  };
 
   const normalizeReaderSelections = (selections, paragraphs = []) => {
     const seen = new Set();
@@ -299,6 +319,33 @@ function App() {
       }
     });
 
+    eventSource.addEventListener('chapter_queue', (e) => {
+      const data = JSON.parse(e.data);
+      if (data.projectName !== activeProject) return;
+      const chapterStateKey = getChapterQueueStateKey(data.projectName, data.chapterKey);
+      if (!chapterStateKey) return;
+
+      if (data.state === 'queued' || data.state === 'running') {
+        setChapterQueueStates(prev => ({ ...prev, [chapterStateKey]: data.state }));
+      } else {
+        setChapterQueueStates(prev => {
+          const copy = { ...prev };
+          delete copy[chapterStateKey];
+          return copy;
+        });
+      }
+
+      if (data.state === 'queued') {
+        addLog(`📚 单章「${data.chapterKey}」已加入重画队列${data.position ? `，当前位置 ${data.position}` : ''}。`);
+      } else if (data.state === 'running') {
+        addLog(`🎬 单章「${data.chapterKey}」开始执行重画队列。`);
+      } else if (data.state === 'failed') {
+        addLog(`❌ 单章「${data.chapterKey}」队列执行失败: ${data.message || '未知错误'}`, 'error');
+      } else if (data.state === 'paused') {
+        addLog(`⏸️ 单章「${data.chapterKey}」执行到需要更新角色 DNA，队列已暂停等待处理。`, 'warning');
+      }
+    });
+
     eventSource.addEventListener('characters_completed', (e) => {
       const data = JSON.parse(e.data);
       if (Number.isInteger(data?.sliceIndex)) {
@@ -317,13 +364,21 @@ function App() {
 
     eventSource.addEventListener('pipeline_completed', (e) => {
       const data = JSON.parse(e.data);
-      addLog(`🎉 项目 ${data.projectName} 批量插画流水线大功告成！`);
+      if (data?.type === 'chapter_generate' && data.chapterKey) {
+        addLog(`🎉 单章「${data.chapterKey}」重画完成！`);
+      } else {
+        addLog(`🎉 项目 ${data.projectName} 批量插画流水线大功告成！`);
+      }
       setPipelineRunning(false);
     });
 
     eventSource.addEventListener('pipeline_failed', (e) => {
       const data = JSON.parse(e.data);
-      addLog(`❌ 流水线发生异常中断: ${data.message}`, 'error');
+      if (data?.type === 'chapter_generate' && data.chapterKey) {
+        addLog(`❌ 单章「${data.chapterKey}」重画异常中断: ${data.message}`, 'error');
+      } else {
+        addLog(`❌ 流水线发生异常中断: ${data.message}`, 'error');
+      }
       setPipelineRunning(false);
     });
 
@@ -592,6 +647,16 @@ function App() {
       const statusRes = await fetch(`${API_BASE}/api/projects/${name}/pipeline/status`);
       const statusData = await statusRes.json();
       setPipelineRunning(statusData.isRunning);
+      const nextChapterQueueStates = {};
+      if (statusData.chapterQueue?.current?.chapterKey) {
+        nextChapterQueueStates[statusData.chapterQueue.current.chapterKey] = 'running';
+      }
+      for (const queuedChapterKey of statusData.chapterQueue?.pendingChapterKeys || []) {
+        if (!nextChapterQueueStates[queuedChapterKey]) {
+          nextChapterQueueStates[queuedChapterKey] = 'queued';
+        }
+      }
+      replaceProjectChapterQueueStates(name, nextChapterQueueStates);
       if (statusData.remainingCooldown > 0) {
         setCooldown(statusData.remainingCooldown);
       }
@@ -692,21 +757,31 @@ function App() {
   const generateSingleChapter = async (chap) => {
     if (!activeProject || !chap) return;
     const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+    const chapterStateKey = getChapterQueueStateKey(activeProject, chapKey);
     try {
-      setPipelineRunning(true);
-      addLog(`🚀 启动章节「${chap.chapter}」单章生图流水线...`);
-      const res = await fetch(`${API_BASE}/api/projects/${activeProject}/chapters/${chapKey}/generate`, {
+      setChapterQueueStates(prev => ({ ...prev, [chapterStateKey]: 'queued' }));
+      addLog(`📚 正在将章节「${chap.chapter}」加入单章重画队列...`);
+      const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/chapters/${encodeURIComponent(chapKey)}/generate`, {
         method: "POST"
       });
       const data = await res.json();
       if (data.success) {
-        addLog(`✅ 单章生图流水线已在后台启动，正为您重新提炼场景与绘制插画...`);
+        setChapterQueueStates(prev => ({ ...prev, [chapterStateKey]: data.state === 'running' ? 'running' : 'queued' }));
+        addLog(data.message || `章节「${chap.chapter}」已提交单章重画任务。`);
       } else {
-        setPipelineRunning(false);
+        setChapterQueueStates(prev => {
+          const copy = { ...prev };
+          delete copy[chapterStateKey];
+          return copy;
+        });
         addLog(`❌ 启动单章生图失败: ${data.error || '未知错误'}`, "error");
       }
     } catch (e) {
-      setPipelineRunning(false);
+      setChapterQueueStates(prev => {
+        const copy = { ...prev };
+        delete copy[chapterStateKey];
+        return copy;
+      });
       addLog(`❌ 启动单章生图异常: ${e.message}`, "error");
     }
   };
@@ -812,7 +887,11 @@ function App() {
         return;
       }
 
-      addLog(`🗑️ ${data.message}`);
+      if (data.removedQueuedRedraws > 0) {
+        addLog(`🗑️ ${data.message}，并已取消 ${data.removedQueuedRedraws} 个待执行重绘任务。`);
+      } else {
+        addLog(`🗑️ ${data.message}`);
+      }
       setExpandedPrompt(prev => (prev === sceneKey ? null : prev));
       setLoadingScenes({});
       await fetchProjectDetails(activeProject);
@@ -1441,6 +1520,10 @@ function App() {
               <div className="column-body">
                 {selectedChapter && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {(() => {
+                      const selectedChapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+                      const selectedChapterQueueState = chapterQueueStates[getChapterQueueStateKey(activeProject, selectedChapterKey)];
+                      return (
                     <div className="glass-panel" style={{ padding: '16px', background: 'rgba(255,255,255,0.01)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div>
                         <h3 style={{ fontSize: '1.2rem', marginBottom: '6px' }}>{selectedChapter.chapter}</h3>
@@ -1450,13 +1533,20 @@ function App() {
                       </div>
                       <button 
                         className="btn-secondary" 
-                        disabled={pipelineRunning}
+                        disabled={pipelineRunning || selectedChapterQueueState === 'queued' || selectedChapterQueueState === 'running'}
                         onClick={() => generateSingleChapter(selectedChapter)}
                         style={{ display: 'flex', alignItems: 'center', gap: '4px', borderColor: 'var(--color-pink)' }}
                       >
-                        <Play size={14} style={{ color: 'var(--color-pink)' }} /> 单章重画
+                        <Play size={14} style={{ color: 'var(--color-pink)' }} />
+                        {selectedChapterQueueState === 'queued'
+                          ? '单章排队中'
+                          : selectedChapterQueueState === 'running'
+                            ? '单章执行中'
+                            : '单章重画'}
                       </button>
                     </div>
+                      );
+                    })()}
 
                     {/* 渲染当前章节的场景卡片 */}
                     {(() => {
@@ -1475,6 +1565,7 @@ function App() {
                       return scenes.map((scene) => {
                         const sceneKey = `${chapKey}_${scene.scene_idx}`;
                         const isSceneLoading = loadingScenes[sceneKey];
+                        const isSceneDeleteLocked = pipelineRunning || isSceneLoading === true || isSceneLoading === 'running' || isSceneLoading === 'deleting';
 
                         // 统一参数取值以支持 PROMPT_READY 状态下的无图预览
                         const finalPrompt = scene.final_prompt || scene.prepared_prompt?.finalPositive;
@@ -1862,7 +1953,7 @@ function App() {
                                   borderColor: 'rgba(239, 68, 68, 0.45)',
                                   color: '#fca5a5'
                                 }}
-                                disabled={pipelineRunning || Boolean(isSceneLoading)}
+                                disabled={isSceneDeleteLocked}
                                 onClick={() => deleteScene(selectedChapter, scene.scene_idx)}
                                 title="删除该场景并清理对应图片文件，后续场景会重新编号"
                               >

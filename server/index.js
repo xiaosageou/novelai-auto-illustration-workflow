@@ -8,6 +8,7 @@ import { ProxyAgent, setGlobalDispatcher } from 'undici';
 import { PipelineManager } from './services/pipeline-manager.js';
 import { EPUBBuilder, insertIllustrationsAfterParagraphs } from './services/epub-builder.js';
 import { globalCooldownManager } from './utils/cooldown.js';
+import { enqueueUniqueJob, removeQueuedJobs } from './utils/job-queue.js';
 import { readJson, writeJsonAtomic } from './utils/db.js';
 import { parseFile } from './utils/file-parser.js';
 import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL, DEFAULT_ADVANCED_PROMPT_LEGACY } from './utils/default-prompts.js';
@@ -136,6 +137,7 @@ if (existsSync(CLIENT_DIST)) {
 // 缓存全局活动中的 Pipeline 实例
 const activePipelines = {};
 const redrawQueues = new Map();
+const chapterQueues = new Map();
 
 async function safeProjectPath(projectName) {
   const projectsDir = path.resolve(BASE_DIR, 'projects');
@@ -212,8 +214,23 @@ function getRedrawQueue(projectName) {
   return redrawQueues.get(projectName);
 }
 
+function getChapterQueue(projectName) {
+  if (!chapterQueues.has(projectName)) {
+    chapterQueues.set(projectName, {
+      running: false,
+      current: null,
+      items: []
+    });
+  }
+  return chapterQueues.get(projectName);
+}
+
 function redrawJobKey(chapterKey, sceneIdx, mode) {
   return `${chapterKey}::${sceneIdx}::${mode}`;
+}
+
+function chapterJobKey(chapterKey) {
+  return chapterKey;
 }
 
 async function processRedrawQueue(projectName, pipeline, queue, { interleaved = false } = {}) {
@@ -269,29 +286,28 @@ async function processRedrawQueue(projectName, pipeline, queue, { interleaved = 
 function enqueueRedraw(projectName, pipeline, chapterKey, effectiveKey, sceneIdx, mode = 'refresh_prompt') {
   const queue = getRedrawQueue(projectName);
   const key = redrawJobKey(effectiveKey, sceneIdx, mode);
-  const existingIndex = queue.items.findIndex(item => item.key === key);
-
-  if (queue.current?.key === key) {
-    return { duplicate: true, state: 'running', position: 0 };
-  }
-  if (existingIndex >= 0) {
-    return { duplicate: true, state: 'queued', position: existingIndex + 1 };
-  }
-  const job = {
+  const result = enqueueUniqueJob(queue, {
     key,
-    chapterKey,
-    effectiveKey,
-    sceneIdx: Number(sceneIdx),
-    mode
-  };
-  queue.items.push(job);
-  const position = queue.items.length + (queue.current ? 1 : 0);
+    busy: pipeline.isRunning,
+    jobFactory: () => ({
+      key,
+      chapterKey,
+      effectiveKey,
+      sceneIdx: Number(sceneIdx),
+      mode
+    })
+  });
+
+  if (result.duplicate) {
+    return result;
+  }
+
   broadcastSSE('redraw_queue', {
     projectName,
     chapterKey,
-    sceneIdx: job.sceneIdx,
+    sceneIdx: Number(sceneIdx),
     state: 'queued',
-    position,
+    position: result.position,
     remaining: queue.items.length,
     priority: pipeline.isRunning
   });
@@ -299,11 +315,133 @@ function enqueueRedraw(projectName, pipeline, chapterKey, effectiveKey, sceneIdx
     void processRedrawQueue(projectName, pipeline, queue);
   }
   return {
-    duplicate: false,
-    state: pipeline.isRunning ? 'queued' : (position === 1 ? 'running' : 'queued'),
-    position,
+    ...result,
     priority: pipeline.isRunning
   };
+}
+
+async function processChapterQueue(projectName) {
+  const queue = getChapterQueue(projectName);
+  if (queue.running) return;
+  queue.running = true;
+
+  let pipeline;
+  try {
+    pipeline = await getPipeline(projectName);
+
+    while (queue.items.length > 0) {
+      if (pipeline.isRunning) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+
+      const job = queue.items.shift();
+      queue.current = job;
+      broadcastSSE('chapter_queue', {
+        projectName,
+        chapterKey: job.chapterKey,
+        state: 'running',
+        remaining: queue.items.length
+      });
+
+      try {
+        pipeline.projectProgress.setChapterStatus(job.effectiveKey, 'pending', []);
+        await pipeline.projectProgress.save();
+
+        broadcastSSE('pipeline_started', {
+          projectName,
+          chapterKey: job.chapterKey,
+          type: 'chapter_generate'
+        });
+
+        const result = await pipeline.processPipeline(job.effectiveKey, { autoUpdateCharacterDna: false });
+        if (result?.paused) {
+          broadcastSSE('chapter_queue', {
+            projectName,
+            chapterKey: job.chapterKey,
+            state: 'paused',
+            remaining: queue.items.length
+          });
+          break;
+        }
+
+        broadcastSSE('chapter_queue', {
+          projectName,
+          chapterKey: job.chapterKey,
+          state: 'completed',
+          remaining: queue.items.length
+        });
+
+        if (queue.items.length === 0) {
+          broadcastSSE('pipeline_completed', {
+            projectName,
+            chapterKey: job.chapterKey,
+            type: 'chapter_generate'
+          });
+        } else {
+          broadcastSSE('log', {
+            text: `🟢 单章「${job.chapterKey}」已完成，队列中还剩 ${queue.items.length} 个单章任务等待执行...`,
+            type: 'info'
+          });
+        }
+      } catch (error) {
+        console.error(`[Queue] 单章重画任务异常:`, error);
+        broadcastSSE('chapter_queue', {
+          projectName,
+          chapterKey: job.chapterKey,
+          state: 'failed',
+          message: error.message,
+          remaining: queue.items.length
+        });
+        broadcastSSE('pipeline_failed', {
+          projectName,
+          chapterKey: job.chapterKey,
+          type: 'chapter_generate',
+          message: error.message
+        });
+      } finally {
+        queue.current = null;
+      }
+    }
+  } catch (err) {
+    console.error(`[Queue] 单章重画队列执行异常:`, err);
+  } finally {
+    queue.running = false;
+    if (pipeline) {
+      const redrawQueue = getRedrawQueue(projectName);
+      if (redrawQueue && redrawQueue.items.length > 0 && !pipeline.isRunning) {
+        void processRedrawQueue(projectName, pipeline, redrawQueue);
+      }
+    }
+  }
+}
+
+function enqueueChapterGeneration(projectName, pipeline, chapterKey, effectiveKey) {
+  const queue = getChapterQueue(projectName);
+  const key = chapterJobKey(effectiveKey);
+  const result = enqueueUniqueJob(queue, {
+    key,
+    busy: pipeline.isRunning,
+    jobFactory: () => ({
+      key,
+      chapterKey,
+      effectiveKey
+    })
+  });
+
+  if (result.duplicate) {
+    return result;
+  }
+
+  broadcastSSE('chapter_queue', {
+    projectName,
+    chapterKey,
+    state: 'queued',
+    position: result.position,
+    remaining: queue.items.length
+  });
+  void processChapterQueue(projectName);
+  return result;
 }
 
 // === 1. 全局配置 API ===
@@ -678,28 +816,14 @@ app.post('/api/projects/:projectName/chapters/:chapterKey/generate', async (req,
   try {
     const { projectName, chapterKey } = req.params;
     const pipeline = await getPipeline(projectName);
-
-    if (pipeline.isRunning) {
-      return res.status(400).json({ error: "流水线已在运行中，请先暂停后再开始单章生图" });
-    }
-
-    // 模糊匹配出数据库里原有的真实键
     const effectiveKey = pipeline.projectProgress.getEffectiveChapKeyByRaw(chapterKey);
-
-    // 抹除该章节之前的全部生成进度与场景缓存，以便强制重新提取并生图
-    pipeline.projectProgress.setChapterStatus(effectiveKey, 'pending', []);
-    await pipeline.projectProgress.save();
-
-    // 启动只针对该章节的流水线
-    pipeline.processPipeline(effectiveKey, { autoUpdateCharacterDna: false }).then((result) => {
-      if (!result?.paused) {
-        broadcastSSE('pipeline_completed', { projectName });
-      }
-    }).catch(err => {
-      broadcastSSE('pipeline_failed', { message: err.message });
-    });
-
-    res.json({ success: true, message: `单章 ${chapterKey} 配图流水线后台启动成功！` });
+    const queued = enqueueChapterGeneration(projectName, pipeline, chapterKey, effectiveKey);
+    const message = queued.duplicate
+      ? `单章 ${chapterKey} 已在队列中`
+      : queued.state === 'running'
+        ? `单章 ${chapterKey} 已开始执行`
+        : `单章 ${chapterKey} 已加入重画队列，当前位置 ${queued.position}`;
+    res.json({ success: true, message, ...queued });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -853,8 +977,13 @@ app.delete('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx', a
     }
 
     const effectiveKey = pipeline.projectProgress.getEffectiveChapKeyByRaw(chapterKey);
+    const removedQueuedRedraws = removeQueuedJobs(
+      getRedrawQueue(projectName),
+      job => pipeline.projectProgress.normalizeKey(job.effectiveKey) === pipeline.projectProgress.normalizeKey(effectiveKey)
+        && Number(job.sceneIdx) === Number(sceneIdx)
+    );
     const result = await pipeline.deleteScene(effectiveKey, sceneIdx);
-    res.json({ success: true, message: `场景 #${sceneIdx} 已删除`, ...result });
+    res.json({ success: true, message: `场景 #${sceneIdx} 已删除`, removedQueuedRedraws, ...result });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -877,6 +1006,16 @@ app.get('/api/projects/:projectName/pipeline/status', async (req, res) => {
           ? {
               chapterKey: redrawQueues.get(projectName).current.chapterKey,
               sceneIdx: redrawQueues.get(projectName).current.sceneIdx
+            }
+          : null
+      },
+      chapterQueue: {
+        running: Boolean(chapterQueues.get(projectName)?.running),
+        pending: chapterQueues.get(projectName)?.items.length || 0,
+        pendingChapterKeys: chapterQueues.get(projectName)?.items.map(item => item.chapterKey) || [],
+        current: chapterQueues.get(projectName)?.current
+          ? {
+              chapterKey: chapterQueues.get(projectName).current.chapterKey
             }
           : null
       }
