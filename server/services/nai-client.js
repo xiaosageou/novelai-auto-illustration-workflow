@@ -554,9 +554,6 @@ export class NovelAIClient {
     } catch (e) {
       console.error("[NAI Client] 生图网络错误:", e);
       throw e;
-    } finally {
-      // 无论成功还是失败，均重置并更新冷却锁时间戳
-      globalCooldownManager.startCooldown();
     }
   }
 }

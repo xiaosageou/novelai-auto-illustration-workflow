@@ -1415,6 +1415,36 @@ test('NAI rejects once without dropping coordinates or character prompts', async
   assert.equal(payloads[0].parameters.v4_prompt.caption.char_captions.length, 2);
 });
 
+test('NAI generateImage does not restart cooldown after a successful submission', async () => {
+  const client = new NovelAIClient({
+    token: 'test-token',
+    baseUrl: 'https://image.novelai.net',
+    cooldownSeconds: 0
+  });
+  const originalFetch = globalThis.fetch;
+  const originalWaitForCooldown = globalCooldownManager.waitForCooldown;
+  const originalStartCooldown = globalCooldownManager.startCooldown;
+  let startCooldownCount = 0;
+  globalCooldownManager.waitForCooldown = async () => {};
+  globalCooldownManager.startCooldown = () => { startCooldownCount += 1; };
+  globalThis.fetch = async () => ({
+    status: 200,
+    arrayBuffer: async () => Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]).buffer
+  });
+
+  try {
+    await client.generateImage('1girl, indoors', {
+      model: 'nai-diffusion-4-5-full'
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalCooldownManager.waitForCooldown = originalWaitForCooldown;
+    globalCooldownManager.startCooldown = originalStartCooldown;
+  }
+
+  assert.equal(startCooldownCount, 0);
+});
+
 test('interaction actions map source, target, and mutual roles to NAI V4.5 tags', () => {
   const characters = [{ name: '甲' }, { name: '乙' }];
   assert.deepEqual(
