@@ -13,16 +13,22 @@ function App() {
     llm_url: "",
     llm_key: "",
     llm_model: "deepseek-chat",
+    llm_preset_id: "",
+    llm_rate_limit_enabled: true,
+    llm_rate_limit_rpm: 3,
     llm_api_presets: [],
     llm_character_dna_url: "",
     llm_character_dna_key: "",
     llm_character_dna_model: "",
+    llm_character_dna_preset_id: "",
     llm_scene_url: "",
     llm_scene_key: "",
     llm_scene_model: "",
+    llm_scene_preset_id: "",
     llm_nai_tags_url: "",
     llm_nai_tags_key: "",
     llm_nai_tags_model: "",
+    llm_nai_tags_preset_id: "",
     nai_token: "",
     nai_model: "nai-diffusion-4-5-full",
     nai_cooldown_seconds: 15,
@@ -382,7 +388,12 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/config`);
       const data = await res.json();
-      setConfig(data);
+      setConfig({
+        ...data,
+        llm_rate_limit_enabled: data.llm_rate_limit_enabled !== false,
+        llm_rate_limit_rpm: Number(data.llm_rate_limit_rpm) || 3,
+        llm_api_presets: (data.llm_api_presets || []).map(normalizePreset)
+      });
     } catch (e) {
       addLog("拉取全局配置失败: " + e.message, "error");
     }
@@ -407,11 +418,17 @@ function App() {
   };
 
   const llmTaskFields = {
-    default: { url: 'llm_url', key: 'llm_key', model: 'llm_model' },
-    characterDna: { url: 'llm_character_dna_url', key: 'llm_character_dna_key', model: 'llm_character_dna_model' },
-    scene: { url: 'llm_scene_url', key: 'llm_scene_key', model: 'llm_scene_model' },
-    naiTags: { url: 'llm_nai_tags_url', key: 'llm_nai_tags_key', model: 'llm_nai_tags_model' }
+    default: { url: 'llm_url', key: 'llm_key', model: 'llm_model', presetId: 'llm_preset_id' },
+    characterDna: { url: 'llm_character_dna_url', key: 'llm_character_dna_key', model: 'llm_character_dna_model', presetId: 'llm_character_dna_preset_id' },
+    scene: { url: 'llm_scene_url', key: 'llm_scene_key', model: 'llm_scene_model', presetId: 'llm_scene_preset_id' },
+    naiTags: { url: 'llm_nai_tags_url', key: 'llm_nai_tags_key', model: 'llm_nai_tags_model', presetId: 'llm_nai_tags_preset_id' }
   };
+
+  const normalizePreset = (preset = {}) => ({
+    ...preset,
+    rateLimitEnabled: preset?.rateLimitEnabled !== false,
+    rateLimitRpm: Number(preset?.rateLimitRpm) || 3
+  });
 
   const fetchModels = async (scope = 'default') => {
     const fields = llmTaskFields[scope];
@@ -443,21 +460,39 @@ function App() {
     const fields = llmTaskFields[scope];
     setConfig(prev => ({
       ...prev,
+      [fields.presetId]: "",
       [fields.url]: prev.llm_url,
       [fields.key]: prev.llm_key,
       [fields.model]: prev.llm_model
     }));
   };
 
+  const bindPresetToScope = (scope, presetId) => {
+    const fields = llmTaskFields[scope];
+    const preset = normalizePreset((config.llm_api_presets || []).find(item => item.id === presetId));
+    if (!preset?.id) return;
+
+    setConfig(prev => ({
+      ...prev,
+      [fields.presetId]: preset.id,
+      [fields.url]: preset.url || "",
+      [fields.key]: preset.key || "",
+      [fields.model]: preset.model || ""
+    }));
+  };
+
   const copyDefaultLlmToAllTasks = () => {
     setConfig(prev => ({
       ...prev,
+      llm_character_dna_preset_id: "",
       llm_character_dna_url: prev.llm_url,
       llm_character_dna_key: prev.llm_key,
       llm_character_dna_model: prev.llm_model,
+      llm_scene_preset_id: "",
       llm_scene_url: prev.llm_url,
       llm_scene_key: prev.llm_key,
       llm_scene_model: prev.llm_model,
+      llm_nai_tags_preset_id: "",
       llm_nai_tags_url: prev.llm_url,
       llm_nai_tags_key: prev.llm_key,
       llm_nai_tags_model: prev.llm_model
@@ -1011,6 +1046,7 @@ function App() {
   const renderTaskLlmCard = (scope, title, description, accent) => {
     const fields = llmTaskFields[scope];
     const models = availableModels[scope] || [];
+    const taskPresetId = config[fields.presetId] || "";
     return (
       <section className="llm-task-card" style={{ '--task-accent': accent }}>
         <div className="llm-task-card__header">
@@ -1024,11 +1060,35 @@ function App() {
         </div>
         <div className="llm-task-grid">
           <label>
+            <span>绑定 API 预设</span>
+            <select
+              value={taskPresetId}
+              onChange={(e) => {
+                const presetId = e.target.value;
+                if (!presetId) {
+                  setConfig({ ...config, [fields.presetId]: "" });
+                  return;
+                }
+                bindPresetToScope(scope, presetId);
+              }}
+            >
+              <option value="">继承默认连接</option>
+              {(config.llm_api_presets || []).map(rawPreset => {
+                const preset = normalizePreset(rawPreset);
+                return (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.name} ({preset.rateLimitEnabled !== false ? `${preset.rateLimitRpm || 3} RPM` : '不限流'})
+                  </option>
+                );
+              })}
+            </select>
+          </label>
+          <label>
             <span>Base URL</span>
             <input
               type="text"
               value={config[fields.url] || ""}
-              onChange={(e) => setConfig({ ...config, [fields.url]: e.target.value })}
+              onChange={(e) => setConfig({ ...config, [fields.presetId]: "", [fields.url]: e.target.value })}
               placeholder={config.llm_url || "留空时使用默认 URL"}
             />
           </label>
@@ -1037,20 +1097,20 @@ function App() {
             <input
               type="password"
               value={config[fields.key] || ""}
-              onChange={(e) => setConfig({ ...config, [fields.key]: e.target.value })}
+              onChange={(e) => setConfig({ ...config, [fields.presetId]: "", [fields.key]: e.target.value })}
               placeholder={config.llm_key ? "留空时使用默认 Key" : "输入 API Key"}
             />
           </label>
           <label className="llm-task-model">
             <span>Model</span>
             <div className="llm-model-row">
-              <input
-                type="text"
-                list={`llm-models-${scope}`}
-                value={config[fields.model] || ""}
-                onChange={(e) => setConfig({ ...config, [fields.model]: e.target.value })}
-                placeholder={config.llm_model || "留空时使用默认模型"}
-              />
+                <input
+                  type="text"
+                  list={`llm-models-${scope}`}
+                  value={config[fields.model] || ""}
+                  onChange={(e) => setConfig({ ...config, [fields.presetId]: "", [fields.model]: e.target.value })}
+                  placeholder={config.llm_model || "留空时使用默认模型"}
+                />
               <button type="button" className="btn-secondary" onClick={() => fetchModels(scope)} disabled={isLoadingModels[scope]}>
                 <RefreshCw size={12} className={isLoadingModels[scope] ? "animate-spin" : ""} />
                 {isLoadingModels[scope] ? "获取中" : "模型"}
@@ -2042,13 +2102,16 @@ function App() {
                         onChange={(e) => {
                           const presetId = e.target.value;
                           if (!presetId) return;
-                          const preset = (config.llm_api_presets || []).find(p => p.id === presetId);
+                          const preset = normalizePreset((config.llm_api_presets || []).find(p => p.id === presetId));
                           if (preset) {
                             setConfig({
                               ...config,
+                              llm_preset_id: preset.id,
                               llm_url: preset.url,
                               llm_key: preset.key,
-                              llm_model: preset.model
+                              llm_model: preset.model,
+                              llm_rate_limit_enabled: preset.rateLimitEnabled !== false,
+                              llm_rate_limit_rpm: Number(preset.rateLimitRpm) || 3
                             });
                           }
                           // 重置下拉菜单选择
@@ -2074,7 +2137,9 @@ function App() {
                             name: name.trim(),
                             url: config.llm_url || "",
                             key: config.llm_key || "",
-                            model: config.llm_model || ""
+                            model: config.llm_model || "",
+                            rateLimitEnabled: config.llm_rate_limit_enabled !== false,
+                            rateLimitRpm: Number(config.llm_rate_limit_rpm) || 3
                           };
                           const presets = [...(config.llm_api_presets || []), newPreset];
                           setConfig({ ...config, llm_api_presets: presets });
@@ -2111,12 +2176,80 @@ function App() {
                       )}
                     </div>
                   </div>
+                  {(config.llm_api_presets || []).length > 0 && (
+                    <div style={{ display: 'grid', gap: '8px', marginTop: '-2px' }}>
+                      {(config.llm_api_presets || []).map(rawPreset => {
+                        const preset = normalizePreset(rawPreset);
+                        return (
+                          <div key={preset.id} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px', padding: '10px', background: 'rgba(0,0,0,0.18)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', marginBottom: '8px', alignItems: 'center' }}>
+                              <div style={{ color: 'white', fontSize: '0.85rem', fontWeight: 600 }}>
+                                {preset.name} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>({preset.model || '未填模型'})</span>
+                              </div>
+                              <button
+                                type="button"
+                                className="btn-secondary"
+                                onClick={() => {
+                                  setConfig({
+                                    ...config,
+                                    llm_preset_id: preset.id,
+                                    llm_url: preset.url || "",
+                                    llm_key: preset.key || "",
+                                    llm_model: preset.model || "",
+                                    llm_rate_limit_enabled: preset.rateLimitEnabled !== false,
+                                    llm_rate_limit_rpm: Number(preset.rateLimitRpm) || 3
+                                  });
+                                }}
+                                style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                              >
+                                载入为默认
+                              </button>
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '10px', alignItems: 'end' }}>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={preset.rateLimitEnabled !== false}
+                                  onChange={(e) => setConfig(prev => ({
+                                    ...prev,
+                                    llm_api_presets: (prev.llm_api_presets || []).map(item => item.id === preset.id ? {
+                                      ...item,
+                                      rateLimitEnabled: e.target.checked
+                                    } : item)
+                                  }))}
+                                />
+                                启用 3 RPM / 自定义 RPM 限流
+                              </label>
+                              <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                RPM
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="120"
+                                  step="1"
+                                  value={Number(preset.rateLimitRpm) || 3}
+                                  onChange={(e) => setConfig(prev => ({
+                                    ...prev,
+                                    llm_api_presets: (prev.llm_api_presets || []).map(item => item.id === preset.id ? {
+                                      ...item,
+                                      rateLimitRpm: Number(e.target.value) || 3
+                                    } : item)
+                                  }))}
+                                  style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   <div>
                     <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>LLM Base URL</label>
                     <input 
                       type="text" 
                       value={config.llm_url}
-                      onChange={(e) => setConfig({ ...config, llm_url: e.target.value })}
+                      onChange={(e) => setConfig({ ...config, llm_preset_id: "", llm_url: e.target.value })}
                       style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                     />
                   </div>
@@ -2125,7 +2258,7 @@ function App() {
                     <input 
                       type="password" 
                       value={config.llm_key}
-                      onChange={(e) => setConfig({ ...config, llm_key: e.target.value })}
+                      onChange={(e) => setConfig({ ...config, llm_preset_id: "", llm_key: e.target.value })}
                       style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                     />
                   </div>
@@ -2136,7 +2269,7 @@ function App() {
                         type="text" 
                         list="llm-models-datalist"
                         value={config.llm_model}
-                        onChange={(e) => setConfig({ ...config, llm_model: e.target.value })}
+                        onChange={(e) => setConfig({ ...config, llm_preset_id: "", llm_model: e.target.value })}
                         style={{ flex: 1, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                         placeholder="例如: deepseek-chat"
                       />
@@ -2161,6 +2294,28 @@ function App() {
                         {modelError.default}
                       </div>
                     )}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: '10px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.85rem', border: '1px solid var(--border-light)', borderRadius: '8px', padding: '10px 12px' }}>
+                      <input
+                        type="checkbox"
+                        checked={config.llm_rate_limit_enabled !== false}
+                        onChange={(e) => setConfig({ ...config, llm_preset_id: "", llm_rate_limit_enabled: e.target.checked })}
+                      />
+                      默认连接启用 RPM 限流
+                    </label>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>默认连接 RPM</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="120"
+                        step="1"
+                        value={config.llm_rate_limit_rpm ?? 3}
+                        onChange={(e) => setConfig({ ...config, llm_preset_id: "", llm_rate_limit_rpm: Number(e.target.value) || 3 })}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                      />
+                    </div>
                   </div>
                   <div className="llm-routing-panel">
                     <div className="llm-routing-panel__intro">

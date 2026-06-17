@@ -255,12 +255,26 @@ class GlobalRateLimiter {
   }
 }
 
-// 实例化全局 3 RPM 限流排队器
-const llmRateLimiter = new GlobalRateLimiter(3, 60000);
+const llmRateLimiterRegistry = new Map();
 
-async function postChatCompletionWith429Retry({ url, headers, payload, timeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]" }) {
-  // 在发起真正网络请求前，强制通过全局 3 RPM 速率限制器排队
-  await llmRateLimiter.acquire();
+function getRateLimiter({ enabled = true, rpm = 3, key = 'default' } = {}) {
+  const numericRpm = Number(rpm);
+  if (!enabled || !Number.isFinite(numericRpm) || numericRpm <= 0) {
+    return null;
+  }
+
+  const limiterKey = `${key}::${numericRpm}`;
+  if (!llmRateLimiterRegistry.has(limiterKey)) {
+    llmRateLimiterRegistry.set(limiterKey, new GlobalRateLimiter(numericRpm, 60000));
+  }
+  return llmRateLimiterRegistry.get(limiterKey);
+}
+
+async function postChatCompletionWith429Retry({ url, headers, payload, timeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null }) {
+  const limiter = getRateLimiter(rateLimit);
+  if (limiter) {
+    await limiter.acquire();
+  }
 
   let delaySeconds = initialDelaySeconds;
   for (let attempt = 0; ; attempt++) {
@@ -285,7 +299,7 @@ async function postChatCompletionWith429Retry({ url, headers, payload, timeoutMs
     console.warn(`${logPrefix} 触发 429，${delaySeconds} 秒后重试（${attempt + 1}/${max429Retries}）...`);
     
     // 触发 429 时，通知全局限流器同步进行冷却冻结，挂起所有新并发请求
-    llmRateLimiter.notify429(delaySeconds * 1000);
+    limiter?.notify429(delaySeconds * 1000);
 
     await waitMs(delaySeconds * 1000);
     delaySeconds *= 2;
@@ -739,7 +753,7 @@ function buildSceneExtractionUserContent({
 }
 
 export class LLMExtractor {
-  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", danbooru_mcp_url = "", prompt_style = "natural_language" } = {}) {
+  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", danbooru_mcp_url = "", prompt_style = "natural_language", rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default" } = {}) {
     this.baseUrl = baseUrl.trim().replace(/\/+$/, "");
     this.apiKey = apiKey.trim();
     this.system_prompt_extract_scenes = system_prompt_extract_scenes;
@@ -749,9 +763,12 @@ export class LLMExtractor {
     this.system_prompt_regenerate_scene = system_prompt_regenerate_scene;
     this.danbooru_mcp_url = danbooru_mcp_url;
     this.prompt_style = prompt_style || "natural_language";
+    this.rateLimitEnabled = rateLimitEnabled !== false;
+    this.rateLimitRpm = Number(rateLimitRpm) || 3;
+    this.rateLimitKey = String(rateLimitKey || "default");
   }
 
-  updateConfig(baseUrl, apiKey, system_prompt_extract_scenes, system_prompt_character_dna, system_prompt_advanced_prompt, system_prompt_regenerate_scene, danbooru_mcp_url, system_prompt_advanced_prompt_nl, prompt_style) {
+  updateConfig(baseUrl, apiKey, system_prompt_extract_scenes, system_prompt_character_dna, system_prompt_advanced_prompt, system_prompt_regenerate_scene, danbooru_mcp_url, system_prompt_advanced_prompt_nl, prompt_style, rateLimitEnabled, rateLimitRpm, rateLimitKey) {
     this.baseUrl = (baseUrl || "").trim().replace(/\/+$/, "");
     this.apiKey = (apiKey || "").trim();
     if (system_prompt_extract_scenes !== undefined) this.system_prompt_extract_scenes = system_prompt_extract_scenes;
@@ -761,6 +778,17 @@ export class LLMExtractor {
     if (system_prompt_regenerate_scene !== undefined) this.system_prompt_regenerate_scene = system_prompt_regenerate_scene;
     if (danbooru_mcp_url !== undefined) this.danbooru_mcp_url = danbooru_mcp_url;
     if (prompt_style !== undefined) this.prompt_style = prompt_style;
+    if (rateLimitEnabled !== undefined) this.rateLimitEnabled = rateLimitEnabled !== false;
+    if (rateLimitRpm !== undefined) this.rateLimitRpm = Number(rateLimitRpm) || 3;
+    if (rateLimitKey !== undefined) this.rateLimitKey = String(rateLimitKey || "default");
+  }
+
+  getRateLimitConfig() {
+    return {
+      enabled: this.rateLimitEnabled !== false,
+      rpm: Number(this.rateLimitRpm) || 3,
+      key: this.rateLimitKey || this.baseUrl || 'default'
+    };
   }
 
   getHeaders() {
@@ -856,7 +884,8 @@ export class LLMExtractor {
           timeoutMs: 180000,
           max429Retries: 5,
           initialDelaySeconds: 10,
-          logPrefix: "[LLM Extractor] 场景提炼"
+          logPrefix: "[LLM Extractor] 场景提炼",
+          rateLimit: this.getRateLimitConfig()
         });
 
         if (res.status !== 200) {
@@ -991,7 +1020,8 @@ export class LLMExtractor {
             timeoutMs: 120000,
             max429Retries: 5,
             initialDelaySeconds: 10,
-            logPrefix: "[LLM Extractor]"
+            logPrefix: "[LLM Extractor]",
+            rateLimit: this.getRateLimitConfig()
           });
 
           if (res.status !== 200) {
@@ -1112,7 +1142,8 @@ export class LLMExtractor {
           timeoutMs: 180000,
           max429Retries: 5,
           initialDelaySeconds: 10,
-          logPrefix: "[LLM Extractor]"
+          logPrefix: "[LLM Extractor]",
+          rateLimit: this.getRateLimitConfig()
         });
 
         if (res.status !== 200) {
@@ -1222,7 +1253,8 @@ export class LLMExtractor {
         timeoutMs: 180000,
         max429Retries: 5,
         initialDelaySeconds: 10,
-        logPrefix: "[LLM Extractor] 角色DNA提取"
+        logPrefix: "[LLM Extractor] 角色DNA提取",
+        rateLimit: this.getRateLimitConfig()
       });
 
       if (res.status !== 200) {
@@ -1340,7 +1372,8 @@ export class LLMExtractor {
         timeoutMs: 60000,
         max429Retries: 5,
         initialDelaySeconds: 10,
-        logPrefix: "[LLM Extractor] 检索分词重写"
+        logPrefix: "[LLM Extractor] 检索分词重写",
+        rateLimit: this.getRateLimitConfig()
       });
       if (res.status === 200) {
         const resData = await res.json();
@@ -1940,7 +1973,8 @@ export class LLMExtractor {
             timeoutMs: 120000,
             max429Retries: 5,
             initialDelaySeconds: 10,
-            logPrefix: "[LLM Extractor] 高级参数生成"
+            logPrefix: "[LLM Extractor] 高级参数生成",
+            rateLimit: this.getRateLimitConfig()
           });
           if (res.status !== 200) throw new Error(`HTTP Error ${res.status}`);
 
@@ -2053,7 +2087,8 @@ export class LLMExtractor {
         timeoutMs: 120000,
         max429Retries: 5,
         initialDelaySeconds: 10,
-        logPrefix: "[LLM Extractor] 词组转化"
+        logPrefix: "[LLM Extractor] 词组转化",
+        rateLimit: this.getRateLimitConfig()
       });
 
       if (res.status !== 200) {

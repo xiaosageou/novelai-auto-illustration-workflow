@@ -19,16 +19,22 @@ const DEFAULT_CONFIG = {
   llm_url: "",
   llm_key: "",
   llm_model: "deepseek-chat",
+  llm_preset_id: "",
+  llm_rate_limit_enabled: true,
+  llm_rate_limit_rpm: 3,
   llm_api_presets: [],
   llm_character_dna_url: "",
   llm_character_dna_key: "",
   llm_character_dna_model: "",
+  llm_character_dna_preset_id: "",
   llm_scene_url: "",
   llm_scene_key: "",
   llm_scene_model: "",
+  llm_scene_preset_id: "",
   llm_nai_tags_url: "",
   llm_nai_tags_key: "",
   llm_nai_tags_model: "",
+  llm_nai_tags_preset_id: "",
   nai_token: "",
   nai_model: "nai-diffusion-4-5-full",
   nai_cooldown_seconds: 15,
@@ -54,13 +60,35 @@ const DEFAULT_CONFIG = {
   prompt_style: 'natural_language'
 };
 
+function runningInDocker() {
+  return existsSync('/.dockerenv');
+}
+
+function normalizeProxyUrl(proxyUrl) {
+  if (!proxyUrl) return proxyUrl;
+
+  try {
+    const parsed = new URL(proxyUrl);
+    const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname);
+    if (runningInDocker() && isLoopback) {
+      parsed.hostname = 'host.docker.internal';
+      console.warn(`[Proxy] 检测到 Docker 内使用本机回环代理，已自动改写为: ${parsed.toString()}`);
+    }
+    return parsed.toString();
+  } catch (error) {
+    console.warn(`[Proxy] 代理地址解析失败，保持原值: ${error.message}`);
+    return proxyUrl;
+  }
+}
+
 // Configure global proxy dispatcher for global fetch
 function applyProxy(proxyUrl) {
   if (proxyUrl) {
     try {
-      const proxyAgent = new ProxyAgent(proxyUrl);
+      const effectiveProxyUrl = normalizeProxyUrl(proxyUrl);
+      const proxyAgent = new ProxyAgent(effectiveProxyUrl);
       setGlobalDispatcher(proxyAgent);
-      console.log(`[Proxy] 已成功加载全局 Fetch 代理: ${proxyUrl}`);
+      console.log(`[Proxy] 已成功加载全局 Fetch 代理: ${effectiveProxyUrl}`);
     } catch (err) {
       console.error(`[Proxy] 载入代理失败: ${err.message}`);
     }

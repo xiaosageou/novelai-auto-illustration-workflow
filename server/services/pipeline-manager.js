@@ -13,6 +13,14 @@ import { globalCooldownManager } from '../utils/cooldown.js';
 const CHARACTER_DNA_LONG_CHAPTER_THRESHOLD = 5000;
 const CHARACTER_DNA_LONG_CHAPTER_BATCH_SIZE = 5;
 
+function normalizePresetList(presets = []) {
+  return (Array.isArray(presets) ? presets : []).map(preset => ({
+    ...preset,
+    rateLimitEnabled: preset?.rateLimitEnabled !== false,
+    rateLimitRpm: Number(preset?.rateLimitRpm) || 3
+  }));
+}
+
 export function resolveTaskLlmConfig(config = {}, task = 'scene') {
   const prefixMap = {
     characterDna: 'llm_character_dna',
@@ -20,10 +28,33 @@ export function resolveTaskLlmConfig(config = {}, task = 'scene') {
     naiTags: 'llm_nai_tags'
   };
   const prefix = prefixMap[task] || prefixMap.scene;
+  const presets = normalizePresetList(config.llm_api_presets);
+  const defaultPreset = presets.find(preset => preset.id === config.llm_preset_id);
+  const taskPreset = presets.find(preset => preset.id === config[`${prefix}_preset_id`]);
+  const activePreset = taskPreset || defaultPreset || null;
+
+  if (activePreset) {
+    return {
+      baseUrl: activePreset.url || "",
+      apiKey: activePreset.key || "",
+      model: config[`${prefix}_model`] || activePreset.model || config.llm_model || "deepseek-chat",
+      rateLimitEnabled: activePreset.rateLimitEnabled !== false,
+      rateLimitRpm: Number(activePreset.rateLimitRpm) || 3,
+      rateLimitKey: `preset:${activePreset.id}`
+    };
+  }
+
   return {
     baseUrl: config[`${prefix}_url`] || config.llm_url || "",
     apiKey: config[`${prefix}_key`] || config.llm_key || "",
-    model: config[`${prefix}_model`] || config.llm_model || "deepseek-chat"
+    model: config[`${prefix}_model`] || config.llm_model || "deepseek-chat",
+    rateLimitEnabled: config.llm_rate_limit_enabled !== false,
+    rateLimitRpm: Number(config.llm_rate_limit_rpm) || 3,
+    rateLimitKey: task === 'scene'
+      ? 'direct:scene'
+      : task === 'characterDna'
+        ? 'direct:character-dna'
+        : 'direct:nai-tags'
   };
 }
 
@@ -99,7 +130,10 @@ export class PipelineManager {
       system_prompt_advanced_prompt: this.config.system_prompt_advanced_prompt || "",
       system_prompt_advanced_prompt_nl: this.config.system_prompt_advanced_prompt_nl || "",
       danbooru_mcp_url: this.config.danbooru_mcp_url || "",
-      prompt_style: this.config.prompt_style || "natural_language"
+      prompt_style: this.config.prompt_style || "natural_language",
+      rateLimitEnabled: connection.rateLimitEnabled,
+      rateLimitRpm: connection.rateLimitRpm,
+      rateLimitKey: connection.rateLimitKey
     });
   }
 
