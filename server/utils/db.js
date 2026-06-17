@@ -51,20 +51,35 @@ function normalizeConfidence(value) {
 export async function writeJsonAtomic(filePath, data) {
   const dir = path.dirname(filePath);
   const tempPath = path.join(dir, `${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).substring(2, 8)}.tmp`);
+  const jsonString = JSON.stringify(data, null, 4);
   
   try {
     // 确保父目录存在
     await fs.mkdir(dir, { recursive: true });
-    
-    // 序列化 JSON 数据
-    const jsonString = JSON.stringify(data, null, 4);
-    
+
     // 写入临时文件
     await fs.writeFile(tempPath, jsonString, 'utf-8');
-    
+
     // 原子性重命名替换目标文件
     await fs.rename(tempPath, filePath);
   } catch (error) {
+    // Docker 单文件 bind mount 场景下，临时文件通常写在容器层，
+    // rename 覆盖挂载目标时会因为跨设备或 mount point 替换失败。
+    if (['EXDEV', 'EBUSY', 'EPERM'].includes(error?.code)) {
+      try {
+        await fs.writeFile(filePath, jsonString, 'utf-8');
+        try {
+          await fs.unlink(tempPath);
+        } catch {}
+        return;
+      } catch (writeError) {
+        try {
+          await fs.unlink(tempPath);
+        } catch {}
+        throw writeError;
+      }
+    }
+
     // 发生异常时清理可能残留的临时文件
     try {
       await fs.unlink(tempPath);
