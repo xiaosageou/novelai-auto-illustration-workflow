@@ -9,6 +9,7 @@ import { loadVibeBundleForModel } from '../utils/vibe-bundle.js';
 import { normalizeSceneCard, serializeSceneForMatching } from '../utils/scene-structure.js';
 import { findOriginalTriggerSentence } from '../utils/prompt-cleaner.js';
 import { globalCooldownManager } from '../utils/cooldown.js';
+import { extractChapterScenesInBatches } from '../utils/chapter-scene-batching.js';
 
 const CHARACTER_DNA_LONG_CHAPTER_THRESHOLD = 5000;
 const CHARACTER_DNA_LONG_CHAPTER_BATCH_SIZE = 5;
@@ -566,9 +567,14 @@ export class PipelineManager {
             ? `英文总词数 ${countMetrics.count}，按 ceil(词数 / ${countMetrics.divisor})`
             : `有效字符数 ${countMetrics.count}，按 ceil(字数 / ${countMetrics.divisor})`;
           this.writeLog(`[Pipeline] 章节「${chap.chapter}」${countDescription} 计算为 ${requestedSceneCount} 个分镜场景。`);
-          scenes = await this.sceneExtractor.extractChapterScenes(
-            chap.chapter, chap.content, sceneModel, (logMsg) => this.writeLog(logMsg), requestedSceneCount
-          );
+          scenes = await extractChapterScenesInBatches({
+            chapterTitle: chap.chapter,
+            text: chap.content,
+            model: sceneModel,
+            sceneExtractor: this.sceneExtractor,
+            onProgressLog: (logMsg) => this.writeLog(logMsg),
+            requestedSceneCount
+          });
           this.writeLog(`[Pipeline] 成功提炼本章共 ${scenes.length} 幅插画场景。`);
           const initialScenes = scenes.map(s => {
             const normalizedScene = normalizeSceneCard(s);
@@ -974,9 +980,14 @@ export class PipelineManager {
           ? `英文总词数 ${countMetrics.count}，按 ceil(词数 / ${countMetrics.divisor})`
           : `有效字符数 ${countMetrics.count}，按 ceil(字数 / ${countMetrics.divisor})`;
         this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」${countDescription} 计算为 ${requestedSceneCount} 个分镜场景。`);
-        scenes = await this.sceneExtractor.extractChapterScenes(
-          chap.chapter, chap.content, sceneModel, (logMsg) => this.writeLog(logMsg), requestedSceneCount
-        );
+        scenes = await extractChapterScenesInBatches({
+          chapterTitle: chap.chapter,
+          text: chap.content,
+          model: sceneModel,
+          sceneExtractor: this.sceneExtractor,
+          onProgressLog: (logMsg) => this.writeLog(logMsg),
+          requestedSceneCount
+        });
         this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」成功提炼 ${scenes.length} 幅插画场景。`);
         const initialScenes = scenes.map(s => {
           const normalizedScene = normalizeSceneCard(s);
