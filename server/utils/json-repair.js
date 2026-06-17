@@ -12,9 +12,14 @@ export function checkTextCompleteness(text) {
     return { isComplete: false, reason: "内容为空" };
   }
 
-  // 过滤/剥离可能存在于前方的 <think>...</think> 或 <thinking>...</thinking> 标签内容，防止干扰闭合检测
+  // 过滤/剥离可能存在于前方的 <think>...</think> 或 <thinking>...</thinking> 或 /think/ 标签内容，防止干扰闭合检测
   trimmed = trimmed.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   trimmed = trimmed.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '').trim();
+  trimmed = trimmed.replace(/\/think\/[\s\S]*?\/think\//gi, '').trim();
+  if (trimmed.includes('/think/')) {
+    const lastIdx = trimmed.lastIndexOf('/think/');
+    trimmed = trimmed.substring(lastIdx + 7).trim();
+  }
 
   // 1. 检测高数题垫底标签是否完全闭合
   let hasMathPrefix = false;

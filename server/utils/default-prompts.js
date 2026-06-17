@@ -274,7 +274,15 @@ For every scene whose nsfw_rating is not "sfw", base_prompt MUST include a clear
 - Use one coherent camera setup. Do not output multiple_views, split_screen, contradictory viewpoints, or several unrelated angles.
 
 ## Output Format
-You MUST output a single valid JSON object (no markdown fences, no extra text):
+You MUST output your thought process first, which MUST be strictly wrapped in '/think/' tags, followed by the JSON object.
+For example:
+/think/
+1. Orientation selection analysis (based on character count and scene card detail).
+2. NSFW rating and physical staging analysis (sfw, mild, moderate, or explicit; penetration inset check; environment privacy silhouette prevention check).
+3. Character DNA consistency check (which traits to inherit, filtering out transient clothing/expression/pose states).
+4. Spatial contact and interaction pairing check (validating source/target/mutual assignments).
+5. Tag sequence order self-check (making sure tags inside base_prompt and character_prompts follow the strict sequence).
+/think/
 {
   "orientation": "portrait" | "landscape" | "square" | "default",
   "base_prompt": "comma-separated English Danbooru tags for: global NSFW tags + environment + lighting + camera + atmosphere",
@@ -381,7 +389,7 @@ Only add scene-specific negatives relevant to this particular scene.
 Leave empty string "" if no specific negatives are needed beyond pipeline defaults (except for private scenes where the silhouette prevention tags are mandatory).
 
 ## Critical
-Output ONLY the JSON object. No explanations, no markdown, no extra text whatsoever.`;
+Output the thought process wrapped in '/think/' tags first, then output the JSON object. No other markdown, code fences, or explanations are allowed.`;
 
 
 // ═══════════════════════════════════════════════════════════
@@ -449,7 +457,15 @@ For non-sfw scenes, base_prompt must include a clear camera description: e.g., "
 If two or more named characters are present, prefer landscape or square.
 
 ## Output Format
-You MUST output a single valid JSON object (no markdown fences, no extra text):
+You MUST output your thought process first, which MUST be strictly wrapped in '/think/' tags, followed by the JSON object.
+For example:
+/think/
+1. Orientation selection analysis (based on character count).
+2. NSFW rating and physical staging analysis (sfw, mild, moderate, or explicit; penetration inset check; environment privacy silhouette prevention check).
+3. Character DNA consistency check (which traits to inherit, filtering out transient clothing/expression/pose states).
+4. Spatial contact and interaction pairing check (validating source/target/mutual assignments).
+5. Natural language and minimal weights verification (checking that prompt contains NO comma-separated tag lists, weight counts <= 2 and within [1.1, 1.3], and no redundancy between base and character prompts).
+/think/
 {
   "orientation": "portrait" | "landscape" | "square" | "default",
   "base_prompt": "Natural language description of the global scene, environment, lighting, camera, atmosphere, and inter-character spatial/interaction relationships. 40-80 words. No individual character details.",
@@ -495,7 +511,7 @@ The interaction_actions[].action and interaction_requirements[].action fields mu
 - base_prompt must be a non-empty string.
 - character_prompts must have exactly one entry per visible scene character, in scene-card order.
 - negative_prompt must be short and scene-specific. For private/secluded scenes, it must include the silhouette prevention tags.
-Output ONLY the JSON object. No explanations, no markdown, no extra text whatsoever.`;
+Output the thought process wrapped in '/think/' tags first, then output the JSON object. No other markdown, code fences, or explanations are allowed.`;
 
 // DEFAULT_ADVANCED_PROMPT 默认指向自然语言版；旧版可通过 DEFAULT_ADVANCED_PROMPT_LEGACY 访问
 export const DEFAULT_ADVANCED_PROMPT = DEFAULT_ADVANCED_PROMPT_V45_NL;

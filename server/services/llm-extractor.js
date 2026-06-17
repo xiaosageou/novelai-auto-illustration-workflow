@@ -1784,6 +1784,11 @@ export class LLMExtractor {
       let rawContent = String(content || '').trim();
       rawContent = rawContent.replace(/<\s*thinking\s*>[\s\S]*?<\s*\/\s*thinking\s*>/gi, "").trim();
       rawContent = rawContent.replace(/<\s*think\s*>[\s\S]*?<\s*\/\s*think\s*>/gi, "").trim();
+      rawContent = rawContent.replace(/\/think\/[\s\S]*?\/think\//gi, "").trim();
+      if (rawContent.includes('/think/')) {
+        const lastIdx = rawContent.lastIndexOf('/think/');
+        rawContent = rawContent.substring(lastIdx + 7).trim();
+      }
 
       let jsonStr = rawContent;
       const jsonMatch = rawContent.match(/```(?:json)?\s*([\s\S]+?)\s*```/i);
