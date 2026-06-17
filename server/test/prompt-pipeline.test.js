@@ -720,6 +720,7 @@ test('character expression cleanup keeps restrained scene emotion without flatte
   assert.match(result.characterPrompts[0], /worried/);
   assert.match(result.characterPrompts[0], /slightly furrowed brows/);
   assert.doesNotMatch(result.characterPrompts[0], /calm_expression|natural_expression|crazy_grin/);
+  assert.doesNotMatch(result.characterPrompts[0], /closed mouth|relaxed lips/);
   assert.match(result.characterPrompts[1], /surprised/);
   assert.match(result.characterPrompts[1], /raised eyebrows/);
   assert.match(result.characterPrompts[1], /slightly parted lips/);
@@ -746,6 +747,7 @@ test('NSFW character expressions follow each character state without exaggerated
   assert.match(result.characterPrompts[1], /dazed expression/);
   assert.match(result.characterPrompts[1], /unfocused eyes/);
   assert.match(result.characterPrompts[1], /lowered eyelids/);
+  assert.doesNotMatch(result.characterPrompts[1], /relaxed lips/);
   assert.doesNotMatch(result.characterPrompts[1], /calm_expression|evil_smile|distorted_mouth/);
 });
 

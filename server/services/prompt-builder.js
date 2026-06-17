@@ -255,16 +255,13 @@ function 构建稳定表情提示词(expression = '', nsfwRating = 'sfw') {
       [/情欲|欲望|发情|迷离|媚眼|诱惑|aroused|lust|desire|bedroom eyes/i, 'aroused expression, bedroom eyes, blush, slightly parted lips'],
       [/羞耻|羞涩|难堪|屈辱|尴尬|embarrass|ashamed|humiliat/i, 'embarrassed, deep blush, averted gaze, tense eyebrows'],
       [/疼痛|痛苦|难受|挣扎|pained|painful|suffering/i, 'pained expression, furrowed brows, moist eyes, slightly parted lips'],
-      [/虚脱|疲惫|无力|高潮后|事后|exhausted|spent|post-coital|after sex/i, 'dazed expression, unfocused eyes, lowered eyelids, flushed face, relaxed lips'],
+      [/虚脱|疲惫|无力|高潮后|事后|exhausted|spent|post-coital|after sex/i, 'dazed expression, unfocused eyes, lowered eyelids, flushed face'],
       [/挑逗|戏谑|主动|得意|诱惑|teasing|seductive|playful/i, 'teasing expression, narrowed eyes, faint smile, blush'],
       [/满足|餍足|满意|得逞|satisfied|contented/i, 'satisfied expression, softened eyes, faint smile'],
       [/紧张|不安|害怕|恐惧|抗拒|nervous|anxious|fearful|afraid/i, 'tense expression, worried eyes, slightly furrowed brows']
     ];
     const nsfwEmotion = nsfwEmotionRules.find(([pattern]) => pattern.test(text))?.[1] || '';
-    if (nsfwEmotion) {
-      const mouthAlreadySpecified = /parted lips|biting lip|closed mouth|relaxed lips|faint smile/i.test(nsfwEmotion);
-      return mergePositivePromptParts(nsfwEmotion, mouthAlreadySpecified ? '' : 'relaxed lips');
-    }
+    if (nsfwEmotion) return mergePositivePromptParts(nsfwEmotion);
   }
 
   const emotionRules = [
@@ -282,11 +279,7 @@ function 构建稳定表情提示词(expression = '', nsfwRating = 'sfw') {
     [/欣慰|温柔|宠溺|喜悦|开心|高兴|微笑|浅笑|轻笑|smile|smiling|happy|gentle/i, 'slight smile, softened eyes']
   ];
   const emotion = emotionRules.find(([pattern]) => pattern.test(text))?.[1] || '';
-  const allowsSlightlyPartedLips = /惊讶|吃惊|错愕|震惊|诧异|surprised|shocked/i.test(text);
-  return mergePositivePromptParts(
-    emotion,
-    allowsSlightlyPartedLips ? 'relaxed lips' : 'closed mouth, relaxed lips'
-  );
+  return mergePositivePromptParts(emotion);
 }
 
 function 净化角色表情提示词(prompt = '', expression = '', nsfwRating = 'sfw') {
