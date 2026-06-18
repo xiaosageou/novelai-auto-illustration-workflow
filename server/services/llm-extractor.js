@@ -2,11 +2,13 @@ import { robustJsonLoads, checkTextCompleteness } from '../utils/json-repair.js'
 import { conservativeCompletionNaiWeights, cleanCharacterDnaTags, isTransientTag, preserveTextForLlm } from '../utils/prompt-cleaner.js';
 import { normalizeSceneCard, buildSceneDescription, getSceneCharacters } from '../utils/scene-structure.js';
 import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL, DEFAULT_ADVANCED_PROMPT_LEGACY, DEFAULT_REGENERATE_SCENE_PROMPT } from '../utils/default-prompts.js';
+import { estimateV45Tokens } from './prompt-builder.js';
 import { searchTagsLocal, getRelatedTagsLocal } from './local-tag-searcher.js';
 import { searchTagsMcp, getRelatedTagsMcp } from './danbooru-mcp-searcher.js';
 
 export const SCENES_JSON_START = '<SCENES_JSON_START>';
 export const SCENES_JSON_END = '<SCENES_JSON_END>';
+const NAI_PROMPT_TOKEN_LIMIT = 460;
 
 export function withSystemPrefix(taskPrompt) {
   const prompt = preserveTextForLlm(taskPrompt)
@@ -147,9 +149,30 @@ export function extractLlmResponseText(responseData) {
   return reasoningContent.includes('{') ? reasoningContent : '';
 }
 
-async function readLlmResponse(res) {
+async function readResponseBodyText(res) {
+  if (res.body && typeof res.body.getReader === 'function') {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let rawBody = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      rawBody += decoder.decode(value, { stream: true });
+    }
+    rawBody += decoder.decode();
+    return rawBody;
+  }
+
   if (typeof res.text === 'function') {
-    const rawBody = await res.text();
+    return await res.text();
+  }
+
+  return null;
+}
+
+async function readLlmResponse(res) {
+  const rawBody = await readResponseBodyText(res);
+  if (rawBody !== null) {
     let responseData = rawBody;
     try {
       responseData = JSON.parse(rawBody);
@@ -182,6 +205,16 @@ function summarizeLlmResponseShape(responseData) {
       : [],
     finishReason: choice?.finish_reason ?? null
   });
+}
+
+function estimateAdvancedPromptTokens(basePrompt = '', characterPrompts = []) {
+  const promptParts = [
+    String(basePrompt || '').trim(),
+    ...(Array.isArray(characterPrompts)
+      ? characterPrompts.map(item => typeof item === 'string' ? item : item?.prompt).map(text => String(text || '').trim())
+      : [])
+  ].filter(Boolean);
+  return estimateV45Tokens(promptParts.join(', '));
 }
 
 function waitMs(ms) {
@@ -281,7 +314,7 @@ async function postChatCompletionWith429Retry({ url, headers, payload, timeoutMs
     const res = await fetch(url, {
       method: "POST",
       headers,
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, stream: true }),
       signal: AbortSignal.timeout(timeoutMs)
     });
 
@@ -893,8 +926,7 @@ export class LLMExtractor {
           throw new Error(`HTTP Error ${res.status}`);
         }
 
-        const resData = await res.json();
-        const rawContent = (resData.choices?.[0]?.message?.content || "").trim();
+        const { responseData: resData, content: rawContent } = await readLlmResponse(res);
         if (!rawContent) {
           throw new Error(`大模型返回内容为空: ${JSON.stringify(resData)}`);
         }
@@ -1010,7 +1042,7 @@ export class LLMExtractor {
           ],
           temperature: attempt === 1 ? 0.3 : 0.1,
           max_tokens: 32768,
-          stream: false
+          stream: true
         };
 
         try {
@@ -1029,8 +1061,7 @@ export class LLMExtractor {
             throw new Error(`HTTP Error ${res.status}`);
           }
 
-          const resData = await res.json();
-          const rawContent = (resData.choices?.[0]?.message?.content || "").trim();
+          const { responseData: resData, content: rawContent } = await readLlmResponse(res);
           if (!rawContent) {
             throw new Error(`大模型返回内容为空: ${JSON.stringify(resData)}`);
           }
@@ -1132,7 +1163,7 @@ export class LLMExtractor {
         ],
         temperature: attempt === 1 ? 0.3 : 0.1,
         max_tokens: Math.max(6000, normalizedSelections.length * 2500),
-        stream: false
+        stream: true
       };
 
       try {
@@ -1151,8 +1182,7 @@ export class LLMExtractor {
           throw new Error(`HTTP Error ${res.status}`);
         }
 
-        const resData = await res.json();
-        const rawContent = (resData.choices?.[0]?.message?.content || "").trim();
+        const { responseData: resData, content: rawContent } = await readLlmResponse(res);
         if (!rawContent) {
           throw new Error(`大模型返回内容为空: ${JSON.stringify(resData)}`);
         }
@@ -1262,8 +1292,10 @@ export class LLMExtractor {
         throw new Error(`HTTP Error ${res.status}`);
       }
 
-      const resData = await res.json();
-      const rawContent = resData.choices[0].message.content.trim();
+      const { content: rawContent } = await readLlmResponse(res);
+      if (!rawContent) {
+        throw new Error("大模型返回内容为空");
+      }
 
       const completeness = checkTextCompleteness(rawContent);
       if (!completeness.isComplete) {
@@ -1377,8 +1409,11 @@ export class LLMExtractor {
         rateLimit: this.getRateLimitConfig()
       });
       if (res.status === 200) {
-        const resData = await res.json();
-        let content = resData.choices[0].message.content.trim();
+        const { content: rawContent } = await readLlmResponse(res);
+        let content = String(rawContent || '').trim();
+        if (!content) {
+          throw new Error("大模型返回内容为空");
+        }
         // 移除思考块
         content = content.replace(/<\s*thinking\s*>[\s\S]*?<\s*\/\s*thinking\s*>/gi, "").trim();
         content = content.replace(/<\s*think\s*>[\s\S]*?<\s*\/\s*think\s*>/gi, "").trim();
@@ -1746,6 +1781,8 @@ export class LLMExtractor {
       "请为以下中文小说插画场景生成 NovelAI 生图参数。",
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
       "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局标签（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪，优先使用轻微微笑、担忧、羞涩、惊讶、恼怒、悲伤、疲惫、坚定等克制但明确的表情，并用眼神、眉形和轻微嘴角变化表现；不要把所有角色都写成 calm、expressionless 或 natural_expression。禁止无端生成 bared_teeth、clenched_teeth、sharp_teeth、fang、crazy_grin、distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。",
+      "总输出预算约束：最终用于 NovelAI 的 base_prompt 与全部 character_prompts 合计必须尽量紧凑，按本地预算估算不要超过 460 token。宁可删去次要装饰、重复氛围词和低优先级细节，也不要超过 460 token。",
+      "输出前必须先自行复核一次总预算；如果你发现超过 460 token，先自行精简，再输出最终 JSON，不要把超长版本直接交出来。",
       "NSFW 场景的角色表情必须针对当前情境生成：可使用 restrained pleasured_expression、half-closed_eyes、bedroom_eyes、deep_blush、embarrassed、pained_expression、dazed_expression、unfocused_eyes、teasing_expression、satisfied_expression、slightly_parted_lips 或 biting_lip；根据角色实际状态选择一个主情绪，禁止所有角色复用同一副表情，也禁止无依据的 ahegao、crazy_grin 或 distorted_face。",
       "背景不是硬性要求。根据原文与构图需要选择详细环境、简洁背景或纯色背景；近景、动作特写和角色主导画面可以使用 simple_background、plain_background、white_background、black_background、gradient_background 或 backgroundless。不要为了凑背景标签挤占主体动作与角色细节。",
       "精确接触动作必须写清：谁持有什么物体、对准谁、接触哪个身体部位、用什么镜头清楚显示接触点。剑尖抵喉必须使用 sword_tip_touching_throat / blade_pressed_against_neck / visible_throat_contact，不能只写 holding_sword、confrontation 或 attacking。",
@@ -1774,7 +1811,7 @@ export class LLMExtractor {
       ],
       temperature: 0.3,
       max_tokens: 32768,
-      stream: false
+      stream: true
     };
 
     onProgressLog?.(`[LLM] 正在调用大模型进行参数合成...`);
@@ -1941,6 +1978,19 @@ export class LLMExtractor {
       return { orientation, prompt, base_prompt: resolvedBasePrompt, character_prompts, negative_prompt };
     };
 
+    const buildOverBudgetRetryUserMessage = (rawContent, estimatedTokens) => [
+      `上一次输出的 JSON 结构基本正确，但按本地 NovelAI 预算估算约 ${estimatedTokens} token，已经超过 460 token 上限。`,
+      "请你先自行复核并压缩，再重新输出一个完整 JSON 对象；不要解释，不要 Markdown，不要代码块。",
+      "必须保留：角色数量、角色 name 顺序、关键身份锚点、关键互动方向(source/target/mutual)、核心环境、主镜头、必要 NSFW 约束。",
+      "优先删除：重复氛围词、次要装饰、同义重复、低优先级环境细枝末节。",
+      "硬约束：base_prompt + 全部 character_prompts.prompt 合计按本地估算必须不超过 460 token。",
+      "本地估算规则：按非字母/数字/# 分隔文本片段，每个片段 token_cost = max(1, ceil(length / 8))。",
+      "若必须取舍，宁可缩短修饰与背景，也不要牺牲角色身份、动作方向和关键接触关系。",
+      "",
+      "【当前超长 JSON】",
+      String(rawContent || '').trim()
+    ].join("\n");
+
     try {
       const retryUserMessage = [
         "上一次输出为空、截断或 JSON 结构无效。请重新生成，只输出一个完整 JSON 对象。",
@@ -1968,7 +2018,7 @@ export class LLMExtractor {
               ],
               temperature: 0.1,
               max_tokens: 32768,
-              stream: false
+              stream: true
             };
 
         try {
@@ -2000,6 +2050,63 @@ export class LLMExtractor {
           }
 
           const normalized = parseAdvancedContent(rawContent);
+          const estimatedTokens = estimateAdvancedPromptTokens(
+            normalized.base_prompt,
+            normalized.character_prompts
+          );
+          if (estimatedTokens > NAI_PROMPT_TOKEN_LIMIT) {
+            onProgressLog?.(
+              `[LLM] 第 ${attempt}/3 次参数生成超出预算（估算 ${estimatedTokens} token），触发 LLM 自校验精简...`,
+              "warning"
+            );
+
+            const repairRes = await postChatCompletionWith429Retry({
+              url,
+              headers: this.getHeaders(),
+              payload: {
+                model,
+                messages: [
+                  { role: "system", content: systemPrompt },
+                  { role: "user", content: buildOverBudgetRetryUserMessage(rawContent, estimatedTokens) }
+                ],
+                temperature: 0.1,
+                max_tokens: 32768,
+                stream: true
+              },
+              timeoutMs: 120000,
+              max429Retries: 5,
+              initialDelaySeconds: 10,
+              logPrefix: "[LLM Extractor] 高级参数精简",
+              rateLimit: this.getRateLimitConfig()
+            });
+            if (repairRes.status !== 200) throw new Error(`HTTP Error ${repairRes.status}`);
+
+            const { responseData: repairResponseData, content: repairContent } = await readLlmResponse(repairRes);
+            if (!repairContent) {
+              throw new Error(`超长精简响应未包含可用文本；响应结构 ${summarizeLlmResponseShape(repairResponseData)}`);
+            }
+
+            const repairFinishReason = repairResponseData?.choices?.[0]?.finish_reason;
+            const repairCompleteness = checkTextCompleteness(repairContent);
+            if (repairFinishReason === 'length' || repairFinishReason === 'max_tokens' || !repairCompleteness.isComplete) {
+              const reason = repairFinishReason === 'length' || repairFinishReason === 'max_tokens'
+                ? `finish_reason=${repairFinishReason}`
+                : repairCompleteness.reason;
+              throw new Error(`精简响应疑似截断：${reason}`);
+            }
+
+            const repaired = parseAdvancedContent(repairContent);
+            const repairedEstimatedTokens = estimateAdvancedPromptTokens(
+              repaired.base_prompt,
+              repaired.character_prompts
+            );
+            if (repairedEstimatedTokens > NAI_PROMPT_TOKEN_LIMIT) {
+              throw new Error(`LLM 自校验后仍超出 460 token（估算 ${repairedEstimatedTokens}）`);
+            }
+            onProgressLog?.(`[LLM] 自校验精简完成：${estimatedTokens} -> ${repairedEstimatedTokens} token。`);
+            onProgressLog?.(`[LLM] 第 ${attempt}/3 次解析成功: ${JSON.stringify(repaired, null, 2)}`);
+            return repaired;
+          }
           onProgressLog?.(`[LLM] 第 ${attempt}/3 次解析成功: ${JSON.stringify(normalized, null, 2)}`);
           return normalized;
         } catch (attemptError) {
@@ -2101,8 +2208,10 @@ export class LLMExtractor {
         throw new Error(`HTTP Error ${res.status}`);
       }
 
-      const resData = await res.json();
-      const rawContent = resData.choices[0].message.content.trim();
+      const { content: rawContent } = await readLlmResponse(res);
+      if (!rawContent) {
+        throw new Error("大模型返回内容为空");
+      }
       return conservativeCompletionNaiWeights(rawContent);
     } catch (e) {
       console.error("[LLM Extractor] 词组转化失败:", e);

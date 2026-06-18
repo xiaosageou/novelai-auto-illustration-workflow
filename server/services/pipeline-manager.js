@@ -583,6 +583,7 @@ export class PipelineManager {
           });
           this.projectProgress.setChapterStatus(chapKey, 'generating', initialScenes);
           await this.projectProgress.save();
+          this._emitChapterScenesExtracted(chap, chapKey, initialScenes);
           scenes = initialScenes;
         }
 
@@ -667,6 +668,17 @@ export class PipelineManager {
 
     // NAI 生图阶段
     await this.generateSingleSceneFromPrompt(chap, scene, scenes, chapKey, naiModel);
+  }
+
+  _emitChapterScenesExtracted(chap, chapKey, scenes) {
+    this.uiProgressCallback?.({
+      type: 'chapter_scenes_extracted',
+      chapter: chap.chapter,
+      chapterKey: chapKey,
+      totalScenes: scenes.length,
+      scenes,
+      fullProgress: this.projectProgress.data
+    });
   }
 
   // ====== 双线并行流水线 — 新增方法 ======
@@ -1048,6 +1060,7 @@ export class PipelineManager {
         });
         this.projectProgress.setChapterStatus(chapKey, 'generating', initialScenes);
         await this.projectProgress.save();
+        this._emitChapterScenesExtracted(chap, chapKey, initialScenes);
         scenes = initialScenes;
       }
 
@@ -1558,6 +1571,7 @@ export class PipelineManager {
 
       this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
       await this.projectProgress.save();
+      this._emitChapterScenesExtracted(chap, chapKey, scenes);
 
       const selectedScenes = scenes.filter(item => item.source === 'reader_selection' && item.status !== 'SUCCESS');
       await this._prepareScenesAndRunNaiQueue(chap, selectedScenes, scenes, chapKey, naiTagsModel, naiModel);

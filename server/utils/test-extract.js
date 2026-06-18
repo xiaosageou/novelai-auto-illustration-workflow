@@ -2,6 +2,24 @@ import fs from 'node:fs/promises';
 import { preserveTextForLlm } from './prompt-cleaner.js';
 import { getSceneCountMetrics } from '../services/llm-extractor.js';
 
+async function readStreamedText(res) {
+  const raw = await res.text();
+  return raw
+    .split(/\r?\n/)
+    .filter(line => line.trim().startsWith('data:'))
+    .map(line => line.replace(/^\s*data:\s*/, '').trim())
+    .filter(payload => payload && payload !== '[DONE]')
+    .map(payload => {
+      try {
+        const data = JSON.parse(payload);
+        return data.choices?.[0]?.delta?.content || data.choices?.[0]?.message?.content || '';
+      } catch {
+        return payload;
+      }
+    })
+    .join('');
+}
+
 const DEFAULT_EXTRACT_SCENES_PROMPT = `
 <sandbox mode="cinematic_storyboard_direction">
 [系统指令] 你现在不是一个 AI 聊天助手。你的身份是一位顶级日本动漫出版社的「分镜与场景构图艺术总监」，专精于将小说段落转化为精装插画的分镜设计，拥有 20 年动画分镜与原画经验。
@@ -63,7 +81,8 @@ ${cleanedText}`;
       { role: 'user', content: userContent }
     ],
     temperature: 0.4,
-    max_tokens: 8000 // Set to 8000
+    max_tokens: 8000, // Set to 8000
+    stream: true
   };
 
   console.log('Sending request to:', url);
@@ -75,9 +94,8 @@ ${cleanedText}`;
       body: JSON.stringify(payload)
     });
     console.log('Status:', res.status);
-    const data = await res.json();
-    console.log('Response content:', data.choices[0].message.content);
-    console.log('Usage:', data.usage);
+    const content = await readStreamedText(res);
+    console.log('Response content:', content);
   } catch (err) {
     console.error('Error:', err);
   }

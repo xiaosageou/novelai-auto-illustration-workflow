@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
 import { isNaiLogMessage } from './logClassification.js';
+import { mergeProjectProgressSnapshot } from './projectProgressState.js';
 
 const API_BASE = import.meta.env.DEV ? "http://localhost:5001" : "";
 
@@ -255,11 +256,17 @@ function App() {
         return;
       }
 
+      if (data.fullProgress) {
+        setProjectDetails(prev => mergeProjectProgressSnapshot(prev, data.fullProgress));
+      }
+
       setPipelineRunning(true);
 
       const sceneKey = `${data.chapterKey}_${data.sceneIdx}`;
       
-      if (data.imagePath === 'prompt_ready') {
+      if (data.type === 'chapter_scenes_extracted') {
+        addLog(`📝 章节「${data.chapter}」已提炼出 ${data.totalScenes} 个场景卡。`);
+      } else if (data.imagePath === 'prompt_ready') {
         addLog(`⚡ 章节「${data.chapter}」[场景 ${data.sceneIdx}/${data.totalScenes}] Prompt 已就绪，已推入生图队列。`);
         setLoadingScenes(prev => {
           const copy = { ...prev };

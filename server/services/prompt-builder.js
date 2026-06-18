@@ -551,11 +551,19 @@ function 构建互动自然语言(sceneCharacters = [], interactionActions = [])
   return sentences.map(items => [...new Set(items)]);
 }
 
-function estimateV45Tokens(text = '') {
-  return String(text || '')
-    .split(/[^A-Za-z0-9#]+/)
-    .filter(Boolean)
-    .reduce((sum, part) => sum + Math.max(1, Math.ceil(part.length / 8)), 0);
+export function estimateV45Tokens(text = '') {
+  return 按逗号拆分提示词(text).reduce((sum, token) => {
+    const normalized = String(token || '').trim();
+    if (!normalized) return sum;
+
+    const wordCount = (normalized.match(/[A-Za-z0-9]+/g) || []).length;
+    const separatorCount = (normalized.match(/[_:#-]/g) || []).length;
+    const charCost = Math.ceil(normalized.length / 5);
+    const wordCost = Math.floor(Math.max(0, wordCount - 1) * 2 / 3);
+    const separatorCost = Math.ceil(separatorCount / 2);
+
+    return sum + Math.max(1, charCost + wordCost + separatorCost);
+  }, 0);
 }
 
 function promptTokenPriority(token = '') {
@@ -585,7 +593,7 @@ function trimPromptTokens(prompt = '', tokenBudget = 0) {
   return selected.sort((a, b) => a.index - b.index).map(item => item.token).join(', ');
 }
 
-export function enforceV45PromptBudget(basePrompt = '', characterPrompts = [], maxTokens = 480) {
+export function enforceV45PromptBudget(basePrompt = '', characterPrompts = [], maxTokens = 460) {
   const prompts = Array.isArray(characterPrompts) ? characterPrompts : [];
   const minimumCharacterBudget = prompts.length > 0 ? 50 : 0;
   const baseBudget = Math.max(100, Math.min(220, maxTokens - prompts.length * minimumCharacterBudget));

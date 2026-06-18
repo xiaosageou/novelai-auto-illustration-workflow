@@ -22,7 +22,8 @@ import { globalCooldownManager } from '../utils/cooldown.js';
 import {
   buildCharacterInteractionTags,
   buildFinalImagePrompt,
-  enforceV45PromptBudget
+  enforceV45PromptBudget,
+  estimateV45Tokens
 } from '../services/prompt-builder.js';
 import { buildCharacterSpatialGuidance } from '../services/prompt-builder.js';
 import { normalizeSceneCard } from '../utils/scene-structure.js';
@@ -154,6 +155,41 @@ test('scene extraction sends the locally calculated exact count to the LLM', asy
   assert.match(userMessage, /scene_idx 必须从 1 连续编号到 2/);
   assert.match(userMessage, /SCENES_JSON_START/);
   assert.match(userMessage, /SCENES_JSON_END/);
+});
+
+test('scene extraction requests streaming and parses SSE response bodies', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+  const originalFetch = globalThis.fetch;
+  let capturedPayload;
+  const encoder = new TextEncoder();
+  globalThis.fetch = async (_url, options) => {
+    capturedPayload = JSON.parse(options.body);
+    const scenes = wrapScenes([
+      { scene_idx: 1, trigger_sentence: '第一幕', visual_description: '场景一' },
+      { scene_idx: 2, trigger_sentence: '第二幕', visual_description: '场景二' }
+    ]);
+    return {
+      status: 200,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: scenes.slice(0, 20) } }] })}\n\n`));
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: scenes.slice(20) } }] })}\n\n`));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        }
+      }),
+      headers: { get: () => 'text/event-stream' }
+    };
+  };
+
+  try {
+    const scenes = await extractor.extractChapterScenes('测试章', '字'.repeat(601), 'test-model');
+    assert.equal(capturedPayload.stream, true);
+    assert.equal(scenes.length, 2);
+    assert.equal(scenes[1].trigger_sentence, '第二幕');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('scene extraction retries failures before accepting a valid response', async () => {
@@ -464,6 +500,36 @@ test('priority jobs run without clearing the active pipeline state', async () =>
 
   assert.deepEqual(observedStates, [true]);
   assert.equal(pipeline.isRunning, true);
+});
+
+test('chapter scene extraction event publishes full progress immediately', () => {
+  const pipeline = new PipelineManager({ projectName: 'scene-progress-test' });
+  const events = [];
+  pipeline.projectProgress = {
+    data: {
+      completed_chapters: {
+        卷一_第一章: {
+          status: 'generating',
+          scenes: [{ scene_idx: 1 }]
+        }
+      }
+    }
+  };
+  pipeline.uiProgressCallback = (payload) => {
+    events.push(payload);
+  };
+
+  pipeline._emitChapterScenesExtracted(
+    { chapter: '第一章' },
+    '卷一_第一章',
+    [{ scene_idx: 1, trigger_sentence: '她抬头' }]
+  );
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'chapter_scenes_extracted');
+  assert.equal(events[0].chapterKey, '卷一_第一章');
+  assert.equal(events[0].totalScenes, 1);
+  assert.equal(events[0].fullProgress.completed_chapters['卷一_第一章'].status, 'generating');
 });
 
 test('deleteScene removes the image file and reindexes remaining scenes', async () => {
@@ -859,6 +925,68 @@ test('advanced prompt retries truncated JSON before accepting valid structured o
   }
 });
 
+test('advanced prompt asks LLM to self-trim when estimated tokens exceed 460', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+  extractor.searchDanbooruTags = async () => ({ results: [] });
+  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
+
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  let repairPrompt = '';
+  const longTail = Array.from({ length: 220 }, (_, index) => `decorative_detail_${index}`).join(', ');
+
+  globalThis.fetch = async (_url, options) => {
+    fetchCount++;
+    const request = JSON.parse(options.body);
+    if (fetchCount === 2) {
+      repairPrompt = request.messages.find(message => message.role === 'user')?.content || '';
+    }
+    const content = fetchCount === 1
+      ? JSON.stringify({
+          orientation: 'landscape',
+          base_prompt: `1girl, forest, sunlight, ${longTail}`,
+          character_prompts: [{
+            name: '甲',
+            prompt: `girl, white_robe, standing, ${longTail}`
+          }],
+          negative_prompt: ''
+        })
+      : JSON.stringify({
+          orientation: 'landscape',
+          base_prompt: '1girl, forest, sunlight',
+          character_prompts: [{
+            name: '甲',
+            prompt: 'girl, white_robe, standing'
+          }],
+          negative_prompt: ''
+        });
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: { content }
+        }]
+      })
+    };
+  };
+
+  try {
+    const result = await extractor.generateScenePromptAdvanced({
+      visual_description: '女子站在林中',
+      characters: [{ name: '甲', gender: 'woman', clothing: '白衣', pose: '站立' }]
+    }, [], 'test');
+
+    assert.equal(fetchCount, 2);
+    assert.match(repairPrompt, /超过 460 token|under 460 tokens/i);
+    assert.match(result.base_prompt, /forest, sunlight/);
+    assert.doesNotMatch(result.base_prompt, /decorative_detail_/);
+    assert.equal(result.character_prompts[0].prompt, 'girl, white_robe, standing');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('NSFW advanced prompt requires perspective tags and fills them when LLM omits them', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
   extractor.searchDanbooruTags = async () => ({ results: [] });
@@ -899,8 +1027,9 @@ test('NSFW advanced prompt requires perspective tags and fills them when LLM omi
       characters: [{ name: '甲', gender: 'woman', pose: '跪姿' }]
     }, [], 'test');
 
-    assert.match(capturedUserMessage, /NSFW 透视与机位（必须）/);
-    assert.match(capturedUserMessage, /关键身体互动、遮挡层次和接触点清楚可见/);
+    assert.match(capturedUserMessage, /NSFW (?:透视与机位|镜头机位)（必须）/);
+    assert.match(capturedUserMessage, /关键身体互动、遮挡层次和接触点清楚(?:可见|可读)/);
+    assert.match(capturedUserMessage, /不要超过 460 token|must stay within 460 tokens/i);
     assert.match(result.base_prompt, /three-quarter_view/);
     assert.match(result.base_prompt, /dynamic_perspective/);
     assert.match(result.base_prompt, /depth_of_field/);
@@ -1491,13 +1620,30 @@ test('V4.5 prompt budget keeps interaction and identity tags under the shared li
       `girl, blonde_hair, blue_eyes, source#hug, ${filler}`,
       `boy, black_hair, red_eyes, target#hug, ${filler}`
     ],
-    480
+    460
   );
 
-  assert.ok(budgeted.estimatedTokens <= 480);
+  assert.ok(budgeted.estimatedTokens <= 460);
   assert.match(budgeted.basePrompt, /exactly_two_characters/);
   assert.match(budgeted.characterPrompts[0], /source#hug/);
   assert.match(budgeted.characterPrompts[1], /target#hug/);
+});
+
+test('V4.5 token estimator stays close to NovelAI web count for mixed NL and tag prompts', () => {
+  const basePrompt = `3girls, 3boys, Laboratory interior with cool fluorescent light. Symmetric composition: three girls bent over in rear compartments, three boys standing in front. Convex lenses reflect buttocks, mirrors show faces. Viewed from slightly elevated front angle, with clear foreground/background depth. nsfw, explicit. The main scene shows a full external view. A single magnified inset reveals vaginal penetration in cross-section, focusing on one couple., three-quarter_view, dynamic_perspective, depth_of_field, consistent character scale, same ground plane., single unified three-character composition, distinct left center right staging, readable interaction graph, single unified composition, shared central action, overlapping silhouettes, connected pose., single magnified inset showing cross-section penetration focus., single coherent image., 1.3::masterpiece, best quality ::, official art, year2024, year2025, 1.3::artist:youngjoo kjy ::, artist:nardack, artist:rella, artist:qiandaiyiyu, artist:atdan, artist:void_0, artist:stu_dts, artist:wo_jiushi_kanbudong, artist:nixeu, -3::3D ::, rim lighting, deep shadows, high contrast, no text`;
+  const characterPrompts = [
+    `1girl, exposing curly pubic hair. Bent over presenting hindquarters, expression blank with lips pressed., average height, target#vaginal_penetration`,
+    `1boy, Black-haired lean boy with aristocratic features. Pants off, penis erect. Heavy breathing, burning gaze fixed on red-dressed woman, standing ready., slightly shorter, source#vaginal_penetration`,
+    `1girl, lower body nude. Bent over presenting hindquarters, slight smile on lips., slightly taller, target#vaginal_penetration`,
+    `1boy, Short black-haired boy with average build. Shirt on, pants removed exposing erect penis. Standing with focused excited expression, preparing to penetrate., determined, focused eyes, firm expression, average height, source#vaginal_penetration`,
+    `1girl, Black-haired young woman with dark eyes, lower body exposed. Bent over presenting hindquarters, resigned frown on brow., average height, target#vaginal_penetration`,
+    `1boy, Brown-haired stocky boy with large penis fully erect. Pants removed. Heavy breath, eager expression, standing with penis aimed forward., average height, source#vaginal_penetration`
+  ];
+
+  const estimated = estimateV45Tokens([basePrompt, ...characterPrompts].join(', '));
+
+  assert.ok(estimated >= 590, `expected estimator >= 590, got ${estimated}`);
+  assert.ok(estimated <= 625, `expected estimator <= 625, got ${estimated}`);
 });
 
 test('character prompts follow left-to-right order with aligned UC and interaction language', () => {
