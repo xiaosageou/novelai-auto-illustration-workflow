@@ -454,7 +454,7 @@ export class PipelineManager {
 
   /**
    * 批量流水线核心循环。
-   * - 单章模式（targetChapterKey 非空）：保持原有 LLM → NAI 串行行为。
+   * - 单章模式（targetChapterKey 非空）：LLM 生成 Prompt + NAI 线性生图，两条流水线解耦。
    * - 批量模式：LLM 2 并发生成 Prompt（完成即持久化）+ NAI 线性生图，两条流水线解耦。
    */
   async processPipeline(targetChapterKey = null, options = {}) {
@@ -500,7 +500,7 @@ export class PipelineManager {
       return llmResult && llmResult.paused ? llmResult : { completed: true };
     }
 
-    // ── 单章模式：保持原有串行行为（LLM → NAI 串行）────────────────────────
+    // ── 单章模式：同样使用 LLM → NAI 队列解耦 ───────────────────────────
     for (let idx = 0; idx < this.chapters.length; idx++) {
       if (!this.isRunning) {
         this.writeLog("[Pipeline] 流水线已被用户主动暂停。", "warning");
@@ -586,18 +586,7 @@ export class PipelineManager {
           scenes = initialScenes;
         }
 
-        for (let sIdx = 0; sIdx < scenes.length; sIdx++) {
-          if (!this.isRunning) break;
-          await this.runPriorityJobs();
-          if (!this.isRunning) break;
-          const scene = scenes[sIdx];
-          if (scene.status === 'SUCCESS' && scene.image_path && existsSync(path.join(this.projBase, scene.image_path))) {
-            this.writeLog(`  [场景 ${scene.scene_idx}] 插画已存在，跳过生成。`);
-            continue;
-          }
-          await this.generateSingleScene(chap, scene, scenes, chapKey, naiTagsModel, naiModel);
-          await this.runPriorityJobs();
-        }
+        await this._prepareScenesAndRunNaiQueue(chap, scenes, scenes, chapKey, naiTagsModel, naiModel);
 
         if (this.isRunning) {
           const allDone = scenes.every(s => s.status === 'SUCCESS');
@@ -659,7 +648,8 @@ export class PipelineManager {
       chapterKey: chapKey,
       sceneIdx: scene.scene_idx,
       totalScenes: scenes.length,
-      imagePath: 'failed'
+      imagePath: 'failed',
+      phase: 'scene'
     });
     return false;
   }
@@ -864,6 +854,68 @@ export class PipelineManager {
     }
   }
 
+  async _prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue) {
+    if (scene.status === 'SUCCESS' && scene.image_path && existsSync(path.join(this.projBase, scene.image_path))) {
+      this.writeLog(`  [场景 ${scene.scene_idx}] 插画已存在，跳过 LLM 处理。`);
+      return;
+    }
+
+    if (scene.status === 'PROMPT_READY' && scene.prepared_prompt?.finalPositive) {
+      this.writeLog(`  [场景 ${scene.scene_idx}] Prompt 已就绪（断点续传），直接推入 NAI 队列。`);
+      naiQueue.push({ chap, scene, scenes, chapKey });
+      return;
+    }
+
+    let prepared = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (!this.isRunning) break;
+      try {
+        await this.prepareSingleScenePrompt(chap, scene, scenes, chapKey, naiTagsModel);
+        prepared = true;
+        break;
+      } catch (error) {
+        if (attempt < 3) {
+          this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理第 ${attempt}/3 次失败，将重试: ${error.message}`, "warning");
+        } else {
+          this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理连续 3 次失败，跳过该场景: ${error.message}`, "warning");
+          scene.status = 'FAILED';
+          this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
+          await this.projectProgress.save();
+          this.uiProgressCallback?.({
+            chapter: chap.chapter,
+            chapterKey: chapKey,
+            sceneIdx: scene.scene_idx,
+            totalScenes: scenes.length,
+            imagePath: 'failed',
+            phase: 'llm'
+          });
+        }
+      }
+    }
+
+    if (prepared) {
+      naiQueue.push({ chap, scene, scenes, chapKey });
+    }
+  }
+
+  async _prepareScenesAndRunNaiQueue(chap, targetScenes, scenes, chapKey, naiTagsModel, naiModel) {
+    const naiQueue = [];
+    let llmDone = false;
+    const naiConsumerPromise = this._runNaiConsumerLinear(naiQueue, () => llmDone, naiModel);
+
+    try {
+      for (const scene of targetScenes) {
+        if (!this.isRunning) break;
+        await this.runPriorityJobs();
+        if (!this.isRunning) break;
+        await this._prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue);
+      }
+    } finally {
+      llmDone = true;
+      await naiConsumerPromise;
+    }
+  }
+
   /**
    * LLM 生产者：以指定并发数并行处理各章节的场景提取 + Prompt 生成。
    * JS 单线程保证 idx++ 的原子性，多个 worker 可安全共享同一计数器。
@@ -1004,46 +1056,7 @@ export class PipelineManager {
         if (!this.isRunning) break;
         const scene = scenes[sIdx];
 
-        // 已成功生图：跳过
-        if (scene.status === 'SUCCESS' && scene.image_path && existsSync(path.join(this.projBase, scene.image_path))) {
-          this.writeLog(`  [场景 ${scene.scene_idx}] 插画已存在，跳过 LLM 处理。`);
-          continue;
-        }
-
-        // 已有持久化 Prompt：直接推入 NAI 队列（断点续传）
-        if (scene.status === 'PROMPT_READY' && scene.prepared_prompt?.finalPositive) {
-          this.writeLog(`  [场景 ${scene.scene_idx}] Prompt 已就绪（断点续传），直接推入 NAI 队列。`);
-          naiQueue.push({ chap, scene, scenes, chapKey });
-          continue;
-        }
-
-        // LLM 阶段（带重试）
-        let prepared = false;
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          if (!this.isRunning) break;
-          try {
-            await this.prepareSingleScenePrompt(chap, scene, scenes, chapKey, naiTagsModel);
-            prepared = true;
-            break;
-          } catch (error) {
-            if (attempt < 3) {
-              this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理第 ${attempt}/3 次失败，将重试: ${error.message}`, "warning");
-            } else {
-              this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理连续 3 次失败，跳过该场景: ${error.message}`, "warning");
-              scene.status = 'FAILED';
-              this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
-              await this.projectProgress.save();
-              this.uiProgressCallback?.({
-                chapter: chap.chapter, chapterKey: chapKey,
-                sceneIdx: scene.scene_idx, totalScenes: scenes.length, imagePath: 'failed'
-              });
-            }
-          }
-        }
-
-        if (prepared) {
-          naiQueue.push({ chap, scene, scenes, chapKey });
-        }
+        await this._prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue);
       }
     } catch (error) {
       this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」LLM 阶段异常: ${error.message}`, "error");
@@ -1116,7 +1129,7 @@ export class PipelineManager {
         await this.projectProgress.save();
         this.uiProgressCallback?.({
           chapter: chap.chapter, chapterKey: chapKey,
-          sceneIdx: scene.scene_idx, totalScenes: scenes.length, imagePath: 'failed'
+          sceneIdx: scene.scene_idx, totalScenes: scenes.length, imagePath: 'failed', phase: 'nai'
         });
       }
 
@@ -1179,7 +1192,7 @@ export class PipelineManager {
       const llmModel = resolveTaskLlmConfig(this.config, 'naiTags').model;
       const naiModel = this.config.nai_model || "nai-diffusion-4-5-full";
       this.writeLog(`[Pipeline] 开始单场景重绘: 章节「${chap.chapter}」场景 #${sceneIdx}`);
-      await this.generateSingleScene(chap, scene, scenes, chapKey, llmModel, naiModel);
+      await this._prepareScenesAndRunNaiQueue(chap, [scene], scenes, chapKey, llmModel, naiModel);
       this.writeLog(`[Pipeline] 单场景重绘成功: 章节「${chap.chapter}」场景 #${sceneIdx}`);
       return { chapter: chap.chapter, chapterKey: chapKey, sceneIdx: scene.scene_idx };
     } catch (err) {
@@ -1193,7 +1206,8 @@ export class PipelineManager {
           chapterKey: chapKey,
           sceneIdx: scene.scene_idx,
           totalScenes: scenes.length,
-          imagePath: 'failed'
+          imagePath: 'failed',
+          phase: 'scene'
         });
       }
       throw err;
@@ -1312,7 +1326,8 @@ export class PipelineManager {
         chapterKey: chapKey,
         sceneIdx: scene.scene_idx,
         totalScenes: scenes.length,
-        imagePath: 'failed'
+        imagePath: 'failed',
+        phase: 'nai'
       });
       this.writeLog(`[Pipeline] 仅 NAI 重绘失败: ${err.message}`, "error");
       throw err;
@@ -1384,8 +1399,8 @@ export class PipelineManager {
         await this.projectProgress.save();
 
         this.writeLog(`[Pipeline] 描述重构完成，开始重绘场景 #${sceneIdx}...`);
-        const ok = await this.generateSingleScene(chap, scene, scenes, chapKey, naiTagsModel, naiModel);
-        if (ok) {
+        await this._prepareScenesAndRunNaiQueue(chap, [scene], scenes, chapKey, naiTagsModel, naiModel);
+        if (scene.status === 'SUCCESS') {
           this.writeLog(`[Pipeline] 单场景重构并重绘成功: 章节「${chap.chapter}」场景 #${sceneIdx}`);
         } else {
           this.writeLog(`[Pipeline] 单场景重构并重绘失败后已跳过: 章节「${chap.chapter}」场景 #${sceneIdx}`, "warning");
@@ -1400,7 +1415,8 @@ export class PipelineManager {
             chapter: chap.chapter,
             sceneIdx: scene.scene_idx,
             totalScenes: scenes.length,
-            imagePath: 'failed'
+            imagePath: 'failed',
+            phase: 'scene'
           });
         }
       } finally {
@@ -1543,9 +1559,8 @@ export class PipelineManager {
       this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
       await this.projectProgress.save();
 
-      for (const scene of scenes.filter(item => item.source === 'reader_selection' && item.status !== 'SUCCESS')) {
-        await this.generateSingleScene(chap, scene, scenes, chapKey, naiTagsModel, naiModel);
-      }
+      const selectedScenes = scenes.filter(item => item.source === 'reader_selection' && item.status !== 'SUCCESS');
+      await this._prepareScenesAndRunNaiQueue(chap, selectedScenes, scenes, chapKey, naiTagsModel, naiModel);
 
       const status = scenes.every(scene => scene.status === 'SUCCESS') ? 'completed' : 'generating';
       this.projectProgress.setChapterStatus(chapKey, status, scenes);

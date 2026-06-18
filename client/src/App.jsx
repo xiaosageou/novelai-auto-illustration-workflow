@@ -4,6 +4,8 @@ import {
   RefreshCw, CheckCircle2, Sparkles, X, FileText, Clapperboard, Timer,
   Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil
 } from 'lucide-react';
+import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
+import { isNaiLogMessage } from './logClassification.js';
 
 const API_BASE = import.meta.env.DEV ? "http://localhost:5001" : "";
 
@@ -268,7 +270,10 @@ function App() {
         addLog(`⏳ 章节「${data.chapter}」[场景 ${data.sceneIdx}/${data.totalScenes}] 开始生图中...`);
         setLoadingScenes(prev => ({ ...prev, [sceneKey]: true }));
       } else if (data.imagePath === 'failed') {
-        addLog(`❌ 章节「${data.chapter}」[场景 ${data.sceneIdx}/${data.totalScenes}] 生成失败！`, 'error');
+        const phaseLabel = data.phase === 'nai'
+          ? 'NAI 生图失败'
+          : (data.phase === 'llm' ? 'LLM Prompt 生成失败' : '生成失败');
+        addLog(`❌ 章节「${data.chapter}」[场景 ${data.sceneIdx}/${data.totalScenes}] ${phaseLabel}！`, 'error');
         setLoadingScenes(prev => {
           const copy = { ...prev };
           delete copy[sceneKey];
@@ -431,8 +436,7 @@ function App() {
 
   const addLog = (text, type = 'info') => {
     const time = new Date().toLocaleTimeString();
-    const isNaiLog = /\[NAI\]|\[Pipeline NAI\]|NAI 生图|生图中|生图成功|生成失败|插图已存盘|冷却|cooldown/i.test(text);
-    if (isNaiLog) {
+    if (isNaiLogMessage(text)) {
       setNaiLogs(prev => [...prev, { time, text, type }].slice(-200));
     } else {
       setLogs(prev => [...prev, { time, text, type }].slice(-200));
@@ -1533,7 +1537,7 @@ function App() {
                       </div>
                       <button 
                         className="btn-secondary" 
-                        disabled={pipelineRunning || selectedChapterQueueState === 'queued' || selectedChapterQueueState === 'running'}
+                        disabled={isSingleChapterGenerateDisabled({ pipelineRunning, chapterQueueState: selectedChapterQueueState })}
                         onClick={() => generateSingleChapter(selectedChapter)}
                         style={{ display: 'flex', alignItems: 'center', gap: '4px', borderColor: 'var(--color-pink)' }}
                       >

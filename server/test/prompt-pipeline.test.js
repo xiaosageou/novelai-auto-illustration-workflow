@@ -1630,6 +1630,85 @@ test('pipeline retries the complete scene flow three times for any error', async
   assert.equal(scene.status, 'FAILED');
 });
 
+test('scene prompt preparation continues while the NAI queue is still rendering', async () => {
+  const pipeline = new PipelineManager({ projectName: 'parallel-single-chapter-test' });
+  const events = [];
+  let releaseFirstNai;
+  const firstNaiStarted = new Promise(resolve => {
+    pipeline.__resolveFirstNaiStarted = resolve;
+  });
+  const secondPromptStarted = new Promise(resolve => {
+    pipeline.__resolveSecondPromptStarted = resolve;
+  });
+  const scenes = [
+    { scene_idx: 1, status: 'PENDING', visual_description: '场景一' },
+    { scene_idx: 2, status: 'PENDING', visual_description: '场景二' }
+  ];
+
+  pipeline.isRunning = true;
+  pipeline.projBase = await fs.mkdtemp(path.join(os.tmpdir(), 'nai-parallel-queue-'));
+  pipeline.projectProgress = {
+    setChapterStatus() {},
+    save: async () => {}
+  };
+  pipeline.runPriorityJobs = async () => {
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  pipeline._runNaiConsumerLinear = async (naiQueue, isLlmDone, naiModel) => {
+    while (!isLlmDone() || naiQueue.length > 0) {
+      if (naiQueue.length === 0) {
+        await new Promise(resolve => setImmediate(resolve));
+        continue;
+      }
+      const { chap, scene, scenes: chapterScenes, chapKey } = naiQueue.shift();
+      await pipeline.generateSingleSceneFromPrompt(chap, scene, chapterScenes, chapKey, naiModel);
+    }
+  };
+  pipeline.prepareSingleScenePrompt = async (_chap, scene) => {
+    events.push(`prompt-${scene.scene_idx}`);
+    if (scene.scene_idx === 2) pipeline.__resolveSecondPromptStarted();
+    scene.prepared_prompt = { finalPositive: `prompt ${scene.scene_idx}` };
+    scene.status = 'PROMPT_READY';
+  };
+  pipeline.generateSingleSceneFromPrompt = async (_chap, scene) => {
+    events.push(`nai-${scene.scene_idx}`);
+    if (scene.scene_idx === 1) {
+      pipeline.__resolveFirstNaiStarted();
+      await new Promise(resolve => {
+        releaseFirstNai = resolve;
+      });
+    }
+    scene.status = 'SUCCESS';
+  };
+
+  try {
+    const runPromise = pipeline._prepareScenesAndRunNaiQueue(
+      { chapter: '测试章', content: '正文' },
+      scenes,
+      scenes,
+      '测试章',
+      'test-llm',
+      'nai-diffusion-4-5-full'
+    );
+
+    await firstNaiStarted;
+    await secondPromptStarted;
+
+    assert.ok(
+      events.indexOf('prompt-2') > events.indexOf('nai-1'),
+      `expected second prompt after first NAI started, got ${events.join(',')}`
+    );
+    assert.equal(scenes[1].status, 'PROMPT_READY');
+
+    releaseFirstNai();
+    await runPromise;
+    assert.deepEqual(scenes.map(scene => scene.status), ['SUCCESS', 'SUCCESS']);
+  } finally {
+    pipeline.isRunning = false;
+    await fs.rm(pipeline.projBase, { recursive: true, force: true });
+  }
+});
+
 test('scene normalization removes interactions whose endpoints are not characters', () => {
   const normalized = normalizeSceneCard({
     scene_idx: 1,
