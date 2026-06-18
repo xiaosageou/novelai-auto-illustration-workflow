@@ -1680,6 +1680,42 @@ test('LLM streaming response may exceed idle timeout window in total as long as 
   assert.equal(content, 'AB');
 });
 
+test('LLM streaming response emits incremental stream text chunks', async () => {
+  const encoder = new TextEncoder();
+  const events = [
+    encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Hello ' } }] })}\n\n`),
+    encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: 'world' } }] })}\n\n`),
+    encoder.encode('data: [DONE]\n\n')
+  ];
+  let index = 0;
+  const chunks = [];
+  const response = {
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (index >= events.length) {
+              return { done: true, value: undefined };
+            }
+            return { done: false, value: events[index++] };
+          },
+          cancel() {
+            return Promise.resolve();
+          }
+        };
+      }
+    }
+  };
+
+  const { content } = await readLlmResponse(response, {
+    idleTimeoutMs: 40,
+    onStreamText: chunk => chunks.push(chunk)
+  });
+
+  assert.equal(content, 'Helloworld');
+  assert.deepEqual(chunks, ['Hello', 'world']);
+});
+
 test('NAI 429 retries use exponential backoff before degraded mode', async () => {
   const client = new NovelAIClient({
     token: 'test-token',

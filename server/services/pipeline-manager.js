@@ -1403,7 +1403,9 @@ export class PipelineManager {
           chap.content,
           scene.scene_idx,
           scene.trigger_sentence,
-          sceneModel
+          sceneModel,
+          '',
+          (logMsg) => this.writeLog(`  [场景 ${scene.scene_idx}] ${logMsg}`)
         );
 
         // 把新卡片属性融合到原有 scene 中，重设 status 和清除老图
@@ -1539,7 +1541,8 @@ export class PipelineManager {
         chap.chapter,
         chap.content,
         selectedParagraphs,
-        sceneModel
+        sceneModel,
+        (logMsg) => this.writeLog(`  [章节 ${chap.chapter}] ${logMsg}`)
       );
 
       for (let index = 0; index < selectedParagraphs.length; index++) {

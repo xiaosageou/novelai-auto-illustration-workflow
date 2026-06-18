@@ -158,13 +158,32 @@ function buildLlmIdleTimeoutError(idleTimeoutMs) {
   return error;
 }
 
-async function readResponseBodyText(res, { idleTimeoutMs = 120000 } = {}) {
+async function readResponseBodyText(res, { idleTimeoutMs = 120000, onStreamText = null } = {}) {
   if (res.body && typeof res.body.getReader === 'function') {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let rawBody = '';
+    let pendingBody = '';
     let idleTimer = null;
     let timedOut = false;
+    const emitPendingStreamText = (final = false) => {
+      if (typeof onStreamText !== 'function') return;
+      const normalized = pendingBody.replace(/\r\n/g, '\n');
+      const blocks = normalized.split('\n\n');
+      pendingBody = final ? '' : (blocks.pop() ?? '');
+      for (const block of blocks) {
+        const text = extractLlmResponseText(block);
+        if (text.trim()) {
+          onStreamText(text.trim());
+        }
+      }
+      if (final && pendingBody.trim()) {
+        const text = extractLlmResponseText(pendingBody);
+        if (text.trim()) {
+          onStreamText(text.trim());
+        }
+      }
+    };
     const resetIdleTimer = () => {
       if (!(Number.isFinite(idleTimeoutMs) && idleTimeoutMs > 0)) return;
       if (idleTimer) clearTimeout(idleTimer);
@@ -191,7 +210,10 @@ async function readResponseBodyText(res, { idleTimeoutMs = 120000 } = {}) {
           idleTimer = null;
         }
         if (done) break;
-        rawBody += decoder.decode(value, { stream: true });
+        const decoded = decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+        rawBody += decoded;
+        pendingBody += decoded;
+        emitPendingStreamText(false);
       } catch (error) {
         if (idleTimer) {
           clearTimeout(idleTimer);
@@ -204,6 +226,8 @@ async function readResponseBodyText(res, { idleTimeoutMs = 120000 } = {}) {
       }
     }
     rawBody += decoder.decode();
+    pendingBody += decoder.decode();
+    emitPendingStreamText(true);
     return rawBody;
   }
 
@@ -260,6 +284,44 @@ function estimateAdvancedPromptTokens(basePrompt = '', characterPrompts = []) {
       : [])
   ].filter(Boolean);
   return estimateV45Tokens(promptParts.join(', '));
+}
+
+function createThrottledStreamLogger(onProgressLog, prefix = '[LLM]') {
+  if (typeof onProgressLog !== 'function') return null;
+
+  let buffer = '';
+  let timer = null;
+
+  const flush = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    const text = buffer.trim();
+    buffer = '';
+    if (text) {
+      onProgressLog(`${prefix} 流式输出片段:\n${text}`);
+    }
+  };
+
+  return {
+    push(chunk) {
+      const text = String(chunk || '');
+      if (!text.trim()) return;
+      buffer += text;
+      if (buffer.length > 1600) {
+        const overflow = buffer.slice(0, buffer.length - 1200).trim();
+        buffer = buffer.slice(-1200);
+        if (overflow) {
+          onProgressLog(`${prefix} 流式输出片段:\n${overflow}`);
+        }
+      }
+      if (!timer) {
+        timer = setTimeout(flush, 250);
+      }
+    },
+    flush
+  };
 }
 
 function waitMs(ms) {
@@ -962,6 +1024,7 @@ export class LLMExtractor {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         onProgressLog?.(`[LLM] 场景提炼第 ${attempt}/3 次请求...`);
+        const streamLogger = createThrottledStreamLogger(onProgressLog, '[LLM]');
         const res = await postChatCompletionWith429Retry({
           url,
           headers: this.getHeaders(),
@@ -977,7 +1040,10 @@ export class LLMExtractor {
           throw new Error(`HTTP Error ${res.status}`);
         }
 
-        const { responseData: resData, content: rawContent } = await readLlmResponse(res);
+        const { responseData: resData, content: rawContent } = await readLlmResponse(res, {
+          onStreamText: streamLogger?.push
+        });
+        streamLogger?.flush();
         if (!rawContent) {
           throw new Error(`大模型返回内容为空: ${JSON.stringify(resData)}`);
         }
@@ -1042,7 +1108,7 @@ export class LLMExtractor {
   /**
    * 单个分镜场景描述重构：针对特定触发句重新生成结构化 JSON
    */
-  async regenerateSingleSceneCard(chapterTitle, chapterContent, sceneIdx, triggerSentence, model = "deepseek-chat", focusParagraph = "") {
+  async regenerateSingleSceneCard(chapterTitle, chapterContent, sceneIdx, triggerSentence, model = "deepseek-chat", focusParagraph = "", onProgressLog = null) {
     if (!this.apiKey) {
       throw new Error("请先配置有效的 LLM API Key！");
     }
@@ -1097,6 +1163,7 @@ export class LLMExtractor {
         };
 
         try {
+          const streamLogger = createThrottledStreamLogger(onProgressLog, '[LLM]');
           const res = await postChatCompletionWith429Retry({
             url,
             headers: this.getHeaders(),
@@ -1112,7 +1179,10 @@ export class LLMExtractor {
             throw new Error(`HTTP Error ${res.status}`);
           }
 
-          const { responseData: resData, content: rawContent } = await readLlmResponse(res);
+          const { responseData: resData, content: rawContent } = await readLlmResponse(res, {
+            onStreamText: streamLogger?.push
+          });
+          streamLogger?.flush();
           if (!rawContent) {
             throw new Error(`大模型返回内容为空: ${JSON.stringify(resData)}`);
           }
@@ -1160,7 +1230,7 @@ export class LLMExtractor {
   /**
    * 正文选段批量重构：一次 LLM 会话生成多处选段对应的场景卡
    */
-  async regenerateSelectedParagraphScenes(chapterTitle, chapterContent, selections = [], model = "deepseek-chat") {
+  async regenerateSelectedParagraphScenes(chapterTitle, chapterContent, selections = [], model = "deepseek-chat", onProgressLog = null) {
     if (!this.apiKey) {
       throw new Error("请先配置有效的 LLM API Key！");
     }
@@ -1218,6 +1288,7 @@ export class LLMExtractor {
       };
 
       try {
+        const streamLogger = createThrottledStreamLogger(onProgressLog, '[LLM]');
         const res = await postChatCompletionWith429Retry({
           url,
           headers: this.getHeaders(),
@@ -1233,7 +1304,10 @@ export class LLMExtractor {
           throw new Error(`HTTP Error ${res.status}`);
         }
 
-        const { responseData: resData, content: rawContent } = await readLlmResponse(res);
+        const { responseData: resData, content: rawContent } = await readLlmResponse(res, {
+          onStreamText: streamLogger?.push
+        });
+        streamLogger?.flush();
         if (!rawContent) {
           throw new Error(`大模型返回内容为空: ${JSON.stringify(resData)}`);
         }
@@ -2070,9 +2144,10 @@ export class LLMExtractor {
               temperature: 0.1,
               max_tokens: 32768,
               stream: true
-            };
+        };
 
         try {
+          const streamLogger = createThrottledStreamLogger(onProgressLog, '[LLM]');
           const res = await postChatCompletionWith429Retry({
             url,
             headers: this.getHeaders(),
@@ -2085,7 +2160,10 @@ export class LLMExtractor {
           });
           if (res.status !== 200) throw new Error(`HTTP Error ${res.status}`);
 
-          const { responseData, content: rawContent } = await readLlmResponse(res);
+          const { responseData, content: rawContent } = await readLlmResponse(res, {
+            onStreamText: streamLogger?.push
+          });
+          streamLogger?.flush();
           onProgressLog?.(`[LLM] 第 ${attempt}/3 次生成结果:\n${rawContent}`);
           if (!rawContent) {
             throw new Error(`上游响应未包含可用文本；响应结构 ${summarizeLlmResponseShape(responseData)}`);
@@ -2111,6 +2189,7 @@ export class LLMExtractor {
               "warning"
             );
 
+            const repairStreamLogger = createThrottledStreamLogger(onProgressLog, '[LLM]');
             const repairRes = await postChatCompletionWith429Retry({
               url,
               headers: this.getHeaders(),
@@ -2132,7 +2211,10 @@ export class LLMExtractor {
             });
             if (repairRes.status !== 200) throw new Error(`HTTP Error ${repairRes.status}`);
 
-            const { responseData: repairResponseData, content: repairContent } = await readLlmResponse(repairRes);
+            const { responseData: repairResponseData, content: repairContent } = await readLlmResponse(repairRes, {
+              onStreamText: repairStreamLogger?.push
+            });
+            repairStreamLogger?.flush();
             if (!repairContent) {
               throw new Error(`超长精简响应未包含可用文本；响应结构 ${summarizeLlmResponseShape(repairResponseData)}`);
             }
