@@ -1,4 +1,5 @@
 import { globalCooldownManager } from '../utils/cooldown.js';
+import { getExponentialBackoffDelaySeconds } from '../utils/backoff.js';
 import { removeNonEnglishPromptTokens } from '../utils/prompt-cleaner.js';
 import { extractFirstImageFromZip, uint8ArrayToDataUrl, detectImageMimeType } from '../utils/zip-parser.js';
 
@@ -432,9 +433,8 @@ export class NovelAIClient {
     }
     let attempt = 0;
     const maxRetries = 6;
-    const waitBeforeRetry = async () => {
-      const delaySeconds = globalCooldownManager.cooldownSeconds;
-      globalCooldownManager.startCooldown();
+    const waitBeforeRetry = async (delaySeconds = globalCooldownManager.cooldownSeconds) => {
+      globalCooldownManager.startCooldown(delaySeconds);
       await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
       return delaySeconds;
     };
@@ -471,13 +471,19 @@ export class NovelAIClient {
           const cooldownState = globalCooldownManager.record429();
           if (attempt < maxRetries) {
             attempt++;
-            const retryMsg = `[NAI Client] NovelAI 返回 429 (连续 ${cooldownState.consecutive429} 次)，将在 ${cooldownState.cooldownSeconds} 秒后进行第 ${attempt}/${maxRetries} 次重试${cooldownState.mode === 'degraded' ? '；已降级到固定 35 秒间隔' : ''}...`;
+            const delaySeconds = getExponentialBackoffDelaySeconds({
+              attempt: attempt - 1,
+              baseDelaySeconds: globalCooldownManager.baseCooldownSeconds,
+              minDelaySeconds: cooldownState.cooldownSeconds,
+              maxDelaySeconds: 120
+            });
+            const retryMsg = `[NAI Client] NovelAI 返回 429 (连续 ${cooldownState.consecutive429} 次)，将在 ${delaySeconds} 秒后进行第 ${attempt}/${maxRetries} 次重试${cooldownState.mode === 'degraded' ? '；已降级到 429 保护模式' : ''}...`;
             console.warn(retryMsg);
             if (onRetry) {
               try { onRetry(retryMsg); } catch (e) {}
             }
             // 开启冷却锁确保其他并发请求在重试期间也进行排队
-            await waitBeforeRetry();
+            await waitBeforeRetry(delaySeconds);
             continue;
           } else {
             throw new Error(`[NovelAI 429] 频率限制，已重试 ${maxRetries} 次均失败，停止工作流。`);

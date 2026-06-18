@@ -14,6 +14,8 @@ import {
   getSceneCountMetrics,
   LLMExtractor,
   mapVisualTextToTags,
+  postChatCompletionWith429Retry,
+  readLlmResponse,
   SCENES_JSON_END,
   SCENES_JSON_START
 } from '../services/llm-extractor.js';
@@ -1572,6 +1574,184 @@ test('NAI generateImage does not restart cooldown after a successful submission'
   }
 
   assert.equal(startCooldownCount, 0);
+});
+
+test('LLM 429 retries use exponential backoff delays', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const waits = [];
+  let callCount = 0;
+
+  globalThis.setTimeout = (callback, ms, ...args) => {
+    waits.push(ms);
+    callback(...args);
+    return 0;
+  };
+  globalThis.fetch = async () => {
+    callCount += 1;
+    if (callCount <= 2) {
+      return {
+        status: 429,
+        text: async () => 'rate limited'
+      };
+    }
+    return {
+      status: 200,
+      body: new ReadableStream({
+        start(controller) {
+          controller.close();
+        }
+      }),
+      headers: { get: () => 'text/event-stream' }
+    };
+  };
+
+  try {
+    const res = await postChatCompletionWith429Retry({
+      url: 'https://example.invalid/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      payload: { model: 'test', messages: [] },
+      max429Retries: 5,
+      initialDelaySeconds: 10
+    });
+    assert.equal(res.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+  }
+
+  assert.deepEqual(waits, [10000, 20000]);
+});
+
+test('LLM streaming response fails only after idle timeout', async () => {
+  let pendingReject = null;
+  const response = {
+    body: {
+      getReader() {
+        return {
+          read() {
+            return new Promise((_, reject) => {
+              pendingReject = reject;
+            });
+          },
+          cancel(reason) {
+            pendingReject?.(reason);
+            return Promise.resolve();
+          }
+        };
+      }
+    }
+  };
+
+  await assert.rejects(
+    readLlmResponse(response, { idleTimeoutMs: 20 }),
+    error => error?.code === 'LLM_STREAM_IDLE_TIMEOUT'
+  );
+});
+
+test('LLM streaming response may exceed idle timeout window in total as long as chunks keep arriving', async () => {
+  const encoder = new TextEncoder();
+  const chunks = [
+    encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: 'A' } }] })}\n\n`),
+    encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: 'B' } }] })}\n\n`),
+    encoder.encode('data: [DONE]\n\n')
+  ];
+  let index = 0;
+  const response = {
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (index >= chunks.length) {
+              return { done: true, value: undefined };
+            }
+            await new Promise(resolve => setTimeout(resolve, 25));
+            return { done: false, value: chunks[index++] };
+          },
+          cancel() {
+            return Promise.resolve();
+          }
+        };
+      }
+    }
+  };
+
+  const { content } = await readLlmResponse(response, { idleTimeoutMs: 40 });
+  assert.equal(content, 'AB');
+});
+
+test('NAI 429 retries use exponential backoff before degraded mode', async () => {
+  const client = new NovelAIClient({
+    token: 'test-token',
+    baseUrl: 'https://image.novelai.net'
+  });
+  const originalFetch = globalThis.fetch;
+  const originalWaitForCooldown = globalCooldownManager.waitForCooldown;
+  const originalStartCooldown = globalCooldownManager.startCooldown;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalState = {
+    baseCooldownSeconds: globalCooldownManager.baseCooldownSeconds,
+    degradedCooldownSeconds: globalCooldownManager.degradedCooldownSeconds,
+    cooldownSeconds: globalCooldownManager.cooldownSeconds,
+    activeCooldownSeconds: globalCooldownManager.activeCooldownSeconds,
+    mode: globalCooldownManager.mode,
+    consecutive429: globalCooldownManager.consecutive429,
+    degradedSuccesses: globalCooldownManager.degradedSuccesses,
+    lastGenerationTime: globalCooldownManager.lastGenerationTime
+  };
+  const waits = [];
+  let callCount = 0;
+
+  globalCooldownManager.baseCooldownSeconds = 15;
+  globalCooldownManager.degradedCooldownSeconds = 35;
+  globalCooldownManager.cooldownSeconds = 15;
+  globalCooldownManager.activeCooldownSeconds = 15;
+  globalCooldownManager.mode = 'normal';
+  globalCooldownManager.consecutive429 = 0;
+  globalCooldownManager.degradedSuccesses = 0;
+  globalCooldownManager.lastGenerationTime = 0;
+  globalCooldownManager.waitForCooldown = async () => {};
+  globalCooldownManager.startCooldown = () => {};
+  globalThis.setTimeout = (callback, ms, ...args) => {
+    waits.push(ms);
+    callback(...args);
+    return 0;
+  };
+  globalThis.fetch = async () => {
+    callCount += 1;
+    if (callCount <= 2) {
+      return {
+        status: 429,
+        text: async () => 'rate limited'
+      };
+    }
+    return {
+      status: 200,
+      arrayBuffer: async () => Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]).buffer
+    };
+  };
+
+  try {
+    const result = await client.generateImage('1girl, indoors', {
+      model: 'nai-diffusion-4-5-full'
+    });
+    assert.equal(result.mimeType, 'image/png');
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalCooldownManager.waitForCooldown = originalWaitForCooldown;
+    globalCooldownManager.startCooldown = originalStartCooldown;
+    globalThis.setTimeout = originalSetTimeout;
+    globalCooldownManager.baseCooldownSeconds = originalState.baseCooldownSeconds;
+    globalCooldownManager.degradedCooldownSeconds = originalState.degradedCooldownSeconds;
+    globalCooldownManager.cooldownSeconds = originalState.cooldownSeconds;
+    globalCooldownManager.activeCooldownSeconds = originalState.activeCooldownSeconds;
+    globalCooldownManager.mode = originalState.mode;
+    globalCooldownManager.consecutive429 = originalState.consecutive429;
+    globalCooldownManager.degradedSuccesses = originalState.degradedSuccesses;
+    globalCooldownManager.lastGenerationTime = originalState.lastGenerationTime;
+  }
+
+  assert.deepEqual(waits, [15000, 30000]);
 });
 
 test('interaction actions map source, target, and mutual roles to NAI V4.5 tags', () => {

@@ -2,6 +2,7 @@ import { robustJsonLoads, checkTextCompleteness } from '../utils/json-repair.js'
 import { conservativeCompletionNaiWeights, cleanCharacterDnaTags, isTransientTag, preserveTextForLlm } from '../utils/prompt-cleaner.js';
 import { normalizeSceneCard, buildSceneDescription, getSceneCharacters } from '../utils/scene-structure.js';
 import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL, DEFAULT_ADVANCED_PROMPT_LEGACY, DEFAULT_REGENERATE_SCENE_PROMPT } from '../utils/default-prompts.js';
+import { getExponentialBackoffDelaySeconds } from '../utils/backoff.js';
 import { estimateV45Tokens } from './prompt-builder.js';
 import { searchTagsLocal, getRelatedTagsLocal } from './local-tag-searcher.js';
 import { searchTagsMcp, getRelatedTagsMcp } from './danbooru-mcp-searcher.js';
@@ -9,6 +10,7 @@ import { searchTagsMcp, getRelatedTagsMcp } from './danbooru-mcp-searcher.js';
 export const SCENES_JSON_START = '<SCENES_JSON_START>';
 export const SCENES_JSON_END = '<SCENES_JSON_END>';
 const NAI_PROMPT_TOKEN_LIMIT = 460;
+const llmResponseAbortControllers = new WeakMap();
 
 export function withSystemPrefix(taskPrompt) {
   const prompt = preserveTextForLlm(taskPrompt)
@@ -149,15 +151,57 @@ export function extractLlmResponseText(responseData) {
   return reasoningContent.includes('{') ? reasoningContent : '';
 }
 
-async function readResponseBodyText(res) {
+function buildLlmIdleTimeoutError(idleTimeoutMs) {
+  const seconds = Math.round(Number(idleTimeoutMs) / 1000);
+  const error = new Error(`LLM 流式输出空闲超时：连续 ${seconds} 秒无新内容`);
+  error.code = 'LLM_STREAM_IDLE_TIMEOUT';
+  return error;
+}
+
+async function readResponseBodyText(res, { idleTimeoutMs = 120000 } = {}) {
   if (res.body && typeof res.body.getReader === 'function') {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let rawBody = '';
+    let idleTimer = null;
+    let timedOut = false;
+    const resetIdleTimer = () => {
+      if (!(Number.isFinite(idleTimeoutMs) && idleTimeoutMs > 0)) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        timedOut = true;
+        try {
+          reader.cancel(buildLlmIdleTimeoutError(idleTimeoutMs));
+        } catch {}
+        const controller = llmResponseAbortControllers.get(res);
+        try {
+          controller?.abort(buildLlmIdleTimeoutError(idleTimeoutMs));
+        } catch {
+          controller?.abort();
+        }
+      }, idleTimeoutMs);
+    };
+
     while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      rawBody += decoder.decode(value, { stream: true });
+      try {
+        resetIdleTimer();
+        const { value, done } = await reader.read();
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = null;
+        }
+        if (done) break;
+        rawBody += decoder.decode(value, { stream: true });
+      } catch (error) {
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = null;
+        }
+        if (timedOut || error?.code === 'LLM_STREAM_IDLE_TIMEOUT') {
+          throw buildLlmIdleTimeoutError(idleTimeoutMs);
+        }
+        throw error;
+      }
     }
     rawBody += decoder.decode();
     return rawBody;
@@ -170,8 +214,9 @@ async function readResponseBodyText(res) {
   return null;
 }
 
-async function readLlmResponse(res) {
-  const rawBody = await readResponseBodyText(res);
+export async function readLlmResponse(res, options = {}) {
+  const idleTimeoutMs = options.idleTimeoutMs ?? res?.__llmIdleTimeoutMs ?? 120000;
+  const rawBody = await readResponseBodyText(res, { ...options, idleTimeoutMs });
   if (rawBody !== null) {
     let responseData = rawBody;
     try {
@@ -303,20 +348,22 @@ function getRateLimiter({ enabled = true, rpm = 3, key = 'default' } = {}) {
   return llmRateLimiterRegistry.get(limiterKey);
 }
 
-async function postChatCompletionWith429Retry({ url, headers, payload, timeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null }) {
-  const limiter = getRateLimiter(rateLimit);
+export async function postChatCompletionWith429Retry({ url, headers, payload, idleTimeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null }) {
+  const limiter = getRateLimiter(rateLimit || {});
   if (limiter) {
     await limiter.acquire();
   }
 
-  let delaySeconds = initialDelaySeconds;
   for (let attempt = 0; ; attempt++) {
+    const controller = new AbortController();
     const res = await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify({ ...payload, stream: true }),
-      signal: AbortSignal.timeout(timeoutMs)
+      signal: controller.signal
     });
+    llmResponseAbortControllers.set(res, controller);
+    res.__llmIdleTimeoutMs = idleTimeoutMs;
 
     if (res.status !== 429) {
       return res;
@@ -329,13 +376,17 @@ async function postChatCompletionWith429Retry({ url, headers, payload, timeoutMs
       throw error;
     }
 
+    const delaySeconds = getExponentialBackoffDelaySeconds({
+      attempt,
+      baseDelaySeconds: initialDelaySeconds,
+      maxDelaySeconds: 120
+    });
     console.warn(`${logPrefix} 触发 429，${delaySeconds} 秒后重试（${attempt + 1}/${max429Retries}）...`);
     
     // 触发 429 时，通知全局限流器同步进行冷却冻结，挂起所有新并发请求
     limiter?.notify429(delaySeconds * 1000);
 
     await waitMs(delaySeconds * 1000);
-    delaySeconds *= 2;
   }
 }
 
@@ -915,7 +966,7 @@ export class LLMExtractor {
           url,
           headers: this.getHeaders(),
           payload,
-          timeoutMs: 180000,
+          idleTimeoutMs: 180000,
           max429Retries: 5,
           initialDelaySeconds: 10,
           logPrefix: "[LLM Extractor] 场景提炼",
@@ -1050,7 +1101,7 @@ export class LLMExtractor {
             url,
             headers: this.getHeaders(),
             payload,
-            timeoutMs: 120000,
+            idleTimeoutMs: 120000,
             max429Retries: 5,
             initialDelaySeconds: 10,
             logPrefix: "[LLM Extractor]",
@@ -1171,7 +1222,7 @@ export class LLMExtractor {
           url,
           headers: this.getHeaders(),
           payload,
-          timeoutMs: 180000,
+          idleTimeoutMs: 180000,
           max429Retries: 5,
           initialDelaySeconds: 10,
           logPrefix: "[LLM Extractor]",
@@ -1281,7 +1332,7 @@ export class LLMExtractor {
         url,
         headers: this.getHeaders(),
         payload,
-        timeoutMs: 180000,
+        idleTimeoutMs: 180000,
         max429Retries: 5,
         initialDelaySeconds: 10,
         logPrefix: "[LLM Extractor] 角色DNA提取",
@@ -1402,7 +1453,7 @@ export class LLMExtractor {
         url,
         headers: this.getHeaders(),
         payload,
-        timeoutMs: 60000,
+        idleTimeoutMs: 60000,
         max429Retries: 5,
         initialDelaySeconds: 10,
         logPrefix: "[LLM Extractor] 检索分词重写",
@@ -1514,7 +1565,7 @@ export class LLMExtractor {
         category: options.category || 'all',
         show_nsfw: true,
         include_wiki: false,
-        timeoutMs: 120000
+        idleTimeoutMs: 120000
       });
     } catch (mcpErr) {
       console.warn(`[MCP] 远端 DanbooruSearchOnline 检索失败，降级本地词库: ${mcpErr.message}`);
@@ -1529,7 +1580,7 @@ export class LLMExtractor {
         limit,
         show_nsfw: true,
         include_wiki: false,
-        timeoutMs: 120000
+        idleTimeoutMs: 120000
       });
     } catch (mcpErr) {
       console.warn(`[MCP] 远端 DanbooruSearchOnline 关联推荐失败，降级本地推荐: ${mcpErr.message}`);
@@ -2026,7 +2077,7 @@ export class LLMExtractor {
             url,
             headers: this.getHeaders(),
             payload: attemptPayload,
-            timeoutMs: 120000,
+            idleTimeoutMs: 120000,
             max429Retries: 5,
             initialDelaySeconds: 10,
             logPrefix: "[LLM Extractor] 高级参数生成",
@@ -2073,7 +2124,7 @@ export class LLMExtractor {
                 max_tokens: 32768,
                 stream: true
               },
-              timeoutMs: 120000,
+              idleTimeoutMs: 120000,
               max429Retries: 5,
               initialDelaySeconds: 10,
               logPrefix: "[LLM Extractor] 高级参数精简",
@@ -2197,7 +2248,7 @@ export class LLMExtractor {
         url,
         headers: this.getHeaders(),
         payload,
-        timeoutMs: 120000,
+        idleTimeoutMs: 120000,
         max429Retries: 5,
         initialDelaySeconds: 10,
         logPrefix: "[LLM Extractor] 词组转化",

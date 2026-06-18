@@ -3,6 +3,7 @@ export class CooldownManager {
     this.baseCooldownSeconds = this._normalizeBaseCooldown(baseCooldownSeconds);
     this.degradedCooldownSeconds = degradedCooldownSeconds;
     this.cooldownSeconds = this.baseCooldownSeconds;
+    this.activeCooldownSeconds = this.cooldownSeconds;
     this.mode = 'normal';
     this.consecutive429 = 0;
     this.degradedSuccesses = 0;
@@ -65,6 +66,7 @@ export class CooldownManager {
   getState() {
     return {
       remaining: this.getRemainingSeconds(),
+      activeCooldownSeconds: this.activeCooldownSeconds,
       cooldownSeconds: this.cooldownSeconds,
       baseCooldownSeconds: this.baseCooldownSeconds,
       degradedCooldownSeconds: this.degradedCooldownSeconds,
@@ -103,7 +105,7 @@ export class CooldownManager {
   getRemainingSeconds() {
     if (this.lastGenerationTime === 0) return 0;
     const elapsed = (Date.now() - this.lastGenerationTime) / 1000;
-    const remaining = this.cooldownSeconds - elapsed;
+    const remaining = this.activeCooldownSeconds - elapsed;
     return remaining > 0 ? remaining : 0;
   }
 
@@ -111,7 +113,8 @@ export class CooldownManager {
    * 启动冷却锁（通常在开始发送 API 请求时调用，或者在响应成功返回后调用）
    * 建议在开始请求前更新时间戳以防并发，在请求返回后再刷新一遍
    */
-  startCooldown() {
+  startCooldown(seconds = this.cooldownSeconds) {
+    this.activeCooldownSeconds = Math.max(0, Number(seconds) || 0);
     this.lastGenerationTime = Date.now();
     this._startTickTimer();
   }
