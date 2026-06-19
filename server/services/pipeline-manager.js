@@ -199,11 +199,15 @@ export class PipelineManager {
       const specialChapPattern = /^\s*(?:正文\s+)?(序章|楔子|引子|序幕|尾声|后记|结局|终章|番外(?:篇)?(?:\s*[:：]?\s*.*)?)\s*$/;
       const prefixedSpecialChapPattern = /^\s*(.{1,40}?)\s+(序章|楔子|引子|序幕|尾声|后记|结局|终章|番外(?:篇)?(?:\s*[:：]?\s*.*)?)\s*$/;
       const westernChapPattern = /^\s*(?:chapter|chap\.?)\s*\d+\b[\s:：.-]*(.*)$/i;
+      const parenthesesChapPattern = new RegExp(`^\\s*([（(]\\s*${numberPattern}\\s*[）)])\\s*(.*)$`);
 
       const parseChapterHeading = (stripped) => {
         if (!stripped || stripped.length > 100) return null;
         const strict = stripped.match(strictChapPattern);
         if (strict) return stripped;
+
+        const parens = stripped.match(parenthesesChapPattern);
+        if (parens) return stripped;
 
         const prefixed = stripped.match(prefixedChapPattern);
         if (prefixed) {
@@ -916,12 +920,14 @@ export class PipelineManager {
     const naiConsumerPromise = this._runNaiConsumerLinear(naiQueue, () => llmDone, naiModel);
 
     try {
-      for (const scene of targetScenes) {
-        if (!this.isRunning) break;
+      // 并行启动所有目标场景的 LLM 提示词翻译，并推入生图队列
+      const preparePromises = targetScenes.map(async (scene) => {
+        if (!this.isRunning) return;
         await this.runPriorityJobs();
-        if (!this.isRunning) break;
+        if (!this.isRunning) return;
         await this._prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue);
-      }
+      });
+      await Promise.all(preparePromises);
     } finally {
       llmDone = true;
       await naiConsumerPromise;
