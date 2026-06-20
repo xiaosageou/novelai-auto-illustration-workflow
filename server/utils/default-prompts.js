@@ -482,15 +482,7 @@ Before writing your final output, silently check:
 2. Are there more than 2 weight annotations? If yes, remove the least important ones.
 3. Is any concept repeated across base_prompt and a character_prompt? If yes, remove the duplicate.
 4. Are the character interaction relationships clearly readable in natural language?
-5. Are ALL words separated by normal spaces? Words like "Girlwithlonghair" are WRONG — it must be "Girl with long hair". NEVER remove spaces to save tokens.
-
-### Rule 6 — Budget Trimming (MANDATORY when over 400 tokens)
-If your output would exceed the 400-token NAI budget, trim content in this priority order (delete low-priority first):
-1. Background decoration and atmosphere phrases (e.g., delete entire "warm lighting casting soft shadows" sentence)
-2. Redundant or synonymous descriptions (e.g., if you wrote "shallow depth of field", do NOT also write "blurred background")
-3. Minor character details (secondary accessories, fabric texture, environmental reflections)
-4. Shorten camera descriptions to minimum (e.g., "Medium shot from a slight distance, side view showing both characters" → "side view")
-NEVER remove spaces between words to fit the budget. Deleting entire phrases is always preferred over concatenating words.
+5. Are ALL words separated by normal spaces? Words like "Girlwithlonghair" are WRONG — it must be "Girl with long hair".
 
 ## NSFW Rating Handling (MANDATORY — same as before)
 

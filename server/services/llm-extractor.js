@@ -1948,7 +1948,7 @@ export class LLMExtractor {
     const nlModeEnforcementLine = isNaturalLanguage
       ? [
           "【⚠️ 自然语言模式 — 强制规则】",
-          "1. 输出的 base_prompt 和每个 character_prompts[].prompt 必须是连贯的英文句子或短语，绝对禁止使用逗号分隔的 Danbooru 标签列表。每个英文单词之间必须有正常空格（如 'A girl with long hair'，绝不能写成 'Agirlwithlonghair'）。如果内容超出 400 token 预算，删除次要描述句子，不要去掉空格。",
+          "1. 输出的 base_prompt 和每个 character_prompts[].prompt 必须是连贯的英文句子或短语，绝对禁止使用逗号分隔的 Danbooru 标签列表。每个英文单词之间必须有正常空格（如 'A girl with long hair'，绝不能写成 'Agirlwithlonghair'）。",
           "2. 权重语法 :: 最多使用 2 次，且数值必须在 1.1 到 1.3 之间，绝对禁止超过 1.3 的权重。只对极难生成的关键元素使用权重。",
           "3. 每个概念只描述一次，绝对禁止在 base_prompt 和 character_prompts 之间重复同一特征。",
           "4. negative_prompt 保持简短精准（一句话或几个词），绝对禁止输出 300 词的万能负面词列表。",
@@ -1959,9 +1959,7 @@ export class LLMExtractor {
     const userMessage = [
       "请为以下中文小说插画场景生成 NovelAI 生图参数。",
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
-      "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局标签（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪，优先使用轻微微笑、担忧、羞涩、惊讶、恼怒、悲伤、疲惫、坚定等克制但明确的表情，并用眼神、眉形和轻微嘴角变化表现；不要把所有角色都写成 calm、expressionless 或 natural_expression。禁止无端生成 bared_teeth、clenched_teeth、sharp_teeth、fang、crazy_grin、distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。",
-      "【下游 NAI 生图预算约束（非你的输出 token 限制）】base_prompt + 全部 character_prompts.prompt 合计内容最终会经过本地 token 估算，目标不超过 400 token。这是下游图片模型的限制，不是你 JSON 输出的字数限制——你必须用正常空格书写完整的英文句子，绝对禁止通过去掉空格来压缩字数（如 'Girlwithlonghair' 是错误的，'Girl with long hair' 才是正确的）。",
-      "【精简策略——按优先级从低到高删除】如果预估超过 400 token，按以下顺序依次删除，直到达标：①背景装饰与氛围词（如 'warm lighting casting soft shadows' 整句删除）；②重复或同义描述（如写了 'shallow depth of field' 就不要再写 'blurred background'）；③角色次要细节（次要配饰、衣物质感、环境反射等）；④镜头描述精简为最短版本（如 'Medium shot from a slight distance, side view showing both characters' → 'side view'）。绝对禁止通过合并或粘连词语来压缩，宁可删掉整句描述也不要去掉空格。",
+      "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局标签（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪，优先使用轻微微笑、担忧、羞涩、惊讶、恼怒、悲伤、疲惫、坚定等克制但明确的表情，并用眼神、眉形和轻微嘴角变化表现；不要把所有角色都写成 calm、expressionless 或 natural_expression。禁止无端生成 bared_teeth、clenched_teeth、sharp_teeth、fang、crazy_grin、distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。用正常空格书写英文句子，禁止粘连单词。",
       "NSFW 场景的角色表情必须针对当前情境生成：可使用 restrained pleasured_expression、half-closed_eyes、bedroom_eyes、deep_blush、embarrassed、pained_expression、dazed_expression、unfocused_eyes、teasing_expression、satisfied_expression、slightly_parted_lips 或 biting_lip；根据角色实际状态选择一个主情绪，禁止所有角色复用同一副表情，也禁止无依据的 ahegao、crazy_grin 或 distorted_face。",
       "背景不是硬性要求。根据原文与构图需要选择详细环境、简洁背景或纯色背景；近景、动作特写和角色主导画面可以使用 simple_background、plain_background、white_background、black_background、gradient_background 或 backgroundless。不要为了凑背景标签挤占主体动作与角色细节。",
       "精确接触动作必须写清：谁持有什么物体、对准谁、接触哪个身体部位、用什么镜头清楚显示接触点。剑尖抵喉必须使用 sword_tip_touching_throat / blade_pressed_against_neck / visible_throat_contact，不能只写 holding_sword、confrontation 或 attacking。",
@@ -2163,18 +2161,6 @@ export class LLMExtractor {
       return { orientation, prompt, base_prompt: resolvedBasePrompt, character_prompts, negative_prompt };
     };
 
-    const buildOverBudgetRetryUserMessage = (rawContent, estimatedTokens) => [
-      `上一次输出的 JSON 结构基本正确，但按本地 NovelAI 预算估算约 ${estimatedTokens} token，已经超过 400 token 上限。`,
-      "请你先自行复核并压缩，再重新输出一个完整 JSON 对象；不要解释，不要 Markdown，不要代码块。",
-      "必须保留：角色数量、角色 name 顺序、关键身份锚点、关键互动方向(source/target/mutual)、核心环境、主镜头、必要 NSFW 约束。",
-      "优先删除：重复氛围词、次要装饰、同义重复、低优先级环境细枝末节。",
-      "硬约束：base_prompt + 全部 character_prompts.prompt 合计按本地估算必须不超过 400 token。",
-      "本地估算规则：按非字母/数字/# 分隔文本片段，每个片段 token_cost = max(1, ceil(length / 8))。",
-      "若必须取舍，宁可缩短修饰与背景，也不要牺牲角色身份、动作方向和关键接触关系。",
-      "",
-      "【当前超长 JSON】",
-      String(rawContent || '').trim()
-    ].join("\n");
 
     try {
       const retryUserMessage = [
