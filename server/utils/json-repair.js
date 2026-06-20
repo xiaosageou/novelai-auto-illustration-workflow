@@ -50,8 +50,22 @@ export function checkTextCompleteness(text) {
     }
   }
 
+  // 3. 剥离前导的脏字符（如 "the JSON: {{" 等）提取核心 JSON 结构，避免解析错误被误判为物理截断
+  let testText = cleanedText;
+  if (!testText.startsWith("{") && !testText.startsWith("[")) {
+    const objMatch = testText.match(/(\{[\s\S]*\})/);
+    if (objMatch) {
+      testText = objMatch[1].trim();
+    } else {
+      const arrMatch = testText.match(/(\[[\s\S]*\])/);
+      if (arrMatch) {
+        testText = arrMatch[1].trim();
+      }
+    }
+  }
+
   try {
-    JSON.parse(cleanedText);
+    JSON.parse(testText);
     return { isComplete: true, reason: "内容完全完整" };
   } catch (error) {
     // 检查是否是 Markdown 代码块包裹
