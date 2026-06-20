@@ -1952,7 +1952,8 @@ export class LLMExtractor {
           "2. 权重语法 :: 最多使用 2 次，且数值必须在 1.1 到 1.3 之间，绝对禁止超过 1.3 的权重。只对极难生成的关键元素使用权重。",
           "3. 每个概念只描述一次，绝对禁止在 base_prompt 和 character_prompts 之间重复同一特征。",
           "4. negative_prompt 保持简短精准（一句话或几个词），绝对禁止输出 300 词的万能负面词列表。",
-          "5. interaction_actions[].action 字段仍必须是 Danbooru 标签格式（如 sword_tip_touching_throat），因为 pipeline 需要这些标签来注入 source#/target# 前缀。这是唯一允许使用标签的字段。"
+          "5. interaction_actions[].action 字段仍必须是 Danbooru 标签格式（如 sword_tip_touching_throat），因为 pipeline 需要这些标签来注入 source#/target# 前缀。这是唯一允许使用标签的字段。",
+          "6. base_prompt 和 character_prompts[].prompt 中每个英文单词的首字母必须大写（Title Case），如 'A Girl With Long Hair Standing In A Moonlit Garden'。介词、冠词、连词（a, an, the, in, on, at, with, and, or, of）可小写。"
         ].join("\n")
       : '';
 

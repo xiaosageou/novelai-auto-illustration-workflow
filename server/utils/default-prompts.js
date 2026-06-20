@@ -461,6 +461,7 @@ Write base_prompt and each character prompt as COHERENT ENGLISH SENTENCES or SHO
 - GOOD: "A moonlit ancient palace hall shrouded in cold mist, with carved stone pillars casting long shadows. The atmosphere is tense and ethereal."
 - BAD: "indoors, palace, night, moonlight, mist, stone_pillar, dramatic_lighting, ethereal"
 Every field that describes a scene or character must read like a natural description a director would give to an artist.
+- Use Title Case for each word: "A Girl With Long Hair Standing In A Moonlit Garden". Minor words (a, an, the, in, on, at, with, and, or, of) may stay lowercase.
 
 ### Rule 2 — Minimal, Controlled Weights
 You may use the :: weight syntax ONLY for 1–2 elements that are extremely easy for the model to ignore (e.g., a specific rare prop, or a critical interaction contact point).
