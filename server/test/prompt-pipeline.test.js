@@ -842,6 +842,16 @@ test('LLM response extraction supports content parts and fake-stream SSE chunks'
     ].join('\n')),
     '{"base_prompt":"forest"}'
   );
+
+  assert.equal(
+    extractLlmResponseText([
+      'data: {"choices":[{"delta":{"content":"Medical"}}]}',
+      'data: {"choices":[{"delta":{"content":" room"}}]}',
+      'data: {"choices":[{"delta":{"content":" interior"}}]}',
+      'data: [DONE]'
+    ].join('\n')),
+    'Medical room interior'
+  );
 });
 
 test('legacy LLM prompt output is rejected without deterministic fallback', async () => {
@@ -1712,7 +1722,7 @@ test('LLM streaming response emits incremental stream text chunks', async () => 
     onStreamText: chunk => chunks.push(chunk)
   });
 
-  assert.equal(content, 'Helloworld');
+  assert.equal(content, 'Hello world');
   assert.deepEqual(chunks, ['Hello', 'world']);
 });
 

@@ -97,6 +97,33 @@ function flattenLlmText(value) {
   return '';
 }
 
+function extractLlmResponseTextChunk(responseData) {
+  if (typeof responseData === 'string') return responseData;
+  if (!responseData || typeof responseData !== 'object') return '';
+
+  const choice = responseData.choices?.[0];
+  const candidates = [
+    choice?.message?.content,
+    choice?.delta?.content,
+    choice?.text,
+    responseData.output_text,
+    responseData.text,
+    responseData.response,
+    responseData.content,
+    responseData.output
+  ];
+
+  for (const candidate of candidates) {
+    const text = flattenLlmText(candidate);
+    if (text) return text;
+  }
+
+  const reasoningContent = flattenLlmText(
+    choice?.message?.reasoning_content ?? choice?.delta?.reasoning_content
+  );
+  return reasoningContent.includes('{') ? reasoningContent : '';
+}
+
 export function extractLlmResponseText(responseData) {
   if (typeof responseData === 'string') {
     const raw = responseData.trim();
@@ -110,7 +137,7 @@ export function extractLlmResponseText(responseData) {
         .filter(payload => payload && payload !== '[DONE]')
         .map(payload => {
           try {
-            return extractLlmResponseText(JSON.parse(payload));
+            return extractLlmResponseTextChunk(JSON.parse(payload));
           } catch {
             return payload;
           }
@@ -1953,7 +1980,8 @@ export class LLMExtractor {
           "3. 每个概念只描述一次，绝对禁止在 base_prompt 和 character_prompts 之间重复同一特征。",
           "4. negative_prompt 保持简短精准（一句话或几个词），绝对禁止输出 300 词的万能负面词列表。",
           "5. interaction_actions[].action 字段仍必须是 Danbooru 标签格式（如 sword_tip_touching_throat），因为 pipeline 需要这些标签来注入 source#/target# 前缀。这是唯一允许使用标签的字段。",
-          "6. base_prompt 和 character_prompts[].prompt 中每个英文单词的首字母必须大写（Title Case），如 'A Girl With Long Hair Standing In A Moonlit Garden'。介词、冠词、连词（a, an, the, in, on, at, with, and, or, of）可小写。"
+          "6. Token 预算必须前置控制：base_prompt 不要超过 80 token，每个 character_prompts[].prompt 不要超过 60 token，base_prompt + 全部 character_prompts 的总量不要超过 460 token / must stay within 460 tokens。优先删除背景装饰、重复同义描述和次要配饰，不得删除角色身份、核心动作、source/target 关系和关键接触点。",
+          "7. base_prompt 和 character_prompts[].prompt 中每个英文单词的首字母必须大写（Title Case），如 'A Girl With Long Hair Standing In A Moonlit Garden'。介词、冠词、连词（a, an, the, in, on, at, with, and, or, of）可小写。"
         ].join("\n")
       : '';
 
@@ -2356,7 +2384,10 @@ export class LLMExtractor {
                         `Input sections are separated by "${DELIM}". Output the trimmed sections separated by "${DELIM}" in the same order. Return ONLY the trimmed text, no labels, no explanation.`
                       ].join("\n")
                     },
-                    { role: "user", content: sections.join(DELIM) }
+                    {
+                      role: "user",
+                      content: `【预算目标】请把以下 NovelAI prompt sections 精简到 ${NAI_PROMPT_TOKEN_LIMIT} token 以内，且一定 under 460 tokens。\n${sections.join(DELIM)}`
+                    }
                   ],
                   temperature: 0,
                   max_tokens: 8192,
@@ -2373,14 +2404,25 @@ export class LLMExtractor {
               const { content: trimContent } = await readLlmResponse(trimRes);
               if (!trimContent) throw new Error('mimo 精简响应为空');
 
-              const trimmedSections = trimContent.trim().split(DELIM).map(s => s.trim()).filter(Boolean);
-              if (trimmedSections.length !== sections.length) {
-                throw new Error(`mimo 返回段数不匹配（期望 ${sections.length}，实际 ${trimmedSections.length}）`);
-              }
+              const trimmedJson = extractValidJson(trimContent);
+              if (trimmedJson.success && trimmedJson.parsed?.base_prompt && Array.isArray(trimmedJson.parsed?.character_prompts)) {
+                normalized.base_prompt = String(trimmedJson.parsed.base_prompt || '').trim();
+                for (let i = 0; i < normalized.character_prompts.length; i++) {
+                  const item = trimmedJson.parsed.character_prompts[i];
+                  normalized.character_prompts[i].prompt = String(
+                    typeof item === 'string' ? item : item?.prompt || ''
+                  ).trim() || normalized.character_prompts[i].prompt;
+                }
+              } else {
+                const trimmedSections = trimContent.trim().split(DELIM).map(s => s.trim()).filter(Boolean);
+                if (trimmedSections.length !== sections.length) {
+                  throw new Error(`mimo 返回段数不匹配（期望 ${sections.length}，实际 ${trimmedSections.length}）`);
+                }
 
-              normalized.base_prompt = trimmedSections[0];
-              for (let i = 0; i < normalized.character_prompts.length; i++) {
-                normalized.character_prompts[i].prompt = trimmedSections[i + 1];
+                normalized.base_prompt = trimmedSections[0];
+                for (let i = 0; i < normalized.character_prompts.length; i++) {
+                  normalized.character_prompts[i].prompt = trimmedSections[i + 1];
+                }
               }
 
               const trimmedTokens = estimateAdvancedPromptTokens(normalized.base_prompt, normalized.character_prompts);

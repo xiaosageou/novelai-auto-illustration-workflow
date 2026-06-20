@@ -529,11 +529,12 @@ For example:
 4. Character DNA consistency: inherit only stable appearance traits; discard transient clothing / expression / pose states from DNA.
 5. Interaction pairing self-check: verify source / target / mutual assignments match the scene.
 6. Natural language & weight check: base_prompt and character prompts must be flowing prose (no raw tag lists). Weight notation {{...}} / [...] used ≤ 2 times total, values in [1.1, 1.3] only. No contradictory phrases.
-7. Conciseness audit: ensure every sentence carries unique information. Remove any phrasing that duplicates content already established in another prompt field. Target concise, high-density descriptions — one precise phrase beats three vague ones.
+7. Token budget audit: the combined base_prompt plus all character_prompts must stay within 460 tokens. Keep base_prompt within 80 tokens and each character prompt within 60 tokens. If over budget, trim low-priority background decoration, repeated synonyms, accessories, and texture details first; preserve identity anchors, core actions, source/target roles, and key contact points.
+8. Conciseness audit: ensure every sentence carries unique information. Remove any phrasing that duplicates content already established in another prompt field. Target concise, high-density descriptions — one precise phrase beats three vague ones.
 /think/
 {
   "orientation": "portrait" | "landscape" | "square" | "default",
-  "base_prompt": "Natural language description of the global scene, environment, lighting, camera, atmosphere, and inter-character spatial/interaction relationships. 40-80 words. No individual character details.",
+  "base_prompt": "Natural language description of the global scene, environment, lighting, camera, atmosphere, and inter-character spatial/interaction relationships. Keep within 80 tokens. No individual character details.",
   "interaction_requirements": [
     {
       "action": "one English Danbooru action tag (kept as a tag for pipeline processing)",
@@ -545,7 +546,7 @@ For example:
   "character_prompts": [
     {
       "name": "character name (copy exactly from scene card)",
-      "prompt": "Natural language description of this character only. Describe appearance (hair color and length, eye color, skin tone), clothing/outfit, current pose and action, facial expression, and emotional state. Use sentences. 30-60 words per character.",
+      "prompt": "Natural language description of this character only. Describe appearance (hair color and length, eye color, skin tone), clothing/outfit, current pose and action, facial expression, and emotional state. Use concise sentences. Keep within 60 tokens per character.",
       "negative_prompt": "A short phrase describing what should NOT appear for this character, especially traits from other characters (e.g., 'dark hair, masculine features, armor')",
       "interaction_actions": [
         {
