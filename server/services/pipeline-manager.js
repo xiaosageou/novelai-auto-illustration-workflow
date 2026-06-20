@@ -26,7 +26,8 @@ export function resolveTaskLlmConfig(config = {}, task = 'scene') {
   const prefixMap = {
     characterDna: 'llm_character_dna',
     scene: 'llm_scene',
-    naiTags: 'llm_nai_tags'
+    naiTags: 'llm_nai_tags',
+    trim: 'llm_trim'
   };
   const prefix = prefixMap[task] || prefixMap.scene;
   const presets = normalizePresetList(config.llm_api_presets);
@@ -123,6 +124,7 @@ export class PipelineManager {
 
   createLlmExtractor(task) {
     const connection = resolveTaskLlmConfig(this.config, task);
+    const trimConnection = resolveTaskLlmConfig(this.config, 'trim');
     return new LLMExtractor({
       baseUrl: connection.baseUrl,
       apiKey: connection.apiKey,
@@ -134,7 +136,10 @@ export class PipelineManager {
       prompt_style: this.config.prompt_style || "natural_language",
       rateLimitEnabled: connection.rateLimitEnabled,
       rateLimitRpm: connection.rateLimitRpm,
-      rateLimitKey: connection.rateLimitKey
+      rateLimitKey: connection.rateLimitKey,
+      trimUrl: trimConnection.baseUrl,
+      trimKey: trimConnection.apiKey,
+      trimModel: trimConnection.model
     });
   }
 

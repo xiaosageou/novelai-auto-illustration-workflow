@@ -593,7 +593,7 @@ function trimPromptTokens(prompt = '', tokenBudget = 0) {
   return selected.sort((a, b) => a.index - b.index).map(item => item.token).join(', ');
 }
 
-export function enforceV45PromptBudget(basePrompt = '', characterPrompts = [], maxTokens = 460) {
+export function enforceV45PromptBudget(basePrompt = '', characterPrompts = [], maxTokens = 400) {
   const prompts = Array.isArray(characterPrompts) ? characterPrompts : [];
   const minimumCharacterBudget = prompts.length > 0 ? 50 : 0;
   const baseBudget = Math.max(100, Math.min(220, maxTokens - prompts.length * minimumCharacterBudget));

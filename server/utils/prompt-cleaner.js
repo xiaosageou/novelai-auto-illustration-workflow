@@ -376,6 +376,36 @@ export function preserveTextForLlm(text) {
 }
 
 /**
+ * 检测英文自然语言文本中的单词粘连（缺少空格）。
+ * 仅适用于 V4.5 自然语言模式，不适用于 tag 模式。
+ *
+ * 策略：
+ * 1. 匹配连续字母 ≥ 15 字符的长串（大概率是多个单词粘连），不区分大小写
+ * 2. 在标点、下划线、数字处断开，避免误切正常分隔的词
+ * 3. 排除 ::权重:: 包裹的内容
+ *
+ * @param {string} text - 待检测文本
+ * @returns {Array<{original: string, start: number, end: number}>} 粘连片段列表
+ */
+export function detectConcatenatedWords(text) {
+  if (typeof text !== 'string') return [];
+  const results = [];
+  // 先移除 ::weight:: 结构，避免误判
+  const sanitized = text.replace(/::[\d.]+::/g, '').replace(/::[^:]+::/g, '');
+  // 在非字母边界处断开，匹配 ≥15 字符的纯字母串（不区分大小写）
+  const re = /(?<![a-zA-Z])[a-zA-Z]{15,}(?![a-zA-Z])/g;
+  let m;
+  while ((m = re.exec(sanitized)) !== null) {
+    const original = m[0];
+    const idx = text.indexOf(original);
+    if (idx >= 0) {
+      results.push({ original, start: idx, end: idx + original.length });
+    }
+  }
+  return results;
+}
+
+/**
  * 在原始小说文本中查找 trigger_sentence，优先返回完全一致的原文。
  */
 export function findOriginalTriggerSentence(originalText, trigger) {

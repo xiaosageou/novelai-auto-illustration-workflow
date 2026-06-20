@@ -1,5 +1,5 @@
 import { robustJsonLoads, checkTextCompleteness, extractValidJson } from '../utils/json-repair.js';
-import { conservativeCompletionNaiWeights, cleanCharacterDnaTags, isTransientTag, preserveTextForLlm } from '../utils/prompt-cleaner.js';
+import { conservativeCompletionNaiWeights, cleanCharacterDnaTags, isTransientTag, preserveTextForLlm, detectConcatenatedWords } from '../utils/prompt-cleaner.js';
 import { normalizeSceneCard, buildSceneDescription, getSceneCharacters } from '../utils/scene-structure.js';
 import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL, DEFAULT_ADVANCED_PROMPT_LEGACY, DEFAULT_REGENERATE_SCENE_PROMPT } from '../utils/default-prompts.js';
 import { getExponentialBackoffDelaySeconds } from '../utils/backoff.js';
@@ -9,7 +9,7 @@ import { searchTagsMcp, getRelatedTagsMcp } from './danbooru-mcp-searcher.js';
 
 export const SCENES_JSON_START = '<SCENES_JSON_START>';
 export const SCENES_JSON_END = '<SCENES_JSON_END>';
-const NAI_PROMPT_TOKEN_LIMIT = 460;
+const NAI_PROMPT_TOKEN_LIMIT = 400;
 const llmResponseAbortControllers = new WeakMap();
 
 export function withSystemPrefix(taskPrompt) {
@@ -951,7 +951,7 @@ function buildSceneExtractionUserContent({
 }
 
 export class LLMExtractor {
-  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", danbooru_mcp_url = "", prompt_style = "natural_language", rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default" } = {}) {
+  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", danbooru_mcp_url = "", prompt_style = "natural_language", rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "" } = {}) {
     this.baseUrl = baseUrl.trim().replace(/\/+$/, "");
     this.apiKey = apiKey.trim();
     this.system_prompt_extract_scenes = system_prompt_extract_scenes;
@@ -964,6 +964,9 @@ export class LLMExtractor {
     this.rateLimitEnabled = rateLimitEnabled !== false;
     this.rateLimitRpm = Number(rateLimitRpm) || 3;
     this.rateLimitKey = String(rateLimitKey || "default");
+    this.trimUrl = trimUrl.trim().replace(/\/+$/, "");
+    this.trimKey = trimKey.trim();
+    this.trimModel = trimModel.trim() || "mimo-v2.5";
   }
 
   updateConfig(baseUrl, apiKey, system_prompt_extract_scenes, system_prompt_character_dna, system_prompt_advanced_prompt, system_prompt_regenerate_scene, danbooru_mcp_url, system_prompt_advanced_prompt_nl, prompt_style, rateLimitEnabled, rateLimitRpm, rateLimitKey) {
@@ -1945,7 +1948,7 @@ export class LLMExtractor {
     const nlModeEnforcementLine = isNaturalLanguage
       ? [
           "【⚠️ 自然语言模式 — 强制规则】",
-          "1. 输出的 base_prompt 和每个 character_prompts[].prompt 必须是连贯的英文句子或短语，绝对禁止使用逗号分隔的 Danbooru 标签列表。",
+          "1. 输出的 base_prompt 和每个 character_prompts[].prompt 必须是连贯的英文句子或短语，绝对禁止使用逗号分隔的 Danbooru 标签列表。每个英文单词之间必须有正常空格（如 'A girl with long hair'，绝不能写成 'Agirlwithlonghair'）。如果内容超出 400 token 预算，删除次要描述句子，不要去掉空格。",
           "2. 权重语法 :: 最多使用 2 次，且数值必须在 1.1 到 1.3 之间，绝对禁止超过 1.3 的权重。只对极难生成的关键元素使用权重。",
           "3. 每个概念只描述一次，绝对禁止在 base_prompt 和 character_prompts 之间重复同一特征。",
           "4. negative_prompt 保持简短精准（一句话或几个词），绝对禁止输出 300 词的万能负面词列表。",
@@ -1957,8 +1960,8 @@ export class LLMExtractor {
       "请为以下中文小说插画场景生成 NovelAI 生图参数。",
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
       "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局标签（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪，优先使用轻微微笑、担忧、羞涩、惊讶、恼怒、悲伤、疲惫、坚定等克制但明确的表情，并用眼神、眉形和轻微嘴角变化表现；不要把所有角色都写成 calm、expressionless 或 natural_expression。禁止无端生成 bared_teeth、clenched_teeth、sharp_teeth、fang、crazy_grin、distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。",
-      "总输出预算约束：最终用于 NovelAI 的 base_prompt 与全部 character_prompts 合计必须尽量紧凑，按本地预算估算不要超过 460 token。宁可删去次要装饰、重复氛围词和低优先级细节，也不要超过 460 token。",
-      "输出前必须先自行复核一次总预算；如果你发现超过 460 token，先自行精简，再输出最终 JSON，不要把超长版本直接交出来。",
+      "【下游 NAI 生图预算约束（非你的输出 token 限制）】base_prompt + 全部 character_prompts.prompt 合计内容最终会经过本地 token 估算，目标不超过 400 token。这是下游图片模型的限制，不是你 JSON 输出的字数限制——你必须用正常空格书写完整的英文句子，绝对禁止通过去掉空格来压缩字数（如 'Girlwithlonghair' 是错误的，'Girl with long hair' 才是正确的）。",
+      "【精简策略——按优先级从低到高删除】如果预估超过 400 token，按以下顺序依次删除，直到达标：①背景装饰与氛围词（如 'warm lighting casting soft shadows' 整句删除）；②重复或同义描述（如写了 'shallow depth of field' 就不要再写 'blurred background'）；③角色次要细节（次要配饰、衣物质感、环境反射等）；④镜头描述精简为最短版本（如 'Medium shot from a slight distance, side view showing both characters' → 'side view'）。绝对禁止通过合并或粘连词语来压缩，宁可删掉整句描述也不要去掉空格。",
       "NSFW 场景的角色表情必须针对当前情境生成：可使用 restrained pleasured_expression、half-closed_eyes、bedroom_eyes、deep_blush、embarrassed、pained_expression、dazed_expression、unfocused_eyes、teasing_expression、satisfied_expression、slightly_parted_lips 或 biting_lip；根据角色实际状态选择一个主情绪，禁止所有角色复用同一副表情，也禁止无依据的 ahegao、crazy_grin 或 distorted_face。",
       "背景不是硬性要求。根据原文与构图需要选择详细环境、简洁背景或纯色背景；近景、动作特写和角色主导画面可以使用 simple_background、plain_background、white_background、black_background、gradient_background 或 backgroundless。不要为了凑背景标签挤占主体动作与角色细节。",
       "精确接触动作必须写清：谁持有什么物体、对准谁、接触哪个身体部位、用什么镜头清楚显示接触点。剑尖抵喉必须使用 sword_tip_touching_throat / blade_pressed_against_neck / visible_throat_contact，不能只写 holding_sword、confrontation 或 attacking。",
@@ -2161,11 +2164,11 @@ export class LLMExtractor {
     };
 
     const buildOverBudgetRetryUserMessage = (rawContent, estimatedTokens) => [
-      `上一次输出的 JSON 结构基本正确，但按本地 NovelAI 预算估算约 ${estimatedTokens} token，已经超过 460 token 上限。`,
+      `上一次输出的 JSON 结构基本正确，但按本地 NovelAI 预算估算约 ${estimatedTokens} token，已经超过 400 token 上限。`,
       "请你先自行复核并压缩，再重新输出一个完整 JSON 对象；不要解释，不要 Markdown，不要代码块。",
       "必须保留：角色数量、角色 name 顺序、关键身份锚点、关键互动方向(source/target/mutual)、核心环境、主镜头、必要 NSFW 约束。",
       "优先删除：重复氛围词、次要装饰、同义重复、低优先级环境细枝末节。",
-      "硬约束：base_prompt + 全部 character_prompts.prompt 合计按本地估算必须不超过 460 token。",
+      "硬约束：base_prompt + 全部 character_prompts.prompt 合计按本地估算必须不超过 400 token。",
       "本地估算规则：按非字母/数字/# 分隔文本片段，每个片段 token_cost = max(1, ceil(length / 8))。",
       "若必须取舍，宁可缩短修饰与背景，也不要牺牲角色身份、动作方向和关键接触关系。",
       "",
@@ -2236,66 +2239,171 @@ export class LLMExtractor {
           }
 
           const normalized = parseAdvancedContent(rawContent);
+
+          // ── V4.5 自然语言模式：单词粘连检测与修复 ──
+          if (isNaturalLanguage) {
+            const textsToCheck = [
+              { field: 'base_prompt', text: normalized.base_prompt },
+              ...normalized.character_prompts.map((cp, i) => ({
+                field: `character_prompts[${i}].prompt`,
+                text: cp.prompt
+              }))
+            ];
+            const allConcatenated = [];
+            for (const item of textsToCheck) {
+              const hits = detectConcatenatedWords(item.text);
+              for (const hit of hits) {
+                allConcatenated.push({ ...hit, source: item.field });
+              }
+            }
+            if (allConcatenated.length > 0) {
+              const uniqueWords = [...new Set(allConcatenated.map(h => h.original))];
+              onProgressLog?.(
+                `[LLM] 检测到 ${uniqueWords.length} 个单词粘连，正在请求 LLM 修复空格: ${uniqueWords.join(', ')}`,
+                "warning"
+              );
+              try {
+                const DELIM = '|||';
+                const trimEndpoint = this.trimUrl ? `${this.trimUrl}/chat/completions` : `${this.baseUrl}/chat/completions`;
+                const trimHeaders = this.trimKey
+                  ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.trimKey}` }
+                  : this.getHeaders();
+                const trimModel = this.trimModel || 'mimo-v2.5';
+                const fixRes = await postChatCompletionWith429Retry({
+                  url: trimEndpoint,
+                  headers: trimHeaders,
+                  payload: {
+                    model: trimModel,
+                    messages: [
+                      {
+                        role: "system",
+                        content: `You are a text spacing repair tool. The input contains English phrases that are concatenated without spaces, separated by "${DELIM}". Insert correct spaces into each phrase. Output the repaired phrases separated by "${DELIM}" ONLY — no newlines, no numbering, no explanation. Preserve original phrase order and count.`
+                      },
+                      { role: "user", content: uniqueWords.join(DELIM) }
+                    ],
+                    temperature: 0,
+                    max_tokens: 8192,
+                    stream: true
+                  },
+                  idleTimeoutMs: 30000,
+                  max429Retries: 2,
+                  initialDelaySeconds: 5,
+                  logPrefix: "[LLM Extractor] 粘连修复",
+                  rateLimit: this.getRateLimitConfig()
+                });
+                if (fixRes.status === 200) {
+                  const { content: fixContent } = await readLlmResponse(fixRes);
+                  if (fixContent) {
+                    // 用 ||| 分隔，失败则回退到换行分隔
+                    let fixedWords = fixContent.trim().split(DELIM).map(s => s.trim()).filter(Boolean);
+                    if (fixedWords.length !== uniqueWords.length) {
+                      fixedWords = fixContent.trim().split('\n').map(l => l.trim()).filter(Boolean);
+                    }
+                    if (fixedWords.length === uniqueWords.length) {
+                      const applyFix = (text) => {
+                        let result = text;
+                        for (let i = 0; i < uniqueWords.length; i++) {
+                          result = result.replace(uniqueWords[i], fixedWords[i]);
+                        }
+                        return result;
+                      };
+                      normalized.base_prompt = applyFix(normalized.base_prompt);
+                      for (const cp of normalized.character_prompts) {
+                        cp.prompt = applyFix(cp.prompt);
+                      }
+                      onProgressLog?.(`[LLM] 粘连修复完成: ${uniqueWords.map((w, i) => `${w} → ${fixedWords[i]}`).join(', ')}`);
+                    } else {
+                      onProgressLog?.(`[LLM] 粘连修复返回数量不匹配（期望 ${uniqueWords.length}，实际 ${fixedWords.length}），跳过修复`, "warning");
+                    }
+                  }
+                }
+              } catch (fixErr) {
+                onProgressLog?.(`[LLM] 粘连修复失败，保留原文: ${fixErr.message}`, "warning");
+              }
+            }
+          }
+
           const estimatedTokens = estimateAdvancedPromptTokens(
             normalized.base_prompt,
             normalized.character_prompts
           );
           if (estimatedTokens > NAI_PROMPT_TOKEN_LIMIT) {
+            const trimPercent = Math.round((1 - NAI_PROMPT_TOKEN_LIMIT / estimatedTokens) * 100);
             onProgressLog?.(
-              `[LLM] 第 ${attempt}/3 次参数生成超出预算（估算 ${estimatedTokens} token），触发 LLM 自校验精简...`,
+              `[LLM] 第 ${attempt}/3 次参数生成超出预算（估算 ${estimatedTokens} > ${NAI_PROMPT_TOKEN_LIMIT} token），需精简 ${trimPercent}%，发送至 mimo 精简...`,
               "warning"
             );
 
-            const repairStreamLogger = createThrottledStreamLogger(onProgressLog, '[LLM]');
-            const repairRes = await postChatCompletionWith429Retry({
-              url,
-              headers: this.getHeaders(),
-              payload: {
-                model,
-                messages: [
-                  { role: "system", content: systemPrompt },
-                  { role: "user", content: buildOverBudgetRetryUserMessage(rawContent, estimatedTokens) }
-                ],
-                temperature: 0.1,
-                max_tokens: 32768,
-                stream: true
-              },
-              idleTimeoutMs: 120000,
-              max429Retries: 5,
-              initialDelaySeconds: 10,
-              logPrefix: "[LLM Extractor] 高级参数精简",
-              rateLimit: this.getRateLimitConfig()
-            });
-            if (repairRes.status !== 200) throw new Error(`HTTP Error ${repairRes.status}`);
+            const DELIM = '|||';
+            const sections = [
+              `[base_prompt] ${normalized.base_prompt}`,
+              ...normalized.character_prompts.map((cp, i) => `[character ${i + 1}: ${cp.name}] ${cp.prompt}`)
+            ];
 
-            const { responseData: repairResponseData, content: repairContent } = await readLlmResponse(repairRes, {
-              onStreamText: repairStreamLogger?.push
-            });
-            repairStreamLogger?.flush();
-            if (!repairContent) {
-              throw new Error(`超长精简响应未包含可用文本；响应结构 ${summarizeLlmResponseShape(repairResponseData)}`);
-            }
+            try {
+              const trimEndpoint = this.trimUrl ? `${this.trimUrl}/chat/completions` : `${this.baseUrl}/chat/completions`;
+              const trimHeaders = this.trimKey
+                ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.trimKey}` }
+                : this.getHeaders();
+              const trimModel = this.trimModel || 'mimo-v2.5';
+              const trimRes = await postChatCompletionWith429Retry({
+                url: trimEndpoint,
+                headers: trimHeaders,
+                payload: {
+                  model: trimModel,
+                  messages: [
+                    {
+                      role: "system",
+                      content: [
+                        "You are a prompt trimming tool for NovelAI image generation.",
+                        `The prompt exceeds the ${NAI_PROMPT_TOKEN_LIMIT}-token budget by ${trimPercent}%. You must trim approximately ${trimPercent}% of the content.`,
+                        "Trimming priority (delete low-priority first):",
+                        "1. Background decoration and atmosphere phrases",
+                        "2. Redundant or synonymous descriptions",
+                        "3. Minor character details (accessories, fabric texture)",
+                        "4. Shorten camera descriptions to minimum",
+                        "",
+                        "NEVER remove spaces between words. NEVER concatenate words.",
+                        "MUST preserve: character names, gender, key identity anchors, interaction source/target, core actions, NSFW contact points.",
+                        "",
+                        `Input sections are separated by "${DELIM}". Output the trimmed sections separated by "${DELIM}" in the same order. Return ONLY the trimmed text, no labels, no explanation.`
+                      ].join("\n")
+                    },
+                    { role: "user", content: sections.join(DELIM) }
+                  ],
+                  temperature: 0,
+                  max_tokens: 8192,
+                  stream: true
+                },
+                idleTimeoutMs: 60000,
+                max429Retries: 2,
+                initialDelaySeconds: 5,
+                logPrefix: "[LLM Extractor] mimo 预算精简",
+                rateLimit: this.getRateLimitConfig()
+              });
+              if (trimRes.status !== 200) throw new Error(`mimo HTTP Error ${trimRes.status}`);
 
-            const repairFinishReason = repairResponseData?.choices?.[0]?.finish_reason;
-            const repairCompleteness = checkTextCompleteness(repairContent);
-            if (repairFinishReason === 'length' || repairFinishReason === 'max_tokens' || !repairCompleteness.isComplete) {
-              const reason = repairFinishReason === 'length' || repairFinishReason === 'max_tokens'
-                ? `finish_reason=${repairFinishReason}`
-                : repairCompleteness.reason;
-              throw new Error(`精简响应疑似截断：${reason}`);
-            }
+              const { content: trimContent } = await readLlmResponse(trimRes);
+              if (!trimContent) throw new Error('mimo 精简响应为空');
 
-            const repaired = parseAdvancedContent(repairContent);
-            const repairedEstimatedTokens = estimateAdvancedPromptTokens(
-              repaired.base_prompt,
-              repaired.character_prompts
-            );
-            if (repairedEstimatedTokens > NAI_PROMPT_TOKEN_LIMIT) {
-              throw new Error(`LLM 自校验后仍超出 460 token（估算 ${repairedEstimatedTokens}）`);
+              const trimmedSections = trimContent.trim().split(DELIM).map(s => s.trim()).filter(Boolean);
+              if (trimmedSections.length !== sections.length) {
+                throw new Error(`mimo 返回段数不匹配（期望 ${sections.length}，实际 ${trimmedSections.length}）`);
+              }
+
+              normalized.base_prompt = trimmedSections[0];
+              for (let i = 0; i < normalized.character_prompts.length; i++) {
+                normalized.character_prompts[i].prompt = trimmedSections[i + 1];
+              }
+
+              const trimmedTokens = estimateAdvancedPromptTokens(normalized.base_prompt, normalized.character_prompts);
+              onProgressLog?.(`[LLM] mimo 精简完成：${estimatedTokens} -> ${trimmedTokens} token（目标 ${NAI_PROMPT_TOKEN_LIMIT}，精简 ${trimPercent}%）`);
+              if (trimmedTokens > NAI_PROMPT_TOKEN_LIMIT) {
+                onProgressLog?.(`[LLM] 精简后仍超出预算（${trimmedTokens} > ${NAI_PROMPT_TOKEN_LIMIT}），继续使用当前结果`, "warning");
+              }
+            } catch (trimErr) {
+              onProgressLog?.(`[LLM] mimo 精简失败，保留原结果: ${trimErr.message}`, "warning");
             }
-            onProgressLog?.(`[LLM] 自校验精简完成：${estimatedTokens} -> ${repairedEstimatedTokens} token。`);
-            onProgressLog?.(`[LLM] 第 ${attempt}/3 次解析成功: ${JSON.stringify(repaired, null, 2)}`);
-            return repaired;
           }
           onProgressLog?.(`[LLM] 第 ${attempt}/3 次解析成功: ${JSON.stringify(normalized, null, 2)}`);
           return normalized;
