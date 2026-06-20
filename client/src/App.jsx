@@ -32,6 +32,10 @@ function App() {
     llm_nai_tags_key: "",
     llm_nai_tags_model: "",
     llm_nai_tags_preset_id: "",
+    llm_trim_url: "",
+    llm_trim_key: "",
+    llm_trim_model: "",
+    llm_trim_preset_id: "",
     nai_token: "",
     nai_model: "nai-diffusion-4-5-full",
     nai_cooldown_seconds: 15,
@@ -487,7 +491,8 @@ function App() {
     default: { url: 'llm_url', key: 'llm_key', model: 'llm_model', presetId: 'llm_preset_id' },
     characterDna: { url: 'llm_character_dna_url', key: 'llm_character_dna_key', model: 'llm_character_dna_model', presetId: 'llm_character_dna_preset_id' },
     scene: { url: 'llm_scene_url', key: 'llm_scene_key', model: 'llm_scene_model', presetId: 'llm_scene_preset_id' },
-    naiTags: { url: 'llm_nai_tags_url', key: 'llm_nai_tags_key', model: 'llm_nai_tags_model', presetId: 'llm_nai_tags_preset_id' }
+    naiTags: { url: 'llm_nai_tags_url', key: 'llm_nai_tags_key', model: 'llm_nai_tags_model', presetId: 'llm_nai_tags_preset_id' },
+    trim: { url: 'llm_trim_url', key: 'llm_trim_key', model: 'llm_trim_model', presetId: 'llm_trim_preset_id' }
   };
 
   const normalizePreset = (preset = {}) => ({
@@ -2432,6 +2437,7 @@ function App() {
                     {renderTaskLlmCard('characterDna', '角色 DNA', '提取和更新人物外貌、别名与稳定特征', '#22c55e')}
                     {renderTaskLlmCard('scene', '场景生成', '章节分镜提取与单场景描述重构', '#38bdf8')}
                     {renderTaskLlmCard('naiTags', 'NAI Tags', '把分镜与角色 DNA 转换为结构化生图标签', '#c084fc')}
+                    {renderTaskLlmCard('trim', 'Prompt 精简', '单词粘连修复与超额预算精简（推荐轻量快速模型）', '#f59e0b')}
                   </div>
                   <div>
                     <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>DanbooruSearchOnline MCP URL</label>
