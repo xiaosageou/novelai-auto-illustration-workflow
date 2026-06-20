@@ -1,4 +1,4 @@
-import { robustJsonLoads, checkTextCompleteness } from '../utils/json-repair.js';
+import { robustJsonLoads, checkTextCompleteness, extractValidJson } from '../utils/json-repair.js';
 import { conservativeCompletionNaiWeights, cleanCharacterDnaTags, isTransientTag, preserveTextForLlm } from '../utils/prompt-cleaner.js';
 import { normalizeSceneCard, buildSceneDescription, getSceneCharacters } from '../utils/scene-structure.js';
 import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL, DEFAULT_ADVANCED_PROMPT_LEGACY, DEFAULT_REGENERATE_SCENE_PROMPT } from '../utils/default-prompts.js';
@@ -1952,20 +1952,26 @@ export class LLMExtractor {
         rawContent = rawContent.substring(lastIdx + 7).trim();
       }
 
-      let jsonStr = rawContent;
-      const jsonMatch = rawContent.match(/```(?:json)?\s*([\s\S]+?)\s*```/i);
-      if (jsonMatch) jsonStr = jsonMatch[1].trim();
-      if (!jsonStr.startsWith("{")) {
-        const firstBrace = jsonStr.indexOf("{");
-        if (firstBrace >= 0) jsonStr = jsonStr.substring(firstBrace);
-      }
-
+      // 1. 优先使用具有强抗脏字符能力的 extractValidJson 提取 JSON
+      const extractRes = extractValidJson(rawContent);
       let parsed;
-      try {
-        parsed = JSON.parse(jsonStr);
-      } catch (parseErr) {
-        console.warn("[LLM Extractor] 高级参数 JSON 解析失败，尝试 robustJsonLoads:", parseErr.message);
-        parsed = robustJsonLoads(jsonStr);
+      if (extractRes.success) {
+        parsed = extractRes.parsed;
+      } else {
+        // 退回原有的解析与 robustJsonLoads 兼容逻辑
+        let jsonStr = rawContent;
+        const jsonMatch = rawContent.match(/```(?:json)?\s*([\s\S]+?)\s*```/i);
+        if (jsonMatch) jsonStr = jsonMatch[1].trim();
+        if (!jsonStr.startsWith("{")) {
+          const firstBrace = jsonStr.indexOf("{");
+          if (firstBrace >= 0) jsonStr = jsonStr.substring(firstBrace);
+        }
+        try {
+          parsed = JSON.parse(jsonStr);
+        } catch (parseErr) {
+          console.warn("[LLM Extractor] 高级参数 JSON 解析失败，尝试 robustJsonLoads:", parseErr.message);
+          parsed = robustJsonLoads(jsonStr);
+        }
       }
 
       const VALID_ORIENTATIONS = new Set(["portrait", "landscape", "square", "default"]);

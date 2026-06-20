@@ -50,22 +50,14 @@ export function checkTextCompleteness(text) {
     }
   }
 
-  // 3. 剥离前导的脏字符（如 "the JSON: {{" 等）提取核心 JSON 结构，避免解析错误被误判为物理截断
-  let testText = cleanedText;
-  if (!testText.startsWith("{") && !testText.startsWith("[")) {
-    const objMatch = testText.match(/(\{[\s\S]*\})/);
-    if (objMatch) {
-      testText = objMatch[1].trim();
-    } else {
-      const arrMatch = testText.match(/(\[[\s\S]*\])/);
-      if (arrMatch) {
-        testText = arrMatch[1].trim();
-      }
-    }
+  // 3. 使用 extractValidJson 智能寻找可正常闭合解析的 JSON 子串，防误判脏字符
+  const extractResult = extractValidJson(cleanedText);
+  if (extractResult.success) {
+    return { isComplete: true, reason: "内容完全完整" };
   }
 
   try {
-    JSON.parse(testText);
+    JSON.parse(cleanedText);
     return { isComplete: true, reason: "内容完全完整" };
   } catch (error) {
     // 检查是否是 Markdown 代码块包裹
@@ -280,3 +272,51 @@ export function robustJsonLoads(text) {
 
   throw new Error(`无法从输入文本中解析出有效的 JSON 数据。`);
 }
+
+/**
+ * 遍历并尝试解析文本中所有可能的 JSON 子串，精准提取最长且完全合法的 JSON 对象或数组。
+ * 能够完美剔除前导或尾部脏字符。
+ */
+export function extractValidJson(text) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return { success: false };
+
+  // 找出所有左大/中括号的索引
+  const leftIndices = [];
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] === '{' || trimmed[i] === '[') {
+      leftIndices.push(i);
+    }
+  }
+
+  // 找出所有右大/中括号的索引，并从后往前排列
+  const rightIndices = [];
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    if (trimmed[i] === '}' || trimmed[i] === ']') {
+      rightIndices.push(i);
+    }
+  }
+
+  // 尝试匹配所有可能的 [leftIdx, rightIdx] 区间
+  for (const leftIdx of leftIndices) {
+    const leftChar = trimmed[leftIdx];
+    const expectedRightChar = leftChar === '{' ? '}' : ']';
+
+    for (const rightIdx of rightIndices) {
+      if (rightIdx <= leftIdx) break;
+      if (trimmed[rightIdx] !== expectedRightChar) continue;
+
+      const candidate = trimmed.substring(leftIdx, rightIdx + 1);
+      try {
+        const parsed = JSON.parse(candidate);
+        if (parsed && typeof parsed === 'object') {
+          return { success: true, parsed, text: candidate };
+        }
+      } catch (e) {
+        // 忽略解析错误，继续尝试
+      }
+    }
+  }
+  return { success: false };
+}
+
