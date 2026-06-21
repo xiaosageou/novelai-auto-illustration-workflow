@@ -971,6 +971,23 @@ app.post('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx/regen
   }
 });
 
+app.put('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx', async (req, res) => {
+  try {
+    const { projectName, chapterKey, sceneIdx } = req.params;
+    const pipeline = await getPipeline(projectName);
+
+    if (pipeline.isRunning) {
+      return res.status(400).json({ error: "流水线正在运行中，请先暂停后再编辑场景" });
+    }
+
+    const effectiveKey = pipeline.projectProgress.getEffectiveChapKeyByRaw(chapterKey);
+    const result = await pipeline.updateSceneCard(effectiveKey, sceneIdx, req.body || {});
+    res.json({ success: true, message: `场景 #${sceneIdx} 已保存`, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.delete('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx', async (req, res) => {
   try {
     const { projectName, chapterKey, sceneIdx } = req.params;

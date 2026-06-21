@@ -591,6 +591,93 @@ test('scene normalization reconciles named characters and infers shadow entities
   assert.ok(shadowScene.must_show.includes('view_through_door_crack'));
 });
 
+test('scene normalization limits visible characters to four primary people', () => {
+  const groupScene = normalizeSceneCard({
+    visual_description: '甲乙丙丁戊五人站在庭院中对峙',
+    character_names: ['甲', '乙', '丙', '丁', '戊'],
+    characters: [
+      { name: '甲', pose: '站在最前' },
+      { name: '乙', pose: '站在左侧' },
+      { name: '丙', pose: '站在右侧' },
+      { name: '丁', pose: '站在后方' },
+      { name: '戊', pose: '站在远处' }
+    ],
+    interaction_actions: [
+      { action: 'staring', source: '甲', target: '乙', mutual: false },
+      { action: 'staring', source: '戊', target: '甲', mutual: false }
+    ]
+  });
+
+  assert.equal(groupScene.characters.length, 4);
+  assert.deepEqual(groupScene.character_names, ['甲', '乙', '丙', '丁']);
+  assert.deepEqual(groupScene.characters.map(char => char.name), ['甲', '乙', '丙', '丁']);
+  assert.equal(groupScene.interaction_actions.length, 1);
+  assert.equal(groupScene.interaction_actions[0].source, '甲');
+});
+
+test('updateSceneCard persists edited structured scene fields', async () => {
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nai-update-scene-'));
+  const projectDir = path.join(outputDir, 'projects', 'scene-edit-test');
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.writeFile(
+    path.join(projectDir, 'book.txt'),
+    '第一卷\n第一章\n\n她抬起了头，看向门外。\n',
+    'utf-8'
+  );
+  await fs.writeFile(
+    path.join(projectDir, 'pipeline_progress.json'),
+    JSON.stringify({
+      completed_chapters: {
+        '第一卷_第一章': {
+          status: 'generating',
+          scenes: [
+            {
+              scene_idx: 1,
+              trigger_sentence: '她抬起了头',
+              visual_description: '旧描述',
+              character_names: ['甲', '乙', '丙', '丁', '戊'],
+              characters: [{ name: '甲' }, { name: '乙' }, { name: '丙' }, { name: '丁' }, { name: '戊' }]
+            }
+          ]
+        }
+      },
+      global_characters: {},
+      character_dna_slices: {},
+      pipeline_pause: null
+    }, null, 2),
+    'utf-8'
+  );
+
+  const pipeline = new PipelineManager({ projectName: 'scene-edit-test' });
+  pipeline.baseDir = outputDir;
+  pipeline.switchProject('scene-edit-test');
+
+  const result = await pipeline.updateSceneCard('第一卷_第一章', 1, {
+    trigger_sentence: '她抬起了头',
+    visual_description: '新描述',
+    nsfw_rating: 'nsfw_mild',
+    environment: '夜晚庭院',
+    cinematography: '中景，侧面',
+    interactions: '甲与乙对视，丙丁在后方',
+    characters: [
+      { name: '甲', pose: '前景' },
+      { name: '乙', pose: '左侧' },
+      { name: '丙', pose: '右侧' },
+      { name: '丁', pose: '后方' },
+      { name: '戊', pose: '远景路人' }
+    ],
+    character_names: ['甲', '乙', '丙', '丁', '戊']
+  });
+
+  assert.equal(result.scene.visual_description, '新描述');
+  assert.equal(result.scene.characters.length, 4);
+  assert.deepEqual(result.scene.character_names, ['甲', '乙', '丙', '丁']);
+
+  const saved = JSON.parse(await fs.readFile(path.join(projectDir, 'pipeline_progress.json'), 'utf-8'));
+  assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].visual_description, '新描述');
+  assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].characters.length, 4);
+});
+
 test('explicit vaginal fluids only map to generic physical evidence, leaving explicit tag choice to MCP and LLM', () => {
   const tagText = mapVisualTextToTags('钰慧的大腿间有大量的淫水顺着流下，滴在沙滩上。').join(', ');
 
@@ -1631,6 +1718,48 @@ test('LLM 429 retries use exponential backoff delays', async () => {
   }
 
   assert.deepEqual(waits, [10000, 20000]);
+});
+
+test('LLM requests preserve original wording without sensitive-term replacement', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody = '';
+
+  globalThis.fetch = async (_url, options) => {
+    capturedBody = options.body;
+    return {
+      status: 200,
+      body: new ReadableStream({
+        start(controller) {
+          controller.close();
+        }
+      }),
+      headers: { get: () => 'text/event-stream' }
+    };
+  };
+
+  try {
+    await postChatCompletionWith429Retry({
+      url: 'https://example.invalid/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      payload: {
+        model: 'test',
+        messages: [
+          { role: 'user', content: '阴道 肛门 性交 高潮 精液' }
+        ]
+      },
+      max429Retries: 0,
+      initialDelaySeconds: 10
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.match(capturedBody, /阴道/);
+  assert.match(capturedBody, /肛门/);
+  assert.match(capturedBody, /性交/);
+  assert.match(capturedBody, /高潮/);
+  assert.match(capturedBody, /精液/);
+  assert.doesNotMatch(capturedBody, /生理通道|生理后庭|生理交合|生理高潮|生理流体/);
 });
 
 test('LLM streaming response fails only after idle timeout', async () => {

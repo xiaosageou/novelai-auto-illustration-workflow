@@ -1508,6 +1508,65 @@ export class PipelineManager {
     };
   }
 
+  async updateSceneCard(chapterKey, sceneIdx, updates = {}) {
+    await this.initialize();
+    if (this.isRunning) {
+      throw new Error("流水线正在运行中，请先暂停后再编辑场景。");
+    }
+
+    const chap = this.chapters.find(c => {
+      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+      return this.projectProgress.normalizeKey(ck) === this.projectProgress.normalizeKey(chapterKey);
+    });
+    if (!chap) throw new Error(`找不到章节: ${chapterKey}`);
+
+    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const currentProgress = this.projectProgress.getCompletedChapters()[chapKey];
+    if (!currentProgress || !Array.isArray(currentProgress.scenes)) {
+      throw new Error('该章节尚未生成过场景卡片，无法编辑。');
+    }
+
+    const scenes = currentProgress.scenes;
+    const targetIdx = scenes.findIndex(scene => Number(scene.scene_idx) === Number(sceneIdx));
+    if (targetIdx === -1) {
+      throw new Error(`找不到场景索引: ${sceneIdx}`);
+    }
+
+    const currentScene = scenes[targetIdx];
+    const normalized = normalizeSceneCard({
+      ...currentScene,
+      ...updates,
+      scene_idx: currentScene.scene_idx
+    });
+
+    scenes[targetIdx] = {
+      ...currentScene,
+      ...normalized,
+      scene_idx: currentScene.scene_idx,
+      final_prompt: typeof updates.final_prompt === 'string' ? updates.final_prompt.trim() : currentScene.final_prompt,
+      base_prompt: typeof updates.base_prompt === 'string' ? updates.base_prompt.trim() : currentScene.base_prompt,
+      final_negative: typeof updates.final_negative === 'string' ? updates.final_negative.trim() : currentScene.final_negative,
+      character_prompts: Array.isArray(updates.character_prompts)
+        ? updates.character_prompts.map(item => String(item || '').trim()).filter(Boolean)
+        : currentScene.character_prompts,
+      width: Number.isFinite(Number(updates.width)) ? Number(updates.width) : currentScene.width,
+      height: Number.isFinite(Number(updates.height)) ? Number(updates.height) : currentScene.height
+    };
+
+    const nextStatus = scenes.length === 0
+      ? 'pending'
+      : (scenes.every(scene => scene.status === 'SUCCESS') ? 'completed' : currentProgress.status || 'generating');
+
+    this.projectProgress.setChapterStatus(chapKey, nextStatus, scenes);
+    await this.projectProgress.save();
+    this.writeLog(`[Pipeline] 已更新场景卡: 章节「${chap.chapter}」场景 #${sceneIdx}`);
+    return {
+      chapter: chap.chapter,
+      chapterKey: chapKey,
+      scene: scenes[targetIdx]
+    };
+  }
+
   async appendSelectedParagraphScenes(chapterKey, selections = []) {
     await this.initialize();
     if (this.isRunning) {

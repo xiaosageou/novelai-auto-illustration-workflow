@@ -2,6 +2,8 @@ function cleanText(value) {
   return String(value || '').trim();
 }
 
+const MAX_VISIBLE_SCENE_CHARACTERS = 4;
+
 function normalizeCharacter(raw = {}) {
   if (typeof raw === 'string') {
     return {
@@ -239,6 +241,9 @@ export function normalizeSceneCard(rawScene = {}) {
     }
   }
 
+  const limitedCharacters = characters.slice(0, MAX_VISIBLE_SCENE_CHARACTERS);
+  const limitedCharacterNames = new Set(limitedCharacters.map(char => char.name).filter(Boolean));
+
   const visualEntities = inferVisualEntities(rawScene);
   const interactionActions = (Array.isArray(rawScene.interaction_actions)
     ? rawScene.interaction_actions
@@ -246,8 +251,8 @@ export function normalizeSceneCard(rawScene = {}) {
     .map(normalizeInteractionAction)
     .filter(Boolean)
     .filter(interaction => (
-      characterNames.has(interaction.source)
-      && characterNames.has(interaction.target)
+      limitedCharacterNames.has(interaction.source)
+      && limitedCharacterNames.has(interaction.target)
     ));
 
   const normalized = {
@@ -257,8 +262,8 @@ export function normalizeSceneCard(rawScene = {}) {
     visual_description: cleanText(rawScene.visual_description || rawScene.scene_desc),
     environment: cleanText(rawScene.environment),
     cinematography: cleanText(rawScene.cinematography),
-    characters,
-    character_names: characters.map(char => char.name).filter(Boolean),
+    characters: limitedCharacters,
+    character_names: limitedCharacters.map(char => char.name).filter(Boolean),
     interactions: cleanText(rawScene.interactions),
     interaction_actions: interactionActions,
     plot_traces: cleanText(rawScene.plot_traces),

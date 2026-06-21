@@ -94,6 +94,9 @@ function App() {
   const [loadingScenes, setLoadingScenes] = useState({});
   const [chapterQueueStates, setChapterQueueStates] = useState({});
   const [dnaUpdatePrompt, setDnaUpdatePrompt] = useState(null);
+  const [sceneEditor, setSceneEditor] = useState(null);
+  const [sceneEditorDirty, setSceneEditorDirty] = useState(false);
+  const [savingScene, setSavingScene] = useState(false);
   const [editingCharacterName, setEditingCharacterName] = useState("");
   const [editingCharacterFeatures, setEditingCharacterFeatures] = useState(null);
   const [savingCharacterTags, setSavingCharacterTags] = useState(false);
@@ -593,6 +596,7 @@ function App() {
     }
     setEditingCharacterName("");
     setEditingCharacterFeatures(null);
+    closeSceneEditor();
     setActiveProject(name);
     addLog(`📂 载入项目: ${name}`);
     setSelectedChapter(null); // 切换项目时重置选中章节
@@ -908,6 +912,9 @@ function App() {
       } else {
         addLog(`🗑️ ${data.message}`);
       }
+      if (sceneEditor?.chapterKey === chapKey && sceneEditor?.sceneIdx === sceneIdx) {
+        closeSceneEditor();
+      }
       setExpandedPrompt(prev => (prev === sceneKey ? null : prev));
       setLoadingScenes({});
       await fetchProjectDetails(activeProject);
@@ -1057,6 +1064,187 @@ function App() {
       return acc;
     }, emptyCharacterFeatures())
   );
+  const sceneEditorLabelStyle = {
+    display: 'grid',
+    gap: '6px',
+    fontSize: '0.78rem',
+    color: 'var(--text-secondary)'
+  };
+  const sceneEditorInputStyle = {
+    width: '100%',
+    background: 'rgba(7, 10, 24, 0.72)',
+    color: '#eef2ff',
+    border: '1px solid rgba(148, 163, 184, 0.22)',
+    borderRadius: '10px',
+    padding: '10px 12px',
+    outline: 'none',
+    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
+    fontSize: '0.92rem'
+  };
+  const sceneEditorTextareaStyle = {
+    ...sceneEditorInputStyle,
+    resize: 'vertical',
+    lineHeight: 1.55,
+    minHeight: '72px'
+  };
+  const sceneEditorSectionStyle = {
+    border: '1px solid rgba(255,255,255,0.07)',
+    borderRadius: '12px',
+    padding: '14px',
+    background: 'linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.01))',
+    display: 'grid',
+    gap: '12px'
+  };
+
+  const splitSceneList = (value) => (
+    String(value || '')
+      .split(/[\n,，]+/)
+      .map(item => item.trim())
+      .filter(Boolean)
+  );
+
+  const buildSceneEditorDraft = (scene = {}) => ({
+    trigger_sentence: String(scene.trigger_sentence || ''),
+    nsfw_rating: String(scene.nsfw_rating || 'sfw'),
+    visual_description: String(scene.visual_description || scene.scene_desc || ''),
+    environment: String(scene.environment || ''),
+    cinematography: String(scene.cinematography || ''),
+    interactions: String(scene.interactions || ''),
+    plot_traces: String(scene.plot_traces || ''),
+    text_elements: String(scene.text_elements || ''),
+    character_names: Array.isArray(scene.character_names) ? scene.character_names.join(', ') : '',
+    must_show: Array.isArray(scene.must_show) ? scene.must_show.join(', ') : '',
+    must_not_show: Array.isArray(scene.must_not_show) ? scene.must_not_show.join(', ') : '',
+    final_prompt: String(scene.final_prompt || scene.prepared_prompt?.finalPositive || ''),
+    base_prompt: String(scene.base_prompt || scene.prepared_prompt?.basePrompt || ''),
+    final_negative: String(scene.final_negative || scene.prepared_prompt?.finalNegative || ''),
+    character_prompts: Array.isArray(scene.character_prompts || scene.prepared_prompt?.characterPrompts)
+      ? (scene.character_prompts || scene.prepared_prompt?.characterPrompts).join('\n')
+      : '',
+    width: scene.width || scene.prepared_prompt?.width || '',
+    height: scene.height || scene.prepared_prompt?.height || '',
+    characters: Array.isArray(scene.characters)
+      ? scene.characters.map(char => ({
+          name: String(char?.name || ''),
+          gender: String(char?.gender || 'unknown'),
+          appearance: String(char?.appearance || ''),
+          clothing: String(char?.clothing || ''),
+          expression: String(char?.expression || ''),
+          pose: String(char?.pose || ''),
+          position: String(char?.position || '')
+        }))
+      : [],
+    visual_entities: Array.isArray(scene.visual_entities)
+      ? scene.visual_entities.map(entity => ({
+          type: String(entity?.type || 'object'),
+          description: String(entity?.description || ''),
+          count: entity?.count || 1,
+          position: String(entity?.position || ''),
+          must_show: entity?.must_show !== false
+        }))
+      : []
+  });
+
+  const openSceneEditor = (chapterKey, scene) => {
+    setSceneEditor({
+      chapterKey,
+      sceneIdx: scene.scene_idx,
+      imagePath: scene.image_path || '',
+      status: scene.status || '',
+      draft: buildSceneEditorDraft(scene)
+    });
+    setSceneEditorDirty(false);
+  };
+
+  const closeSceneEditor = () => {
+    setSceneEditor(null);
+    setSceneEditorDirty(false);
+    setSavingScene(false);
+  };
+
+  const updateSceneDraft = (updater) => {
+    setSceneEditor(prev => {
+      if (!prev) return prev;
+      const nextDraft = typeof updater === 'function' ? updater(prev.draft) : updater;
+      return { ...prev, draft: nextDraft };
+    });
+    setSceneEditorDirty(true);
+  };
+
+  const serializeSceneDraft = (draft = {}) => ({
+    trigger_sentence: String(draft.trigger_sentence || '').trim(),
+    nsfw_rating: String(draft.nsfw_rating || 'sfw').trim() || 'sfw',
+    visual_description: String(draft.visual_description || '').trim(),
+    environment: String(draft.environment || '').trim(),
+    cinematography: String(draft.cinematography || '').trim(),
+    interactions: String(draft.interactions || '').trim(),
+    plot_traces: String(draft.plot_traces || '').trim(),
+    text_elements: String(draft.text_elements || '').trim(),
+    character_names: splitSceneList(draft.character_names),
+    must_show: splitSceneList(draft.must_show),
+    must_not_show: splitSceneList(draft.must_not_show),
+    final_prompt: String(draft.final_prompt || '').trim(),
+    base_prompt: String(draft.base_prompt || '').trim(),
+    final_negative: String(draft.final_negative || '').trim(),
+    character_prompts: String(draft.character_prompts || '')
+      .split(/\r?\n/)
+      .map(item => item.trim())
+      .filter(Boolean),
+    width: draft.width === '' ? null : Number(draft.width),
+    height: draft.height === '' ? null : Number(draft.height),
+    characters: (Array.isArray(draft.characters) ? draft.characters : [])
+      .map(char => ({
+        name: String(char?.name || '').trim(),
+        gender: String(char?.gender || 'unknown').trim() || 'unknown',
+        appearance: String(char?.appearance || '').trim(),
+        clothing: String(char?.clothing || '').trim(),
+        expression: String(char?.expression || '').trim(),
+        pose: String(char?.pose || '').trim(),
+        position: String(char?.position || '').trim()
+      }))
+      .filter(char => Object.values(char).some(value => String(value || '').trim())),
+    visual_entities: (Array.isArray(draft.visual_entities) ? draft.visual_entities : [])
+      .map(entity => ({
+        type: String(entity?.type || 'object').trim() || 'object',
+        description: String(entity?.description || '').trim(),
+        count: Math.max(1, Number(entity?.count) || 1),
+        position: String(entity?.position || '').trim(),
+        must_show: entity?.must_show !== false
+      }))
+      .filter(entity => entity.description)
+  });
+
+  const saveSceneEditor = async () => {
+    if (!sceneEditor || !activeProject) return;
+    try {
+      setSavingScene(true);
+      const response = await fetch(
+        `${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/chapters/${encodeURIComponent(sceneEditor.chapterKey)}/scenes/${sceneEditor.sceneIdx}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(serializeSceneDraft(sceneEditor.draft))
+        }
+      );
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || '保存场景失败');
+      }
+      addLog(`💾 场景 #${sceneEditor.sceneIdx} 已保存。`, 'success');
+      setSceneEditor(prev => prev ? {
+        ...prev,
+        imagePath: data.scene?.image_path || '',
+        status: data.scene?.status || '',
+        draft: buildSceneEditorDraft(data.scene || {})
+      } : prev);
+      setSceneEditorDirty(false);
+      await fetchProjectDetails(activeProject);
+    } catch (error) {
+      addLog(`❌ 保存场景失败: ${error.message}`, 'error');
+    } finally {
+      setSavingScene(false);
+    }
+  };
 
   const editorStateToFeatures = (state = {}) => (
     dnaFeatureOrder.reduce((acc, key) => {
@@ -1522,6 +1710,7 @@ function App() {
                         setSelectedChapter(chap);
                         setChapterContent(null);
                         setTextSelections([]);
+                        closeSceneEditor();
                       }}
                     >
                       <span style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{chap.chapter}</span>
@@ -1582,14 +1771,8 @@ function App() {
                         const sceneKey = `${chapKey}_${scene.scene_idx}`;
                         const isSceneLoading = loadingScenes[sceneKey];
                         const isSceneDeleteLocked = pipelineRunning || isSceneLoading === true || isSceneLoading === 'running' || isSceneLoading === 'deleting';
-
-                        // 统一参数取值以支持 PROMPT_READY 状态下的无图预览
-                        const finalPrompt = scene.final_prompt || scene.prepared_prompt?.finalPositive;
-                        const basePrompt = scene.base_prompt || scene.prepared_prompt?.basePrompt;
-                        const characterPrompts = scene.character_prompts || scene.prepared_prompt?.characterPrompts;
-                        const finalNegative = scene.final_negative || scene.prepared_prompt?.finalNegative;
-                        const width = scene.width || scene.prepared_prompt?.width;
-                        const height = scene.height || scene.prepared_prompt?.height;
+                        const sceneCharacters = Array.isArray(scene.characters) ? scene.characters : [];
+                        const sceneImage = scene.image_path ? encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`) : null;
 
                         return (
                           <div 
@@ -1603,6 +1786,16 @@ function App() {
                                     ? 'prompt-ready'
                                     : ''
                             }`}
+                            onClick={() => openSceneEditor(chapKey, scene)}
+                            style={{
+                              cursor: 'pointer',
+                              border: sceneEditor?.chapterKey === chapKey && sceneEditor?.sceneIdx === scene.scene_idx
+                                ? '1px solid rgba(168, 85, 247, 0.65)'
+                                : undefined,
+                              boxShadow: sceneEditor?.chapterKey === chapKey && sceneEditor?.sceneIdx === scene.scene_idx
+                                ? '0 0 0 1px rgba(168, 85, 247, 0.18) inset'
+                                : undefined
+                            }}
                           >
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ fontWeight: '600', color: 'var(--color-purple)' }}>场景 #{scene.scene_idx}</span>
@@ -1632,257 +1825,40 @@ function App() {
                               </span>
                             </div>
 
-                          <div className="scene-trigger">
-                            「 {scene.trigger_sentence} 」
-                          </div>
-
-                          <div className="scene-desc">
-                            {scene.scene_desc}
-                          </div>
-
-                          {(scene.image_path || scene.prepared_prompt) && (
-                            <div style={{ 
-                              marginTop: '10px', 
-                              display: 'flex', 
-                              gap: '16px', 
-                              alignItems: scene.image_path ? 'center' : 'flex-start',
-                              flexDirection: scene.image_path ? 'row' : 'column'
-                            }}>
-                              {scene.image_path && (
-                                <img 
-                                  src={encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`)} 
+                            <div style={{ display: 'grid', gridTemplateColumns: sceneImage ? '168px minmax(0, 1fr)' : '1fr', gap: '14px', alignItems: 'start', marginTop: '10px' }}>
+                              {sceneImage && (
+                                <img
+                                  src={sceneImage}
                                   alt="插画"
-                                  onClick={() => setPreviewImage(encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`))}
-                                  style={{ width: '120px', height: '120px', borderRadius: '8px', objectFit: 'cover', border: '1px solid var(--border-light)', cursor: 'zoom-in' }} 
-                                  title="点击放大预览"
+                                  style={{
+                                    width: '168px',
+                                    height: '112px',
+                                    borderRadius: '8px',
+                                    objectFit: 'contain',
+                                    background: 'linear-gradient(180deg, rgba(2,6,23,0.88), rgba(15,23,42,0.7))',
+                                    border: '1px solid var(--border-light)',
+                                    padding: '6px'
+                                  }}
                                 />
                               )}
-                              <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', flex: 1, minWidth: 0, width: '100%' }}>
-                                {scene.image_path && <div><b>输出路径:</b> {scene.image_path}</div>}
-                                <div 
-                                  style={{ 
-                                    marginTop: '6px', 
-                                    background: 'rgba(255,255,255,0.02)', 
-                                    padding: '8px 10px', 
-                                    borderRadius: '6px', 
-                                    border: '1px solid rgba(255,255,255,0.05)',
-                                    transition: 'all 0.2s'
-                                  }}
-                                >
-                                  {/* 标题栏 Header，点击可折叠/展开 */}
-                                  <div 
-                                    style={{ 
-                                      display: 'flex', 
-                                      justifyContent: 'space-between', 
-                                      alignItems: 'center', 
-                                      marginBottom: '4px', 
-                                      color: 'var(--text-muted)',
-                                      cursor: 'pointer',
-                                      userSelect: 'none'
-                                    }}
-                                    onClick={() => {
-                                      const key = `${chapKey}_${scene.scene_idx}`;
-                                      setExpandedPrompt(expandedPrompt === key ? null : key);
-                                    }}
-                                    title="点击展开/折叠生图参数"
-                                  >
-                                    <b>最终生图参数:</b>
-                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                      <span style={{ fontSize: '0.75rem', color: 'var(--color-pink)', fontWeight: '500' }}>
-                                        {expandedPrompt === `${chapKey}_${scene.scene_idx}` ? "收起 ▲" : "展开 ▼"}
-                                      </span>
-                                    </div>
-                                  </div>
-                                  
-                                  {/* 参数内容区 */}
-                                  {expandedPrompt === `${chapKey}_${scene.scene_idx}` ? (
-                                    <div 
-                                      style={{
-                                        marginTop: '8px',
-                                        padding: '12px',
-                                        borderRadius: '8px',
-                                        background: 'rgba(16, 18, 38, 0.85)',
-                                        border: '1px solid rgba(168, 85, 247, 0.3)',
-                                        boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
-                                        display: 'flex',
-                                        flexDirection: 'column',
-                                        gap: '10px'
-                                      }}
-                                    >
-                                      {/* 正向提示词 */}
-                                      <div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                                          <span style={{ fontSize: '0.8rem', color: 'var(--color-purple)', fontWeight: '600' }}>正向提示词 (Prompt):</span>
-                                          <button
-                                            className="btn-secondary"
-                                            style={{ padding: '2px 6px', fontSize: '0.75rem', height: '22px', display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}
-                                            onClick={() => {
-                                              navigator.clipboard.writeText(finalPrompt || '');
-                                              addLog(`📋 已复制场景 #${scene.scene_idx} 正向提示词到剪贴板！`, 'success');
-                                            }}
-                                          >
-                                            <Copy size={10} /> 复制
-                                          </button>
-                                        </div>
-                                        <div style={{ 
-                                          whiteSpace: 'pre-wrap', 
-                                          wordBreak: 'break-all', 
-                                          lineHeight: '1.4', 
-                                          color: 'var(--color-pink)',
-                                          fontFamily: 'monospace',
-                                          fontSize: '0.75rem',
-                                          background: 'rgba(0, 0, 0, 0.2)',
-                                          padding: '6px 8px',
-                                          borderRadius: '4px',
-                                          border: '1px solid rgba(255,255,255,0.03)'
-                                        }}>
-                                          {finalPrompt || '无'}
-                                        </div>
-                                      </div>
 
-                                      {/* NovelAI V4 实际结构化正向参数 */}
-                                      {basePrompt && (
-                                        <div>
-                                          <div style={{ fontSize: '0.8rem', color: 'var(--color-blue)', fontWeight: '600', marginBottom: '4px' }}>
-                                            V4 Base Prompt:
-                                          </div>
-                                          <div style={{
-                                            whiteSpace: 'pre-wrap',
-                                            wordBreak: 'break-all',
-                                            lineHeight: '1.4',
-                                            color: 'var(--text-secondary)',
-                                            fontFamily: 'monospace',
-                                            fontSize: '0.75rem',
-                                            background: 'rgba(0, 0, 0, 0.2)',
-                                            padding: '6px 8px',
-                                            borderRadius: '4px',
-                                            border: '1px solid rgba(255,255,255,0.03)'
-                                          }}>
-                                            {basePrompt}
-                                          </div>
-                                        </div>
-                                      )}
+                              <div style={{ minWidth: 0 }}>
+                                <div className="scene-trigger" style={{ marginTop: 0 }}>
+                                  「 {scene.trigger_sentence} 」
+                                </div>
 
-                                      {Array.isArray(characterPrompts) && characterPrompts.length > 0 && (
-                                        <div>
-                                          <div style={{ fontSize: '0.8rem', color: 'var(--color-blue)', fontWeight: '600', marginBottom: '4px' }}>
-                                            V4 Character Prompts:
-                                          </div>
-                                          {characterPrompts.map((characterPrompt, index) => (
-                                            <div
-                                              key={`${scene.scene_idx}-character-prompt-${index}`}
-                                              style={{
-                                                whiteSpace: 'pre-wrap',
-                                                wordBreak: 'break-all',
-                                                lineHeight: '1.4',
-                                                color: 'var(--text-secondary)',
-                                                fontFamily: 'monospace',
-                                                fontSize: '0.75rem',
-                                                background: 'rgba(0, 0, 0, 0.2)',
-                                                padding: '6px 8px',
-                                                marginBottom: index === characterPrompts.length - 1 ? 0 : '6px',
-                                                borderRadius: '4px',
-                                                border: '1px solid rgba(255,255,255,0.03)'
-                                              }}
-                                            >
-                                              Character Prompt {index + 1}: {characterPrompt}
-                                            </div>
-                                          ))}
-                                        </div>
-                                      )}
+                                <div className="scene-desc" style={{ marginTop: '10px' }}>
+                                  {scene.scene_desc}
+                                </div>
 
-                                      {/* 负向提示词 (防呆兼容老数据) */}
-                                      {finalNegative && (
-                                        <div>
-                                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                                            <span style={{ fontSize: '0.8rem', color: 'var(--color-orange)', fontWeight: '600' }}>负向提示词 (Negative Prompt):</span>
-                                            <button
-                                              className="btn-secondary"
-                                              style={{ padding: '2px 6px', fontSize: '0.75rem', height: '22px', display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}
-                                              onClick={() => {
-                                                navigator.clipboard.writeText(finalNegative || '');
-                                                addLog(`📋 已复制场景 #${scene.scene_idx} 负向提示词到剪贴板！`, 'success');
-                                              }}
-                                            >
-                                              <Copy size={10} /> 复制
-                                            </button>
-                                          </div>
-                                          <div style={{ 
-                                            whiteSpace: 'pre-wrap', 
-                                            wordBreak: 'break-all', 
-                                            lineHeight: '1.4', 
-                                            color: 'var(--text-secondary)',
-                                            fontFamily: 'monospace',
-                                            fontSize: '0.75rem',
-                                            background: 'rgba(0, 0, 0, 0.2)',
-                                            padding: '6px 8px',
-                                            borderRadius: '4px',
-                                            border: '1px solid rgba(255,255,255,0.03)'
-                                          }}>
-                                            {finalNegative || '无'}
-                                          </div>
-                                        </div>
-                                      )}
-
-                                      {/* 物理分辨率与底部一键复制 */}
-                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                          {width && height ? (
-                                            <>
-                                              物理分辨率: <span style={{ color: 'var(--color-blue)', fontWeight: '500' }}>{width} x {height}</span>
-                                            </>
-                                          ) : (
-                                            <span style={{ fontStyle: 'italic' }}>老数据未记录分辨率/负向提示词</span>
-                                          )}
-                                        </div>
-                                        
-                                        <button
-                                          className="btn-primary"
-                                          style={{ padding: '4px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px', height: '26px', background: 'linear-gradient(135deg, var(--color-purple), var(--color-pink))', boxShadow: 'none' }}
-                                          onClick={() => {
-                                            const parts = [];
-                                            if (finalPrompt) parts.push(`正向提示词:\n${finalPrompt}`);
-                                            if (basePrompt) parts.push(`V4 Base Prompt:\n${basePrompt}`);
-                                            if (Array.isArray(characterPrompts) && characterPrompts.length > 0) {
-                                              parts.push(`V4 Character Prompts:\n${characterPrompts.map((prompt, index) => `Character Prompt ${index + 1}: ${prompt}`).join('\n')}`);
-                                            }
-                                            if (finalNegative) parts.push(`负向提示词:\n${finalNegative}`);
-                                            if (width && height) parts.push(`物理分辨率: ${width} x ${height}`);
-                                            
-                                            const fullText = parts.join('\n\n');
-                                            navigator.clipboard.writeText(fullText);
-                                            addLog(`📋 已复制场景 #${scene.scene_idx} 完整生图参数到剪贴板！`, 'success');
-                                          }}
-                                        >
-                                          <Copy size={11} /> 一键复制全部参数
-                                        </button>
-                                      </div>
-                                    </div>
-                                  ) : (
-                                    <div 
-                                      style={{ 
-                                        textOverflow: 'ellipsis', 
-                                        overflow: 'hidden', 
-                                        whiteSpace: 'nowrap',
-                                        marginTop: '4px',
-                                        maxWidth: '100%',
-                                        color: 'var(--text-muted)',
-                                        fontSize: '0.75rem',
-                                        cursor: 'pointer'
-                                      }}
-                                      onClick={() => {
-                                        const key = `${chapKey}_${scene.scene_idx}`;
-                                        setExpandedPrompt(key);
-                                      }}
-                                      title="点击展开完整提示词"
-                                    >
-                                      {finalPrompt || '无'}
-                                    </div>
-                                  )}
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '10px' }}>
+                                  <span className="tag-badge scene" style={{ margin: 0 }}>{scene.nsfw_rating || 'sfw'}</span>
+                                  <span className="tag-badge scene" style={{ margin: 0 }}>{sceneCharacters.length} 人</span>
+                                  {scene.image_path && <span className="tag-badge scene" style={{ margin: 0 }}>有图</span>}
+                                  {(scene.final_prompt || scene.prepared_prompt?.finalPositive) && <span className="tag-badge scene" style={{ margin: 0 }}>Prompt</span>}
                                 </div>
                               </div>
                             </div>
-                            )}
 
                             {/* 单场景重绘操作栏 */}
                             <div 
@@ -1908,7 +1884,10 @@ function App() {
                                   color: 'var(--color-purple-light, #c084fc)'
                                 }}
                                 disabled={Boolean(isSceneLoading)}
-                                onClick={() => redrawScene(selectedChapter, scene.scene_idx)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  redrawScene(selectedChapter, scene.scene_idx);
+                                }}
                                 title="重新调用 LLM/MCP 生成 Prompt，然后加入 NAI 串行重绘队列"
                               >
                                 {isSceneLoading === 'queued'
@@ -1930,7 +1909,10 @@ function App() {
                                   color: '#86efac'
                                 }}
                                 disabled={Boolean(isSceneLoading)}
-                                onClick={() => redrawSceneNaiOnly(selectedChapter, scene.scene_idx)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  redrawSceneNaiOnly(selectedChapter, scene.scene_idx);
+                                }}
                                 title="完全复用当前最终正向、负向及角色 Prompt，只重新调用 NAI"
                               >
                                 {isSceneLoading === 'queued'
@@ -1952,10 +1934,33 @@ function App() {
                                   color: 'var(--color-pink-light, #f472b6)'
                                 }}
                                 disabled={pipelineRunning || isSceneLoading}
-                                onClick={() => regenerateScene(selectedChapter, scene.scene_idx)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  regenerateScene(selectedChapter, scene.scene_idx);
+                                }}
                                 title="调用 LLM 重新生成该高潮句的直白画面描述，并投喂给 NAI 重新生图"
                               >
                                 🧠 重构描述 (LLM+NAI)
+                              </button>
+                              <button
+                                className="btn-secondary"
+                                style={{
+                                  padding: '4px 12px',
+                                  fontSize: '0.75rem',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  height: '28px',
+                                  borderColor: 'rgba(96, 165, 250, 0.45)',
+                                  color: '#93c5fd'
+                                }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openSceneEditor(chapKey, scene);
+                                }}
+                                title="查看并编辑完整场景卡与生图参数"
+                              >
+                                <Pencil size={12} /> 编辑
                               </button>
                               <button
                                 className="btn-secondary"
@@ -1970,7 +1975,10 @@ function App() {
                                   color: '#fca5a5'
                                 }}
                                 disabled={isSceneDeleteLocked}
-                                onClick={() => deleteScene(selectedChapter, scene.scene_idx)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  deleteScene(selectedChapter, scene.scene_idx);
+                                }}
                                 title="删除该场景并清理对应图片文件，后续场景会重新编号"
                               >
                                 <Trash2 size={12} /> 删除
@@ -2002,6 +2010,7 @@ function App() {
                           setSelectedChapter(chap);
                           setChapterContent(null);
                           setTextSelections([]);
+                          closeSceneEditor();
                         }}
                       >
                         <span>{chap.chapter}</span>
@@ -2161,6 +2170,229 @@ function App() {
               </button>
               <button className="btn-primary" onClick={updateDnaSliceAndContinue} disabled={pipelineRunning}>
                 一键更新并继续
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {sceneEditor && (
+        <div className="modal-overlay">
+          <div className="modal-content glass-panel" style={{ maxWidth: '1100px', width: '100%', maxHeight: '92vh', display: 'flex', flexDirection: 'column', background: 'linear-gradient(180deg, rgba(24, 28, 56, 0.98), rgba(18, 22, 46, 0.98))', border: '1px solid rgba(148, 163, 184, 0.14)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexShrink: 0 }}>
+              <div>
+                <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Pencil size={18} /> 场景 #{sceneEditor.sceneIdx}</h2>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  点击保存后只更新场景卡与已存 Prompt，不会自动重绘
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                {sceneEditorDirty && <span style={{ fontSize: '0.8rem', color: 'var(--color-orange)' }}>未保存</span>}
+                <button className="btn-secondary" style={{ padding: '6px' }} onClick={closeSceneEditor}>
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: sceneEditor.imagePath ? '240px 1fr' : '1fr', gap: '18px', overflow: 'hidden', flex: 1 }}>
+              {sceneEditor.imagePath && (
+                <div style={{ ...sceneEditorSectionStyle, alignContent: 'start', minHeight: 0 }}>
+                  <img
+                    src={encodeURI(`${API_BASE}/projects/${activeProject}/${sceneEditor.imagePath}`)}
+                    alt="场景插画"
+                    onClick={() => setPreviewImage(encodeURI(`${API_BASE}/projects/${activeProject}/${sceneEditor.imagePath}`))}
+                    style={{
+                      width: '100%',
+                      maxHeight: '260px',
+                      borderRadius: '10px',
+                      border: '1px solid var(--border-light)',
+                      objectFit: 'contain',
+                      background: 'linear-gradient(180deg, rgba(2,6,23,0.88), rgba(15,23,42,0.7))',
+                      padding: '8px',
+                      cursor: 'zoom-in'
+                    }}
+                  />
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                    <div>状态: {sceneEditor.status || '未知'}</div>
+                    <div>路径: {sceneEditor.imagePath}</div>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ overflowY: 'auto', paddingRight: '4px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div style={{ ...sceneEditorSectionStyle, gridTemplateColumns: '1fr 150px 120px 120px', gap: '10px' }}>
+                  <label style={sceneEditorLabelStyle}>
+                    Trigger Sentence
+                    <input style={sceneEditorInputStyle} value={sceneEditor.draft.trigger_sentence} onChange={(e) => updateSceneDraft(draft => ({ ...draft, trigger_sentence: e.target.value }))} />
+                  </label>
+                  <label style={sceneEditorLabelStyle}>
+                    NSFW
+                    <select style={sceneEditorInputStyle} value={sceneEditor.draft.nsfw_rating} onChange={(e) => updateSceneDraft(draft => ({ ...draft, nsfw_rating: e.target.value }))}>
+                      <option value="sfw">sfw</option>
+                      <option value="nsfw_mild">nsfw_mild</option>
+                      <option value="nsfw_moderate">nsfw_moderate</option>
+                      <option value="nsfw_explicit">nsfw_explicit</option>
+                    </select>
+                  </label>
+                  <label style={sceneEditorLabelStyle}>
+                    Width
+                    <input style={sceneEditorInputStyle} type="number" value={sceneEditor.draft.width} onChange={(e) => updateSceneDraft(draft => ({ ...draft, width: e.target.value }))} />
+                  </label>
+                  <label style={sceneEditorLabelStyle}>
+                    Height
+                    <input style={sceneEditorInputStyle} type="number" value={sceneEditor.draft.height} onChange={(e) => updateSceneDraft(draft => ({ ...draft, height: e.target.value }))} />
+                  </label>
+                </div>
+
+                {[
+                  ['visual_description', 'Visual Description', 5],
+                  ['environment', 'Environment', 3],
+                  ['cinematography', 'Cinematography', 3],
+                  ['interactions', 'Interactions', 3],
+                  ['plot_traces', 'Plot Traces', 2],
+                  ['text_elements', 'Text Elements', 2],
+                  ['character_names', 'Character Names', 2],
+                  ['must_show', 'Must Show', 2],
+                  ['must_not_show', 'Must Not Show', 2]
+                ].map(([field, label, rows]) => (
+                  <label key={field} style={sceneEditorLabelStyle}>
+                    {label}
+                    <textarea style={sceneEditorTextareaStyle} rows={rows} value={sceneEditor.draft[field]} onChange={(e) => updateSceneDraft(draft => ({ ...draft, [field]: e.target.value }))} />
+                  </label>
+                ))}
+
+                <div style={{ ...sceneEditorSectionStyle }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 style={{ fontSize: '0.95rem' }}>Characters</h3>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ padding: '4px 10px', fontSize: '0.75rem', borderRadius: '999px' }}
+                    onClick={() => updateSceneDraft(draft => ({
+                      ...draft,
+                      characters: [...draft.characters, { name: '', gender: 'unknown', appearance: '', clothing: '', expression: '', pose: '', position: '' }]
+                    }))}
+                  >
+                    <Plus size={12} /> 添加角色
+                  </button>
+                </div>
+
+                {(sceneEditor.draft.characters || []).map((character, index) => (
+                  <div key={`character-${index}`} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', padding: '12px', display: 'grid', gap: '8px', background: 'rgba(5, 8, 20, 0.28)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <strong style={{ fontSize: '0.85rem' }}>角色 {index + 1}</strong>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{ padding: '4px 8px', fontSize: '0.72rem', color: '#fca5a5', borderRadius: '999px' }}
+                        onClick={() => updateSceneDraft(draft => ({
+                          ...draft,
+                          characters: draft.characters.filter((_, itemIndex) => itemIndex !== index)
+                        }))}
+                      >
+                        删除
+                      </button>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 140px', gap: '8px' }}>
+                      <input style={sceneEditorInputStyle} placeholder="姓名" value={character.name} onChange={(e) => updateSceneDraft(draft => ({ ...draft, characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, name: e.target.value } : item) }))} />
+                      <input style={sceneEditorInputStyle} placeholder="gender" value={character.gender} onChange={(e) => updateSceneDraft(draft => ({ ...draft, characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, gender: e.target.value } : item) }))} />
+                    </div>
+                    {['appearance', 'clothing', 'expression', 'pose', 'position'].map(field => (
+                      <input
+                        key={field}
+                        style={sceneEditorInputStyle}
+                        placeholder={field}
+                        value={character[field]}
+                        onChange={(e) => updateSceneDraft(draft => ({ ...draft, characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: e.target.value } : item) }))}
+                      />
+                    ))}
+                  </div>
+                ))}
+                </div>
+
+                <div style={{ ...sceneEditorSectionStyle }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 style={{ fontSize: '0.95rem' }}>Visual Entities</h3>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ padding: '4px 10px', fontSize: '0.75rem', borderRadius: '999px' }}
+                    onClick={() => updateSceneDraft(draft => ({
+                      ...draft,
+                      visual_entities: [...draft.visual_entities, { type: 'object', description: '', count: 1, position: '', must_show: true }]
+                    }))}
+                  >
+                    <Plus size={12} /> 添加实体
+                  </button>
+                </div>
+
+                {(sceneEditor.draft.visual_entities || []).map((entity, index) => (
+                  <div key={`entity-${index}`} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', padding: '12px', display: 'grid', gap: '8px', background: 'rgba(5, 8, 20, 0.28)' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 120px auto', gap: '8px', alignItems: 'center' }}>
+                      <input style={sceneEditorInputStyle} placeholder="type" value={entity.type} onChange={(e) => updateSceneDraft(draft => ({ ...draft, visual_entities: draft.visual_entities.map((item, itemIndex) => itemIndex === index ? { ...item, type: e.target.value } : item) }))} />
+                      <input style={sceneEditorInputStyle} type="number" min="1" placeholder="count" value={entity.count} onChange={(e) => updateSceneDraft(draft => ({ ...draft, visual_entities: draft.visual_entities.map((item, itemIndex) => itemIndex === index ? { ...item, count: e.target.value } : item) }))} />
+                      <input style={sceneEditorInputStyle} placeholder="position" value={entity.position} onChange={(e) => updateSceneDraft(draft => ({ ...draft, visual_entities: draft.visual_entities.map((item, itemIndex) => itemIndex === index ? { ...item, position: e.target.value } : item) }))} />
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{ padding: '4px 8px', fontSize: '0.72rem', color: '#fca5a5', borderRadius: '999px' }}
+                        onClick={() => updateSceneDraft(draft => ({
+                          ...draft,
+                          visual_entities: draft.visual_entities.filter((_, itemIndex) => itemIndex !== index)
+                        }))}
+                      >
+                        删除
+                      </button>
+                    </div>
+                    <textarea style={sceneEditorTextareaStyle} rows={2} placeholder="description" value={entity.description} onChange={(e) => updateSceneDraft(draft => ({ ...draft, visual_entities: draft.visual_entities.map((item, itemIndex) => itemIndex === index ? { ...item, description: e.target.value } : item) }))} />
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                      <input type="checkbox" checked={entity.must_show !== false} onChange={(e) => updateSceneDraft(draft => ({ ...draft, visual_entities: draft.visual_entities.map((item, itemIndex) => itemIndex === index ? { ...item, must_show: e.target.checked } : item) }))} />
+                      must_show
+                    </label>
+                  </div>
+                ))}
+                </div>
+
+                <div style={sceneEditorSectionStyle}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 style={{ fontSize: '0.95rem' }}>Saved Prompt Params</h3>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ padding: '4px 10px', fontSize: '0.75rem', borderRadius: '999px' }}
+                      onClick={() => {
+                        const parts = [
+                          sceneEditor.draft.final_prompt && `正向提示词:\n${sceneEditor.draft.final_prompt}`,
+                          sceneEditor.draft.base_prompt && `V4 Base Prompt:\n${sceneEditor.draft.base_prompt}`,
+                          sceneEditor.draft.character_prompts && `V4 Character Prompts:\n${sceneEditor.draft.character_prompts}`,
+                          sceneEditor.draft.final_negative && `负向提示词:\n${sceneEditor.draft.final_negative}`
+                        ].filter(Boolean);
+                        navigator.clipboard.writeText(parts.join('\n\n'));
+                        addLog(`📋 已复制场景 #${sceneEditor.sceneIdx} 完整生图参数到剪贴板！`, 'success');
+                      }}
+                    >
+                      <Copy size={12} /> 复制参数
+                    </button>
+                  </div>
+                  {[
+                    ['final_prompt', 'Final Prompt', 4],
+                    ['base_prompt', 'Base Prompt', 4],
+                    ['character_prompts', 'Character Prompts (一行一个)', 4],
+                    ['final_negative', 'Final Negative', 3]
+                  ].map(([field, label, rows]) => (
+                    <label key={field} style={sceneEditorLabelStyle}>
+                      {label}
+                      <textarea style={sceneEditorTextareaStyle} rows={rows} value={sceneEditor.draft[field]} onChange={(e) => updateSceneDraft(draft => ({ ...draft, [field]: e.target.value }))} />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '14px', flexShrink: 0 }}>
+              <button className="btn-secondary" onClick={closeSceneEditor}>关闭</button>
+              <button className="btn-primary" onClick={saveSceneEditor} disabled={savingScene}>
+                {savingScene ? '保存中...' : '保存场景卡'}
               </button>
             </div>
           </div>

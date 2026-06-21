@@ -437,61 +437,10 @@ function getRateLimiter({ enabled = true, rpm = 3, key = 'default' } = {}) {
   return llmRateLimiterRegistry.get(limiterKey);
 }
 
-export function cleanSensitives(text) {
-  if (typeof text !== 'string') return text;
-  return text
-    .replace(/肉棒/g, '生理器官')
-    .replace(/雄根/g, '生理器官')
-    .replace(/阴茎/g, '生理器官')
-    .replace(/小穴/g, '生理通道')
-    .replace(/骚逼/g, '生理通道')
-    .replace(/骚穴/g, '生理通道')
-    .replace(/阴道/g, '生理通道')
-    .replace(/阴门/g, '生理通道')
-    .replace(/尿道/g, '生理开口')
-    .replace(/后庭/g, '生理后庭')
-    .replace(/屁眼/g, '生理后庭')
-    .replace(/肛门/g, '生理后庭')
-    .replace(/抽插/g, '生理交合')
-    .replace(/性交/g, '生理交合')
-    .replace(/做爱/g, '生理交合')
-    .replace(/强奸/g, '强行接触')
-    .replace(/轮奸/g, '多人强行接触')
-    .replace(/射精/g, '体液释放')
-    .replace(/高潮/g, '生理高潮')
-    .replace(/精液/g, '生理流体')
-    .replace(/淫水/g, '生理体液')
-    .replace(/爱液/g, '生理体液')
-    .replace(/骚水/g, '生理体液')
-    .replace(/奶子/g, '胸部')
-    .replace(/乳头/g, '胸部敏感点')
-    .replace(/乳房/g, '胸部')
-    .replace(/阴帝/g, '敏感点')
-    .replace(/阴蒂/g, '敏感点')
-    .replace(/龟头/g, '生理器官顶端')
-    .replace(/插入口腔/g, '进入生理通道')
-    .replace(/插入阴道/g, '进入生理通道')
-    .replace(/插入肛门/g, '进入生理后庭');
-}
-
 export async function postChatCompletionWith429Retry({ url, headers, payload, idleTimeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null }) {
   const limiter = getRateLimiter(rateLimit || {});
   if (limiter) {
     await limiter.acquire();
-  }
-
-  // 敏感词自动替换以减轻审查
-  let cleanedPayload = payload;
-  if (payload && Array.isArray(payload.messages)) {
-    cleanedPayload = {
-      ...payload,
-      messages: payload.messages.map(msg => {
-        if (msg && typeof msg.content === 'string') {
-          return { ...msg, content: cleanSensitives(msg.content) };
-        }
-        return msg;
-      })
-    };
   }
 
   for (let attempt = 0; ; attempt++) {
@@ -499,7 +448,7 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
     const res = await fetch(url, {
       method: "POST",
       headers,
-      body: JSON.stringify({ ...cleanedPayload, stream: true }),
+      body: JSON.stringify({ ...payload, stream: true }),
       signal: controller.signal
     });
     llmResponseAbortControllers.set(res, controller);
@@ -590,6 +539,14 @@ function ensureStructuredScenePrompt(prompt) {
   const withDiversity = withCoverage.includes("【场景多样性硬约束】")
     ? withCoverage
     : `${withCoverage}\n\n${diversityInstruction}`;
+  const characterLimitInstruction = `【场景人数硬约束】
+- 每个场景最多只允许 4 个实际可见或直接参与互动的人物。
+- 如果原文是多人场景、群像场景、战场、宴会、围观或路人很多，只保留推动这一帧画面的主要人物写入 character_names 与 characters。
+- 优先保留：动作主体、动作受体、镜头中心人物、与剧情结果直接相关的人物。
+- 背景路人、围观者、杂兵、远景人群不要写入 characters；确有必要时可放入 environment 或 visual_entities。`;
+  const withCharacterLimit = withDiversity.includes("【场景人数硬约束】")
+    ? withDiversity
+    : `${withDiversity}\n\n${characterLimitInstruction}`;
 
   const requiredFields = [
     '"environment"',
@@ -616,11 +573,11 @@ ${SCENES_JSON_START}
 ]
 ${SCENES_JSON_END}`);
 
-  if (requiredFields.every(field => withDiversity.includes(field))) {
-    return withBoundaryContract(withDiversity);
+  if (requiredFields.every(field => withCharacterLimit.includes(field))) {
+    return withBoundaryContract(withCharacterLimit);
   }
 
-  return withBoundaryContract(`${withDiversity}
+  return withBoundaryContract(`${withCharacterLimit}
 
 【重要补充：必须输出新版结构化分镜字段】
 即使上文示例较旧，你最终返回的每个场景对象也必须补全以下字段，禁止省略：
@@ -1211,6 +1168,7 @@ export class LLMExtractor {
         if (attempt === 1) {
           return [
             `请针对以下章节正文中指定的「触发高潮句」，重新提炼并生成一份极其直白的二次元插画画面分镜描述。`,
+            `【人数硬约束】: 场景最多只允许 4 个实际可见或直接参与互动的人物。若原文涉及更多人，只保留推动画面的主要人物，背景路人不要写入 characters。`,
             `【章节名】: ${cleanedTitle}`,
             `【触发句 (trigger_sentence)】: 「${triggerSentence}」`,
             compactParagraph,
@@ -1222,6 +1180,7 @@ export class LLMExtractor {
 
         return [
           `请只输出一个合法 JSON 对象，不要 Markdown、不要解释、不要代码块。`,
+          `【人数硬约束】: 角色上限为 4 人，超出时只保留主要人物。`,
           `【章节名】: ${cleanedTitle}`,
           `【触发句 (trigger_sentence)】: 「${triggerSentence}」`,
           compactParagraph,

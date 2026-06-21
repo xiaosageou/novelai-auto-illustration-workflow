@@ -89,6 +89,12 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 【人物指代约束】
 如果提取的插画场景中包含小说中的任何主要角色，请在「二次元画面描述」中明确写出他们的具体姓名（例如：楚门、夏洛特），绝对禁止使用『主角』、『他』、『她』、『少年』、『少女』等模糊的指代词。如果该画面中没有任何角色（如纯景物描写），则无需写姓名。
 
+【人数上限约束】
+- 每个场景最多只允许 4 个实际可见或直接参与互动的人物。
+- 如果原文是多人场景、群像场景、战场、宴会、围观或路人很多，只选择推动这一帧画面的主要人物写入 character_names 与 characters。
+- 超过 4 人时，优先保留：当前动作主体、动作受体、镜头中心人物、与剧情结果直接相关的人物。
+- 远景路人、围观者、杂兵、背景行人、无独立动作的人群不要写入 characters；确有必要时可并入 environment 或 visual_entities 做背景说明。
+
 ---
 
 【角色外观继承约束 — 核心一致性保障】
@@ -634,5 +640,6 @@ export const DEFAULT_REGENERATE_SCENE_PROMPT = `<sandbox mode="cinematic_storybo
 
 输出前自检（必须逐项核对）：
 - 你的 visual_description 中在涉及 NSFW 裸露动作时是否足够直白、直接描写了对应的衣物状态与器官部位？
+- 当前场景的可见人物是否不超过 4 个？若原文是多人场景，是否只保留了最主要的 1-4 个角色？
 - character_names 是否列出了本场景全部实际可见或直接参与互动的角色姓名，并与 characters[].name 保持一致？
 - characters 数组中每个角色的 clothing、pose 是否均只描写物理状态，不含隐喻与构图叙事？`;
