@@ -1855,6 +1855,24 @@ test('V4.5 prompt budget keeps interaction and identity tags under the shared li
   assert.match(budgeted.characterPrompts[1], /target#hug/);
 });
 
+test('V4.5 prompt budget preserves artist style prompt under the shared limit', () => {
+  const filler = Array.from({ length: 240 }, (_, index) => `scene_detail_${index}`).join(', ');
+  const result = buildFinalImagePrompt(`1girl, 1boy, exactly_two_characters, ${filler}`, {
+    sceneCharacters: [{ name: '甲', gender: 'woman' }, { name: '乙', gender: 'man' }],
+    structuredCharacterPrompts: [
+      { name: '甲', prompt: `girl, pale_skin, long_hair, white_dress, ${filler}` },
+      { name: '乙', prompt: `boy, black_hair, school_uniform, ${filler}` }
+    ],
+    artistStylePrompt: '1.3::artist:youngjoo kjy ::, artist:nardack, artist:rella, cinematic lighting',
+    useNaturalLanguage: false,
+    useCharacterSegments: false
+  });
+
+  assert.match(result.basePrompt, /artist:youngjoo kjy/);
+  assert.match(result.basePrompt, /artist:nardack/);
+  assert.match(result.basePrompt, /artist:rella/);
+});
+
 test('V4.5 token estimator stays close to NovelAI web count for mixed NL and tag prompts', () => {
   const basePrompt = `3girls, 3boys, Laboratory interior with cool fluorescent light. Symmetric composition: three girls bent over in rear compartments, three boys standing in front. Convex lenses reflect buttocks, mirrors show faces. Viewed from slightly elevated front angle, with clear foreground/background depth. nsfw, explicit. The main scene shows a full external view. A single magnified inset reveals vaginal penetration in cross-section, focusing on one couple., three-quarter_view, dynamic_perspective, depth_of_field, consistent character scale, same ground plane., single unified three-character composition, distinct left center right staging, readable interaction graph, single unified composition, shared central action, overlapping silhouettes, connected pose., single magnified inset showing cross-section penetration focus., single coherent image., 1.3::masterpiece, best quality ::, official art, year2024, year2025, 1.3::artist:youngjoo kjy ::, artist:nardack, artist:rella, artist:qiandaiyiyu, artist:atdan, artist:void_0, artist:stu_dts, artist:wo_jiushi_kanbudong, artist:nixeu, -3::3D ::, rim lighting, deep shadows, high contrast, no text`;
   const characterPrompts = [
