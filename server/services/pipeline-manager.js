@@ -1533,11 +1533,56 @@ export class PipelineManager {
     }
 
     const currentScene = scenes[targetIdx];
+    const stringifyComparable = (value) => JSON.stringify(value ?? null);
+    const comparableText = (value) => String(value || '').trim();
+    const comparableStringList = (value) => (
+      Array.isArray(value)
+        ? value.map(item => String(item || '').trim()).filter(Boolean)
+        : []
+    );
+    const comparableObjectList = (value) => (
+      Array.isArray(value)
+        ? value.map(item => stringifyComparable(item))
+        : []
+    );
+    const lightweightFieldsChanged = (
+      comparableText(updates.trigger_sentence) !== comparableText(currentScene.trigger_sentence) ||
+      comparableText(updates.nsfw_rating) !== comparableText(currentScene.nsfw_rating) ||
+      comparableText(updates.visual_description) !== comparableText(currentScene.visual_description || currentScene.scene_desc) ||
+      comparableText(updates.source_context) !== comparableText(currentScene.source_context) ||
+      comparableText(updates.core_action) !== comparableText(currentScene.core_action) ||
+      comparableText(updates.selection_reason) !== comparableText(currentScene.selection_reason) ||
+      stringifyComparable(comparableStringList(updates.character_names)) !== stringifyComparable(comparableStringList(currentScene.character_names))
+    );
+    const derivedFieldsUnchanged = (
+      comparableText(updates.environment) === comparableText(currentScene.environment) &&
+      comparableText(updates.cinematography) === comparableText(currentScene.cinematography) &&
+      comparableText(updates.interactions) === comparableText(currentScene.interactions) &&
+      comparableText(updates.plot_traces) === comparableText(currentScene.plot_traces) &&
+      comparableText(updates.text_elements) === comparableText(currentScene.text_elements) &&
+      stringifyComparable(comparableStringList(updates.must_show)) === stringifyComparable(comparableStringList(currentScene.must_show)) &&
+      stringifyComparable(comparableStringList(updates.must_not_show)) === stringifyComparable(comparableStringList(currentScene.must_not_show)) &&
+      stringifyComparable(comparableObjectList(updates.interaction_actions)) === stringifyComparable(comparableObjectList(currentScene.interaction_actions)) &&
+      stringifyComparable(comparableObjectList(updates.visual_entities)) === stringifyComparable(comparableObjectList(currentScene.visual_entities)) &&
+      stringifyComparable(comparableObjectList(updates.characters)) === stringifyComparable(comparableObjectList(currentScene.characters))
+    );
     const normalized = normalizeSceneCard({
       ...currentScene,
       ...updates,
       scene_idx: currentScene.scene_idx
     });
+    if (lightweightFieldsChanged && derivedFieldsUnchanged) {
+      normalized.environment = '';
+      normalized.cinematography = '';
+      normalized.interactions = '';
+      normalized.plot_traces = '';
+      normalized.text_elements = '';
+      normalized.must_show = [];
+      normalized.must_not_show = [];
+      normalized.interaction_actions = [];
+      normalized.visual_entities = [];
+      normalized.characters = [];
+    }
 
     scenes[targetIdx] = {
       ...currentScene,

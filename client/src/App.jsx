@@ -1107,6 +1107,9 @@ function App() {
     trigger_sentence: String(scene.trigger_sentence || ''),
     nsfw_rating: String(scene.nsfw_rating || 'sfw'),
     visual_description: String(scene.visual_description || scene.scene_desc || ''),
+    source_context: String(scene.source_context || ''),
+    core_action: String(scene.core_action || ''),
+    selection_reason: String(scene.selection_reason || ''),
     environment: String(scene.environment || ''),
     cinematography: String(scene.cinematography || ''),
     interactions: String(scene.interactions || ''),
@@ -1175,6 +1178,9 @@ function App() {
     trigger_sentence: String(draft.trigger_sentence || '').trim(),
     nsfw_rating: String(draft.nsfw_rating || 'sfw').trim() || 'sfw',
     visual_description: String(draft.visual_description || '').trim(),
+    source_context: String(draft.source_context || '').trim(),
+    core_action: String(draft.core_action || '').trim(),
+    selection_reason: String(draft.selection_reason || '').trim(),
     environment: String(draft.environment || '').trim(),
     cinematography: String(draft.cinematography || '').trim(),
     interactions: String(draft.interactions || '').trim(),
@@ -1772,6 +1778,9 @@ function App() {
                         const isSceneLoading = loadingScenes[sceneKey];
                         const isSceneDeleteLocked = pipelineRunning || isSceneLoading === true || isSceneLoading === 'running' || isSceneLoading === 'deleting';
                         const sceneCharacters = Array.isArray(scene.characters) ? scene.characters : [];
+                        const sceneCharacterCount = sceneCharacters.length > 0
+                          ? sceneCharacters.length
+                          : (Array.isArray(scene.character_names) ? scene.character_names.length : 0);
                         const sceneImage = scene.image_path ? encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`) : null;
 
                         return (
@@ -1830,6 +1839,10 @@ function App() {
                                 <img
                                   src={sceneImage}
                                   alt="插画"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setPreviewImage(sceneImage);
+                                  }}
                                   style={{
                                     width: '168px',
                                     height: '112px',
@@ -1837,7 +1850,8 @@ function App() {
                                     objectFit: 'contain',
                                     background: 'linear-gradient(180deg, rgba(2,6,23,0.88), rgba(15,23,42,0.7))',
                                     border: '1px solid var(--border-light)',
-                                    padding: '6px'
+                                    padding: '6px',
+                                    cursor: 'zoom-in'
                                   }}
                                 />
                               )}
@@ -1848,12 +1862,12 @@ function App() {
                                 </div>
 
                                 <div className="scene-desc" style={{ marginTop: '10px' }}>
-                                  {scene.scene_desc}
+                                  {scene.visual_description || scene.scene_desc}
                                 </div>
 
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '10px' }}>
                                   <span className="tag-badge scene" style={{ margin: 0 }}>{scene.nsfw_rating || 'sfw'}</span>
-                                  <span className="tag-badge scene" style={{ margin: 0 }}>{sceneCharacters.length} 人</span>
+                                  <span className="tag-badge scene" style={{ margin: 0 }}>{sceneCharacterCount} 人</span>
                                   {scene.image_path && <span className="tag-badge scene" style={{ margin: 0 }}>有图</span>}
                                   {(scene.final_prompt || scene.prepared_prompt?.finalPositive) && <span className="tag-badge scene" style={{ margin: 0 }}>Prompt</span>}
                                 </div>
@@ -2194,7 +2208,7 @@ function App() {
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: sceneEditor.imagePath ? '240px 1fr' : '1fr', gap: '18px', overflow: 'hidden', flex: 1 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: sceneEditor.imagePath ? '220px 1fr' : '1fr', gap: '18px', overflow: 'hidden', flex: 1 }}>
               {sceneEditor.imagePath && (
                 <div style={{ ...sceneEditorSectionStyle, alignContent: 'start', minHeight: 0 }}>
                   <img
@@ -2203,12 +2217,12 @@ function App() {
                     onClick={() => setPreviewImage(encodeURI(`${API_BASE}/projects/${activeProject}/${sceneEditor.imagePath}`))}
                     style={{
                       width: '100%',
-                      maxHeight: '260px',
-                      borderRadius: '10px',
+                      maxHeight: '240px',
+                      borderRadius: '12px',
                       border: '1px solid var(--border-light)',
                       objectFit: 'contain',
                       background: 'linear-gradient(180deg, rgba(2,6,23,0.88), rgba(15,23,42,0.7))',
-                      padding: '8px',
+                      padding: '10px',
                       cursor: 'zoom-in'
                     }}
                   />
@@ -2244,22 +2258,77 @@ function App() {
                   </label>
                 </div>
 
-                {[
-                  ['visual_description', 'Visual Description', 5],
-                  ['environment', 'Environment', 3],
-                  ['cinematography', 'Cinematography', 3],
-                  ['interactions', 'Interactions', 3],
-                  ['plot_traces', 'Plot Traces', 2],
-                  ['text_elements', 'Text Elements', 2],
-                  ['character_names', 'Character Names', 2],
-                  ['must_show', 'Must Show', 2],
-                  ['must_not_show', 'Must Not Show', 2]
-                ].map(([field, label, rows]) => (
-                  <label key={field} style={sceneEditorLabelStyle}>
-                    {label}
-                    <textarea style={sceneEditorTextareaStyle} rows={rows} value={sceneEditor.draft[field]} onChange={(e) => updateSceneDraft(draft => ({ ...draft, [field]: e.target.value }))} />
-                  </label>
-                ))}
+                <div style={sceneEditorSectionStyle}>
+                  <div style={{ display: 'grid', gap: '4px' }}>
+                    <h3 style={{ fontSize: '0.95rem', margin: 0 }}>轻量场景卡</h3>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                      这里维护选帧结果本身，供后续 Prompt LLM 再补全。
+                    </div>
+                  </div>
+                  {[
+                    ['visual_description', 'Visual Description', 4],
+                    ['source_context', 'Source Context', 4],
+                    ['core_action', 'Core Action', 2],
+                    ['selection_reason', 'Selection Reason', 2],
+                    ['character_names', 'Character Names', 2]
+                  ].map(([field, label, rows]) => (
+                    <label key={field} style={sceneEditorLabelStyle}>
+                      {label}
+                      <textarea
+                        style={{
+                          ...sceneEditorTextareaStyle,
+                          background: 'linear-gradient(180deg, rgba(8,11,26,0.82), rgba(12,18,38,0.72))'
+                        }}
+                        rows={rows}
+                        value={sceneEditor.draft[field]}
+                        onChange={(e) => updateSceneDraft(draft => ({ ...draft, [field]: e.target.value }))}
+                      />
+                    </label>
+                  ))}
+                </div>
+
+                <div style={sceneEditorSectionStyle}>
+                  <div style={{ display: 'grid', gap: '4px' }}>
+                    <h3 style={{ fontSize: '0.95rem', margin: 0 }}>派生 Prompt 上下文</h3>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                      这些字段由 Prompt 生成阶段继续扩写，保留可手改入口，但不再作为主场景卡核心字段。
+                    </div>
+                  </div>
+                  {[
+                    'environment',
+                    'cinematography',
+                    'interactions',
+                    'plot_traces',
+                    'text_elements',
+                    'must_show',
+                    'must_not_show'
+                  ].every((field) => !String(sceneEditor.draft[field] || '').trim()) && (
+                    <div style={{
+                      fontSize: '0.8rem',
+                      color: 'var(--text-muted)',
+                      padding: '10px 12px',
+                      borderRadius: '10px',
+                      border: '1px dashed rgba(148, 163, 184, 0.24)',
+                      background: 'rgba(255,255,255,0.02)'
+                    }}>
+                      轻量场景卡已变更，这部分派生上下文已清空，等待重新生成或手动补充。
+                    </div>
+                  )}
+                  {[
+                    ['environment', 'Environment', 2],
+                    ['cinematography', 'Cinematography', 2],
+                    ['interactions', 'Interactions', 2],
+                    ['plot_traces', 'Plot Traces', 2],
+                    ['text_elements', 'Text Elements', 2],
+                    ['must_show', 'Must Show', 2],
+                    ['must_not_show', 'Must Not Show', 2]
+                  ].map(([field, label, rows]) => (
+                    <label key={field} style={sceneEditorLabelStyle}>
+                      {label}
+                      <textarea style={sceneEditorTextareaStyle} rows={rows} value={sceneEditor.draft[field]} onChange={(e) => updateSceneDraft(draft => ({ ...draft, [field]: e.target.value }))} />
+                    </label>
+                  ))}
+                </div>
 
                 <div style={{ ...sceneEditorSectionStyle }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

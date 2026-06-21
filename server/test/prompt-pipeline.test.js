@@ -157,6 +157,13 @@ test('scene extraction sends the locally calculated exact count to the LLM', asy
   assert.match(userMessage, /scene_idx 必须从 1 连续编号到 2/);
   assert.match(userMessage, /SCENES_JSON_START/);
   assert.match(userMessage, /SCENES_JSON_END/);
+  assert.match(userMessage, /source_context/);
+  assert.match(userMessage, /core_action/);
+  assert.match(userMessage, /selection_reason/);
+  assert.match(userMessage, /瞬间定格|单帧|过程动作/);
+  assert.match(userMessage, /NSFW/);
+  assert.match(userMessage, /多选取.*NSFW|向\s*NSFW\s*场景倾斜/);
+  assert.match(userMessage, /适当选取.*SFW|保留.*SFW/);
 });
 
 test('scene extraction requests streaming and parses SSE response bodies', async () => {
@@ -329,6 +336,7 @@ test('selected sentence regeneration includes its complete paragraph and full ch
     assert.match(userMessage, /她抬起了头，雨水顺着脸颊滑落。/);
     assert.match(userMessage, /前一段。/);
     assert.match(userMessage, /后一段。/);
+    assert.match(userMessage, /瞬间定格|单帧|禁止.*然后|随后|接着/);
   } finally {
     global.fetch = originalFetch;
   }
@@ -615,6 +623,22 @@ test('scene normalization limits visible characters to four primary people', () 
   assert.equal(groupScene.interaction_actions[0].source, '甲');
 });
 
+test('scene normalization preserves lightweight scene-card fields', () => {
+  const scene = normalizeSceneCard({
+    scene_idx: 1,
+    trigger_sentence: '她抬起了头',
+    visual_description: '雨夜里她抬头看向门外',
+    source_context: '她抬起了头，雨水顺着脸颊滑落。门外脚步声渐近。',
+    core_action: '她抬头看向门外来人',
+    selection_reason: '情绪与来人压迫感在这一帧交汇',
+    character_names: ['她']
+  });
+
+  assert.equal(scene.source_context, '她抬起了头，雨水顺着脸颊滑落。门外脚步声渐近。');
+  assert.equal(scene.core_action, '她抬头看向门外来人');
+  assert.equal(scene.selection_reason, '情绪与来人压迫感在这一帧交汇');
+});
+
 test('updateSceneCard persists edited structured scene fields', async () => {
   const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nai-update-scene-'));
   const projectDir = path.join(outputDir, 'projects', 'scene-edit-test');
@@ -676,6 +700,75 @@ test('updateSceneCard persists edited structured scene fields', async () => {
   const saved = JSON.parse(await fs.readFile(path.join(projectDir, 'pipeline_progress.json'), 'utf-8'));
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].visual_description, '新描述');
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].characters.length, 4);
+});
+
+test('updateSceneCard clears stale derived context when lightweight scene fields change', async () => {
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nai-update-scene-stale-'));
+  const projectDir = path.join(outputDir, 'projects', 'scene-stale-test');
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.writeFile(
+    path.join(projectDir, 'book.txt'),
+    '第一卷\n第一章\n\n她抬起了头，看向门外。\n',
+    'utf-8'
+  );
+  await fs.writeFile(
+    path.join(projectDir, 'pipeline_progress.json'),
+    JSON.stringify({
+      completed_chapters: {
+        '第一卷_第一章': {
+          status: 'generating',
+          scenes: [
+            {
+              scene_idx: 1,
+              trigger_sentence: '她抬起了头',
+              visual_description: '旧描述',
+              source_context: '旧上下文',
+              core_action: '旧动作',
+              selection_reason: '旧理由',
+              environment: '旧环境',
+              cinematography: '旧镜头',
+              interactions: '旧互动',
+              plot_traces: '旧痕迹',
+              text_elements: '旧文字',
+              must_show: ['old_tag'],
+              must_not_show: ['old_negative']
+            }
+          ]
+        }
+      },
+      global_characters: {},
+      character_dna_slices: {},
+      pipeline_pause: null
+    }, null, 2),
+    'utf-8'
+  );
+
+  const pipeline = new PipelineManager({ projectName: 'scene-stale-test' });
+  pipeline.baseDir = outputDir;
+  pipeline.switchProject('scene-stale-test');
+
+  const result = await pipeline.updateSceneCard('第一卷_第一章', 1, {
+    trigger_sentence: '她抬起了头',
+    visual_description: '新描述',
+    source_context: '新上下文',
+    core_action: '新动作',
+    selection_reason: '新理由',
+    environment: '旧环境',
+    cinematography: '旧镜头',
+    interactions: '旧互动',
+    plot_traces: '旧痕迹',
+    text_elements: '旧文字',
+    must_show: ['old_tag'],
+    must_not_show: ['old_negative']
+  });
+
+  assert.equal(result.scene.environment, '');
+  assert.equal(result.scene.cinematography, '');
+  assert.equal(result.scene.interactions, '');
+  assert.equal(result.scene.plot_traces, '');
+  assert.equal(result.scene.text_elements, '');
+  assert.deepEqual(result.scene.must_show, []);
+  assert.deepEqual(result.scene.must_not_show, []);
 });
 
 test('explicit vaginal fluids only map to generic physical evidence, leaving explicit tag choice to MCP and LLM', () => {
@@ -1132,6 +1225,57 @@ test('NSFW advanced prompt requires perspective tags and fills them when LLM omi
     assert.match(result.base_prompt, /three-quarter_view/);
     assert.match(result.base_prompt, /dynamic_perspective/);
     assert.match(result.base_prompt, /depth_of_field/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('advanced prompt receives lightweight scene-card context fields', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+  extractor.searchDanbooruTags = async () => ({ results: [] });
+  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
+
+  const originalFetch = globalThis.fetch;
+  let capturedUserMessage = '';
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    capturedUserMessage = request.messages.find(message => message.role === 'user')?.content || '';
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              orientation: 'square',
+              base_prompt: '1girl, rainy street',
+              character_prompts: [{
+                name: '甲',
+                prompt: 'girl, wet_hair, looking_up',
+                negative_prompt: '',
+                interaction_actions: []
+              }],
+              negative_prompt: ''
+            })
+          }
+        }]
+      })
+    };
+  };
+
+  try {
+    await extractor.generateScenePromptAdvanced({
+      visual_description: '她在雨夜抬头看向门外',
+      source_context: '她抬起了头，雨水顺着脸颊滑落。门外脚步声渐近。',
+      core_action: '她抬头看向门外来人',
+      selection_reason: '情绪与来人压迫感在这一帧交汇',
+      characters: [{ name: '甲', gender: 'woman' }]
+    }, [], 'test');
+
+    assert.match(capturedUserMessage, /source_context/);
+    assert.match(capturedUserMessage, /门外脚步声渐近/);
+    assert.match(capturedUserMessage, /core_action/);
+    assert.match(capturedUserMessage, /selection_reason/);
   } finally {
     globalThis.fetch = originalFetch;
   }

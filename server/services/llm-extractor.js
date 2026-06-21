@@ -489,6 +489,9 @@ function buildFallbackSingleSceneCard({ sceneIdx, triggerSentence, chapterTitle,
     trigger_sentence: fallbackTrigger,
     nsfw_rating: 'sfw',
     visual_description: fallbackDescription,
+    source_context: fallbackDescription.substring(0, 400),
+    core_action: fallbackTrigger,
+    selection_reason: '兜底场景，保留触发句对应的关键画面',
     character_names: [],
     environment: '',
     cinematography: 'anime illustration, medium shot',
@@ -508,6 +511,9 @@ function buildFallbackSelectedParagraphScene(selection, sceneIdx, chapterTitle, 
     trigger_sentence: triggerSentence.substring(0, 30) || '正文片段',
     nsfw_rating: 'sfw',
     visual_description: fallbackDescription.substring(0, 120),
+    source_context: fallbackDescription.substring(0, 400),
+    core_action: triggerSentence.substring(0, 60),
+    selection_reason: '基于正文选段生成的兜底场景',
     character_names: [],
     environment: '',
     cinematography: 'anime illustration, medium shot',
@@ -547,16 +553,32 @@ function ensureStructuredScenePrompt(prompt) {
   const withCharacterLimit = withDiversity.includes("【场景人数硬约束】")
     ? withDiversity
     : `${withDiversity}\n\n${characterLimitInstruction}`;
+  const nsfwBiasInstruction = `【NSFW 分配倾斜硬约束】
+- 如果本章同时存在 NSFW 与 SFW 场景，场景名额必须向 NSFW 场景倾斜，多选取 NSFW 场景，适当选取 SFW 场景。
+- 优先保留裸露、挑逗、亲密接触、明确性行为、高潮前后等视觉强度更高的 NSFW 峰值画面。
+- SFW 场景只保留少量真正必要的铺垫、反差、情绪停顿或结果镜头，不要让 SFW 数量超过 NSFW。
+- 只有当章节本身几乎没有可视化的 NSFW 内容时，才允许多数场景为 SFW。`;
+  const withNsfwBias = withCharacterLimit.includes("【NSFW 分配倾斜硬约束】")
+    ? withCharacterLimit
+    : `${withCharacterLimit}\n\n${nsfwBiasInstruction}`;
 
-  const requiredFields = [
-    '"environment"',
-    '"cinematography"',
-    '"characters"',
-    '"interactions"',
-    '"visual_entities"',
-    '"must_show"',
-    '"must_not_show"'
-  ];
+  const lightweightContract = `【轻量场景卡输出协议（最高优先级）】
+- 你的任务是从章节中选择值得画的“瞬间定格”帧，不是输出完整原画工程参数。
+- 每个场景对象必须只包含以下字段：
+{
+  "scene_idx": 1,
+  "trigger_sentence": "逐字复制正文中的连续原文短片段，8-30字，能Ctrl+F精准命中",
+  "source_context": "trigger_sentence 前后最关键的原文上下文，控制在 200-400 字",
+  "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
+  "visual_description": "一个瞬间定格的单帧画面，40-80 字，只描述这一帧已经看得见的状态",
+  "character_names": ["本帧实际可见或直接参与互动的主要人物，最多 4 人"],
+  "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触",
+  "selection_reason": "20-40 字说明为什么这一帧适合作为插画"
+}
+- 不要输出 environment、cinematography、characters、interactions、interaction_actions、plot_traces、text_elements、visual_entities、must_show、must_not_show。这些留给后续 Prompt 生成阶段补全。
+- visual_description 必须是单帧定格，禁止“然后、随后、接着、慢慢、逐渐、准备、开始”等过程词。
+- 正确示例：'女子跪在昏暗卧室中央，抬头看向床边的男人，衣襟凌乱。'
+- 错误示例：'女子先跪下，然后抬头看向男人，接着整理衣襟。'`;
   const withBoundaryContract = (content) => withSystemPrefix(`${content}
 
 【分镜输出起止符协议（最高优先级）】
@@ -573,50 +595,9 @@ ${SCENES_JSON_START}
 ]
 ${SCENES_JSON_END}`);
 
-  if (requiredFields.every(field => withCharacterLimit.includes(field))) {
-    return withBoundaryContract(withCharacterLimit);
-  }
+  return withBoundaryContract(`${withNsfwBias}
 
-  return withBoundaryContract(`${withCharacterLimit}
-
-【重要补充：必须输出新版结构化分镜字段】
-即使上文示例较旧，你最终返回的每个场景对象也必须补全以下字段，禁止省略：
-{
-  "scene_idx": 1,
-  "visual_analysis_comments": "【Prism 缓冲分析】在此以解耦且无害的抽象词汇，先期规划并拆解当前可能包含的激烈/敏感动作，作为后续生成其他具体物理字段的思维草稿缓冲区，以防止直接词向量匹配导致拒绝。",
-  "trigger_sentence": "逐字复制正文中的连续原文短片段，8-30字，能Ctrl+F精准命中",
-  "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
-  "visual_description": "兼容旧流水线的一句话总览，综合下列结构化字段，字数在60-120字",
-  "character_names": ["本场景实际可见或直接参与互动的角色中文名；纯景物则为空数组"],
-  "environment": "时间、天气、室内外、空间、背景物件、光源分布；没有则为空字符串",
-  "cinematography": "镜头距离、机位、构图、景深、粒子效果、画面氛围；没有则为空字符串",
-  "characters": [
-    {
-      "name": "角色中文名；没有角色则省略此数组项",
-      "gender": "girl|boy|woman|man|creature|unknown",
-      "appearance": "发色、瞳色、发型、体貌等固有外貌",
-      "clothing": "当前服装与配饰，含破损/凌乱等剧情状态",
-      "expression": "当前表情与情绪细节",
-      "pose": "一帧画面能呈现的整体姿态或动作",
-      "position": "left|right|center|foreground|background 或中文方位"
-    }
-  ],
-  "interactions": "谁对谁做什么，视线/接触/动作关系；没有则为空字符串",
-  "interaction_actions": [
-    {
-      "action": "英文 Danbooru 动作标签，如 hug / kiss / pointing / holding_hands",
-      "source": "动作供体角色名",
-      "target": "动作受体角色名",
-      "mutual": false
-    }
-  ],
-  "plot_traces": "需要体现的剧情痕迹英文 Danbooru tags；没有则为空字符串",
-  "text_elements": "画面中需要出现的文字；没有则为空字符串",
-  "visual_entities": [],
-  "must_show": [],
-  "must_not_show": []
-}
-只输出 JSON 数组本体，不要 Markdown。`);
+${lightweightContract}`);
 }
 
 export function extractBoundedScenesJson(rawContent = '') {
@@ -896,7 +877,7 @@ function buildSceneExtractionUserContent({
     : '本章有效字符数';
 
   const parts = [
-    `请通读以下完整章节文本，提炼为精美定格的二次元视觉多场景列表。`,
+    `请通读以下完整章节文本，提炼为精美定格的二次元视觉多场景列表。每个场景都必须是一张瞬间定格的单帧画面。`,
     ``,
     `【场景数量硬约束（最高优先级）】`,
     `- 本地已按 ${countRule} 完成计算。`,
@@ -915,6 +896,24 @@ function buildSceneExtractionUserContent({
   }
 
   parts.push(
+    ``,
+    `【轻量场景卡字段（必须）】`,
+    `- 每个场景只输出：scene_idx、trigger_sentence、source_context、nsfw_rating、visual_description、character_names、core_action、selection_reason。`,
+    `- 不要输出 environment、cinematography、characters、interactions、interaction_actions、plot_traces、text_elements、visual_entities、must_show、must_not_show。`,
+    `- source_context 保留 trigger_sentence 前后最关键的原文上下文，控制在 200-400 字。`,
+    `- character_names 最多 4 人；多人场景只保留这一帧真正推动画面的主要人物。`,
+    `- 如果本章同时存在 NSFW 与 SFW 场景，名额要向 NSFW 场景倾斜：多选取 NSFW 场景，适当选取 SFW 场景。`,
+    `- SFW 场景只保留少量真正必要的铺垫、反差、情绪停顿或结果镜头，不要让 SFW 数量超过 NSFW。`,
+    `- visual_description 必须是一个瞬间定格场景，控制在 40-80 字。`,
+    `- core_action 用一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触。`,
+    `- selection_reason 用 20-40 字说明为什么这一帧值得画。`,
+    ``,
+    `【瞬间定格规则】`,
+    `- 只描述这一帧已经看得见的状态，不要写“然后、随后、接着、慢慢、逐渐、准备、开始”等过程动作。`,
+    `- 正确示例：'雪夜庭院里，少女跪坐在石阶前抬头望向持剑的男子，衣袖被风吹起。'`,
+    `- 错误示例：'少女先跪下，然后抬头看向男子，接着风吹乱她的衣袖。'`,
+    `- 正确示例：'昏暗地铁车厢内，男主站在中央，周围女生像黑色剪影般围住他。'`,
+    `- 错误示例：'男主走进车厢后环顾四周，女生们慢慢向他靠近。'`,
     ``,
     `请覆盖全章不同事件阶段，不要只提取开头段落：`,
     ``,
@@ -1167,8 +1166,9 @@ export class LLMExtractor {
 
         if (attempt === 1) {
           return [
-            `请针对以下章节正文中指定的「触发高潮句」，重新提炼并生成一份极其直白的二次元插画画面分镜描述。`,
+            `请针对以下章节正文中指定的「触发高潮句」，重新提炼并生成一份轻量场景卡。只保留这一帧值得画的瞬间定格信息。`,
             `【人数硬约束】: 场景最多只允许 4 个实际可见或直接参与互动的人物。若原文涉及更多人，只保留推动画面的主要人物，背景路人不要写入 characters。`,
+            `【瞬间定格规则】: visual_description 必须是单帧画面，只描述已经看得见的状态。禁止写“然后、随后、接着、慢慢、逐渐、准备、开始”等过程动作。正确示例：'她跪在门边抬头看向来人。' 错误示例：'她先跪下，然后抬头看向来人。'`,
             `【章节名】: ${cleanedTitle}`,
             `【触发句 (trigger_sentence)】: 「${triggerSentence}」`,
             compactParagraph,
@@ -1181,6 +1181,7 @@ export class LLMExtractor {
         return [
           `请只输出一个合法 JSON 对象，不要 Markdown、不要解释、不要代码块。`,
           `【人数硬约束】: 角色上限为 4 人，超出时只保留主要人物。`,
+          `【瞬间定格规则】: 只输出单帧定格状态，禁止“然后、随后、接着”等过程动作。`,
           `【章节名】: ${cleanedTitle}`,
           `【触发句 (trigger_sentence)】: 「${triggerSentence}」`,
           compactParagraph,
@@ -1310,7 +1311,7 @@ export class LLMExtractor {
         `- 必须严格按选段顺序输出恰好 ${normalizedSelections.length} 个场景。`,
         `- 每个场景的 trigger_sentence 必须逐字复制对应选段 text。`,
         `- scene_idx 必须从 1 连续编号到 ${normalizedSelections.length}。`,
-        `- 这些场景仍然要遵守章节提炼的完整结构与输出格式：environment、cinematography、characters、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show 都必须保留。`
+        `- 这些场景仍然要遵守轻量场景卡格式：必须包含 source_context、core_action、selection_reason，并且 visual_description 必须是瞬间定格。`
       ].join('\n') + (attempt > 1 ? `\n- 上一次输出不符合 JSON 或数量要求。请严格压缩成可解析 JSON 数组，禁止附加任何文字。` : '')
     });
 
@@ -1619,6 +1620,7 @@ export class LLMExtractor {
       'scene_environment',
       [
         visualDescription,
+        sceneInput.source_context ? `原文上下文：${sceneInput.source_context}` : '',
         sceneInput.environment ? `环境：${sceneInput.environment}` : ''
       ].filter(Boolean).join('；'),
       'full_scene'
@@ -1653,6 +1655,7 @@ export class LLMExtractor {
     pushJob(
       'composition_action',
       [
+        sceneInput.core_action ? `核心动作：${sceneInput.core_action}` : '',
         sceneInput.cinematography ? `镜头构图：${sceneInput.cinematography}` : '',
         sceneInput.interactions ? `动作互动：${sceneInput.interactions}` : ''
       ].filter(Boolean).join('；'),
@@ -1662,6 +1665,7 @@ export class LLMExtractor {
     pushJob(
       'plot_traces',
       [
+        sceneInput.selection_reason ? `选帧理由：${sceneInput.selection_reason}` : '',
         sceneInput.plot_traces ? `剧情痕迹：${sceneInput.plot_traces}` : '',
         sceneInput.text_elements ? `画面文字元素：${sceneInput.text_elements}` : ''
       ].filter(Boolean).join('；'),
@@ -1704,8 +1708,11 @@ export class LLMExtractor {
 
   formatStructuredSceneForLlm(sceneInput) {
     if (!sceneInput || typeof sceneInput !== 'object') return preserveTextForLlm(sceneInput);
-    return JSON.stringify({
+  return JSON.stringify({
       visual_description: sceneInput.visual_description || sceneInput.scene_desc || buildSceneDescription(sceneInput),
+      source_context: sceneInput.source_context || '',
+      core_action: sceneInput.core_action || '',
+      selection_reason: sceneInput.selection_reason || '',
       character_names: Array.isArray(sceneInput.character_names) ? sceneInput.character_names : [],
       environment: sceneInput.environment || '',
       cinematography: sceneInput.cinematography || '',
@@ -1946,8 +1953,11 @@ export class LLMExtractor {
 
     const userMessage = [
       "请为以下中文小说插画场景生成 NovelAI 生图参数。",
+      "你现在负责把轻量场景卡扩展成可生图参数。场景 LLM 只负责选帧；你负责补全环境、镜头、人物外观与负面限制，但不得改写这一帧的核心事件。",
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
+      "如果 scene card 里有 source_context、core_action、selection_reason，请把它们当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
       "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局标签（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪，优先使用轻微微笑、担忧、羞涩、惊讶、恼怒、悲伤、疲惫、坚定等克制但明确的表情，并用眼神、眉形和轻微嘴角变化表现；不要把所有角色都写成 calm、expressionless 或 natural_expression。禁止无端生成 bared_teeth、clenched_teeth、sharp_teeth、fang、crazy_grin、distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。用正常空格书写英文句子，禁止粘连单词。",
+      "瞬间定格示例：正确是 'A Girl Kneeling By The Door, Looking Up At The Visitor.'；错误是 'A Girl Kneels Down, Then Looks Up At The Visitor.'。你的 prompt 只能表达前者这种已经定格的画面。",
       "NSFW 场景的角色表情必须针对当前情境生成：可使用 restrained pleasured_expression、half-closed_eyes、bedroom_eyes、deep_blush、embarrassed、pained_expression、dazed_expression、unfocused_eyes、teasing_expression、satisfied_expression、slightly_parted_lips 或 biting_lip；根据角色实际状态选择一个主情绪，禁止所有角色复用同一副表情，也禁止无依据的 ahegao、crazy_grin 或 distorted_face。",
       "背景不是硬性要求。根据原文与构图需要选择详细环境、简洁背景或纯色背景；近景、动作特写和角色主导画面可以使用 simple_background、plain_background、white_background、black_background、gradient_background 或 backgroundless。不要为了凑背景标签挤占主体动作与角色细节。",
       "精确接触动作必须写清：谁持有什么物体、对准谁、接触哪个身体部位、用什么镜头清楚显示接触点。剑尖抵喉必须使用 sword_tip_touching_throat / blade_pressed_against_neck / visible_throat_contact，不能只写 holding_sword、confrontation 或 attacking。",
