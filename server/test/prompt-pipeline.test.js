@@ -863,7 +863,7 @@ test('final negative prompt includes mosaic globally', () => {
   assert.match(result.finalNegative, /\bmosaic\b/i);
 });
 
-test('multi-character prompts balance detail unless a character is intentionally backgrounded', () => {
+test('multi-character prompts keep scale without forcing interaction composition', () => {
   const balanced = buildFinalImagePrompt(
     '2characters, close-up, focus on lower body, focus on buttocks, bedroom',
     {
@@ -880,10 +880,9 @@ test('multi-character prompts balance detail unless a character is intentionally
   );
 
   assert.doesNotMatch(balanced.basePrompt, /\bclose-up\b|focus on lower body|focus on buttocks/i);
-  assert.match(balanced.basePrompt, /single unified composition/);
-  assert.match(balanced.basePrompt, /shared central action/);
-  assert.match(balanced.basePrompt, /overlapping silhouettes/);
-  assert.match(balanced.basePrompt, /same focal plane/);
+  assert.match(balanced.basePrompt, /consistent character scale/);
+  assert.match(balanced.basePrompt, /same ground plane/);
+  assert.doesNotMatch(balanced.basePrompt, /single unified composition|connected pose/);
   assert.match(balanced.finalNegative, /simplified background character/);
 
   const intentionalBackground = buildFinalImagePrompt('2characters, close-up, shadow_play', {
@@ -912,8 +911,7 @@ test('interactive two-character prompt avoids side-by-side character card compos
   assert.doesNotMatch(result.finalPositive, /\bleft_side\b|\bright_side\b|\bon_left\b|\bright_foreground\b/);
   assert.doesNotMatch(result.finalPositive, /both characters fully rendered|equal character detail/);
   assert.match(result.finalPositive, /single unified composition/);
-  assert.match(result.finalPositive, /shared central action/);
-  assert.match(result.finalPositive, /overlapping silhouettes/);
+  assert.match(result.finalPositive, /connected pose/);
   assert.match(result.finalNegative, /vertical divider/);
   assert.match(result.finalNegative, /side-by-side character cards/);
   assert.match(result.finalNegative, /separate backgrounds/);
@@ -1184,7 +1182,7 @@ test('advanced prompt asks LLM to self-trim when estimated tokens exceed 460', a
   }
 });
 
-test('NSFW advanced prompt requires perspective tags and fills them when LLM omits them', async () => {
+test('NSFW advanced prompt asks for camera choice and adds light fallback when LLM omits it', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
   extractor.searchDanbooruTags = async () => ({ results: [] });
   extractor.getRelatedDanbooruTags = async () => ({ results: [] });
@@ -1224,12 +1222,12 @@ test('NSFW advanced prompt requires perspective tags and fills them when LLM omi
       characters: [{ name: '甲', gender: 'woman', pose: '跪姿' }]
     }, [], 'test');
 
-    assert.match(capturedUserMessage, /NSFW (?:透视与机位|镜头机位)（必须）/);
-    assert.match(capturedUserMessage, /关键身体互动、遮挡层次和接触点清楚(?:可见|可读)/);
+    assert.match(capturedUserMessage, /NSFW (?:透视与机位|镜头机位)/);
+    assert.match(capturedUserMessage, /接触点|遮挡层次/);
     assert.match(capturedUserMessage, /不要超过 460 token|must stay within 460 tokens/i);
-    assert.match(result.base_prompt, /three-quarter_view/);
-    assert.match(result.base_prompt, /dynamic_perspective/);
-    assert.match(result.base_prompt, /depth_of_field/);
+    assert.match(result.base_prompt, /clear single camera angle/i);
+    assert.match(result.base_prompt, /foreground and background separation/i);
+    assert.doesNotMatch(result.base_prompt, /dynamic_perspective|depth_of_field/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1628,7 +1626,7 @@ test('directional sex actions ignore mutual hints and still emit source target m
   assert.doesNotMatch(result.characterPrompts.join(' '), /mutual#sex/);
 });
 
-test('penetration scenes require inset xray guidance while non-penetrative scenes do not', () => {
+test('penetration scenes only keep inset xray guidance when explicitly requested', () => {
   const penetrationResult = buildFinalImagePrompt('1girl, 1boy, bedroom, sex', {
     sceneCharacters: [
       { name: '钰慧', gender: 'woman', position: 'left' },
@@ -1646,6 +1644,22 @@ test('penetration scenes require inset xray guidance while non-penetrative scene
   assert.match(penetrationResult.basePrompt, /x-ray inset/i);
   assert.doesNotMatch(penetrationResult.finalNegative, /comic panel/i);
   assert.doesNotMatch(penetrationResult.finalNegative, /inset image/i);
+
+  const ordinaryPenetrationResult = buildFinalImagePrompt('1girl, 1boy, bedroom, sex', {
+    sceneCharacters: [
+      { name: '钰慧', gender: 'woman', position: 'left' },
+      { name: '阿宾', gender: 'man', position: 'right' }
+    ],
+    sceneInteractions: '阿宾将性器官插入钰慧体内',
+    sceneInteractionActions: [
+      { action: 'penetration', source: '阿宾', target: '钰慧', mutual: false }
+    ],
+    sceneDescription: '阿宾与钰慧发生明确插入性交，普通外视角能看清双方姿态。',
+    sceneNsfwRating: 'nsfw_explicit'
+  });
+
+  assert.doesNotMatch(ordinaryPenetrationResult.basePrompt, /magnified inset/i);
+  assert.match(ordinaryPenetrationResult.finalNegative, /comic panel/i);
 
   const handjobResult = buildFinalImagePrompt('1girl, 1boy, handjob', {
     sceneCharacters: [

@@ -265,15 +265,15 @@ The scene card includes a nsfw_rating field. You MUST follow these rules strictl
 
 NSFW tags must be faithful to the scene description. Do not escalate or invent content beyond the source.
 
-## Penetration Inset Rule (MANDATORY)
-For scenes with actual genital penetration, use a main external scene plus exactly one localized magnified inset focused on the penetration site.
+## Penetration Inset Rule (OPTIONAL, USE ONLY WHEN NEEDED)
+For scenes with actual genital penetration, use a main external scene plus exactly one localized magnified inset only when a normal external view cannot make the contact point readable.
 - The main image must remain an external full-scene or half-body view. Do NOT place x-ray or cutaway anatomy directly on the main figure.
 - The inset may use x-ray / cutaway / cross-section only inside the magnified callout, and only to clarify the penetration point.
 - Apply this only to real penetration scenes. Do NOT add inset panels or x-ray to handjob, breast play, oral teasing, kissing, groping, undressing, or any non-penetrative act.
 - Prefer tags and wording such as inset_image, magnified_inset, penetration_focus, xray_inset, cutaway_inset, main_scene_plus_inset, external_view_main_frame. Avoid split_screen, multi-panel comic page, or several unrelated insets.
 
-## NSFW Perspective & Camera Rules (MANDATORY)
-For every scene whose nsfw_rating is not "sfw", base_prompt MUST include a clear perspective description chosen from the actual physical staging. Use one primary viewpoint such as pov, from_above, from_below, side_view, over_the_shoulder, or three-quarter_view, plus at least one supporting spatial tag such as dynamic_perspective, foreshortening, depth_of_field, or foreground_background.
+## NSFW Perspective & Camera Rules
+For every scene whose nsfw_rating is not "sfw", base_prompt should include one clear perspective description chosen from the actual physical staging. Use one primary viewpoint such as pov, from_above, from_below, side_view, over_the_shoulder, or three-quarter_view. Add a supporting spatial tag such as foreshortening or foreground_background only when it helps clarify overlap or contact.
 - Keep the important body interaction, overlap, and contact point visible and spatially readable.
 - Choose a viewpoint that matches who is looking, who is acting, and the characters' relative positions. Do not add a random fetish angle or invent an act that is absent from the source.
 - Use one coherent camera setup. Do not output multiple_views, split_screen, contradictory viewpoints, or several unrelated angles.
@@ -286,7 +286,7 @@ For example:
 [问题 2. 场景 NSFW 级别判定]: 读取 nsfw_rating (sfw | nsfw_mild | nsfw_moderate | nsfw_explicit)。
 [问题 3. 生理穿透与 Inset 结构判断]:
    - 判定是否存在生理插入（手/性器官/玩具插入主要通道 vagina/anus/mouth）。
-   - 若有，规划 magnified inset 并在此 inset 内指定 xray_inset, cutaway_inset 标签或描述。
+   - 若普通外视角无法清楚表达接触点，才规划 magnified inset 并在此 inset 内指定 xray_inset, cutaway_inset 标签或描述。
    - 【子判定 - 流体释放】自检是否描述了体液释放（ejaculation/cumshot）。若有，指定内部流体释放（如 semen_inside_uterus, internal_cumshot, x-ray_uterus）；未释放则完全忽略。
    - 若无穿透，绝对不可规划放大图或 xray。
 [问题 4. 镜头机位与物理视角选择]: 选择一个空间上最能清晰展现接触关系的物理视角（如 pov, from_above, side_view），并规划 1-2 个构图辅助词。
@@ -464,11 +464,11 @@ Evaluate if the scene takes place in a private, secluded environment where no ot
 - If it is a private/secluded scene, you MUST include the following tags in the global 'negative_prompt' to prevent unwanted foreground outlines or shadowy figures blocking the view: "silhouette, shadow, shadowy figure, outline of person, foreground silhouette, foreground shadow".
 - If the scene takes place in a public or semi-public environment (even if NSFW/explicit, e.g., outdoors, public streets, corridors, classrooms, public transport), do NOT add these silhouette prevention tags, as background/foreground silhouettes or shadows of other people are allowed or expected.
 
-## Penetration Inset Rule (MANDATORY — unchanged)
-For scenes with actual genital penetration, describe a main external scene plus one localized magnified inset focused on the penetration site. Write this in natural language in base_prompt, e.g., "The main scene shows a full external view, with a single magnified inset revealing the penetration contact point in cross-section."
+## Penetration Inset Rule (OPTIONAL)
+For scenes with actual genital penetration, describe a main external scene plus one localized magnified inset only when a normal external view cannot make the contact point readable. Write this in natural language in base_prompt only when needed, e.g., "The main scene shows a full external view, with a single magnified inset revealing the penetration contact point in cross-section."
 
-## NSFW Perspective & Camera (MANDATORY for non-sfw)
-For non-sfw scenes, base_prompt must include a clear camera description: e.g., "viewed from a three-quarter angle", "shot from slightly above", "side view showing both characters". Include at least one spatial depth cue such as "with foreground/background depth" or "foreshortening visible".
+## NSFW Perspective & Camera
+For non-sfw scenes, base_prompt should include a clear camera description: e.g., "viewed from a three-quarter angle", "shot from slightly above", "side view showing both characters". Include a spatial depth cue such as "with foreground/background depth" or "foreshortening visible" only when it improves contact readability.
 
 ## Orientation Selection Rules (unchanged)
 - "portrait" (832x1216): single-character close-up, bust shot, or headshot
@@ -485,7 +485,7 @@ For example:
 2. NSFW staging & penetration check:
    a. Read nsfw_rating. Confirm global tags (nsfw / explicit) match.
    b. Determine contact type from scene text:
-      - PENETRATION (finger / penis / toy inserted into mouth / vagina / anus) → add magnified inset description in base_prompt using natural language (e.g., "a magnified cutaway inset revealing internal penetration detail at the lower centre of the frame").
+      - PENETRATION (finger / penis / toy inserted into mouth / vagina / anus) → add magnified inset description only when ordinary external staging cannot make the contact point readable.
         * Sub-check — EJACULATION: does the scene describe climax / cumshot / internal release?
           · YES → inset description must additionally describe semen visible inside the uterus in the cutaway, cross-section view showing internal release.
           · NO  → omit all ejaculation / uterus / internal-release language from both base_prompt and character prompts.

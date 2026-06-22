@@ -211,6 +211,7 @@ function 构建动作关系负面提示词(prompt = '') {
 
 function 是插入局部放大场景({
   sceneNsfwRating = 'sfw',
+  sourcePrompt = '',
   sceneDescription = '',
   sceneInteractions = '',
   sceneInteractionActions = [],
@@ -220,6 +221,7 @@ function 是插入局部放大场景({
   const actionHit = (Array.isArray(sceneInteractionActions) ? sceneInteractionActions : [])
     .some(action => /^(?:sex|penetration|vaginal|anal|paizuri|fellatio|irrumatio)$/i.test(String(action?.action || '').trim()));
   const text = [
+    sourcePrompt,
     sceneDescription,
     sceneInteractions,
     ...(Array.isArray(sceneMustShow) ? sceneMustShow : [])
@@ -227,7 +229,23 @@ function 是插入局部放大场景({
   const negatedInsertion = /没有插入|未插入|无插入|非插入|not penetration|without penetration|no penetration/i.test(text);
   const insertionHit = !negatedInsertion && /插入|交合|性交|肉棒插入|阴茎插入|penetration|inserted|vaginal_penetration|anal_penetration/i.test(text);
   const nonPenetrativeOnly = /手交|handjob|footjob|乳交|paizuri|口交|fellatio|blowjob/i.test(text) && !insertionHit;
-  return !nonPenetrativeOnly && (actionHit || insertionHit);
+  const insetRequested = /局部放大|放大图|剖面|截面|透视图|inset|magnified|x-?ray|cutaway|cross[-_ ]?section|callout/i.test(text);
+  return !nonPenetrativeOnly && insetRequested && (actionHit || insertionHit);
+}
+
+function 场景存在直接互动({
+  prompt = '',
+  sceneInteractions = '',
+  sceneInteractionActions = []
+} = {}) {
+  if (Array.isArray(sceneInteractionActions) && sceneInteractionActions.length > 0) return true;
+  return /牵|抱|拥|吻|抓|握|扶|搂|触|压|推|拉|递|喂|看向|对视|攻击|刺|砍|射|插入|性交|touch|hold|hug|kiss|grab|push|pull|hand|feed|look|face|attack|strike|shoot|sex|penetration|handjob|fellatio/i
+    .test(`${prompt} ${sceneInteractions}`);
+}
+
+function 已有统一构图提示(prompt = '') {
+  return /single unified composition|shared central action|connected pose|interacting bodies|both subjects in one continuous scene/i
+    .test(String(prompt || ''));
 }
 
 function 允许插入放大图负面词(prompt = '') {
@@ -389,8 +407,8 @@ export function buildCharacterSpatialGuidance(sceneCharacters = [], interactions
         && targetIndex !== undefined
         && sourceIndex !== targetIndex
       ));
-    const fallbackPair = 查找互动角色索引(interactions, characters) || [0, 1];
-    const pairs = structuredPairs.length ? structuredPairs : [fallbackPair];
+    const fallbackPair = hasDirectInteraction ? (查找互动角色索引(interactions, characters) || [0, 1]) : null;
+    const pairs = structuredPairs.length ? structuredPairs : (fallbackPair ? [fallbackPair] : []);
 
     for (const [actorIndex, targetIndex] of pairs) {
       const actorCenter = centers[actorIndex];
@@ -628,7 +646,7 @@ function 构建均衡多人构图(prompt = '', sceneCharacters = []) {
 
   return {
     prompt: cleanedPrompt,
-    positive: '1.35::single unified composition::, 1.35::shared central action::, close physical proximity, overlapping silhouettes, interacting bodies, connected pose, both subjects in one continuous scene, same focal plane',
+    positive: 'single unified composition, connected pose, same focal plane',
     negative: 'vertical divider, central dividing line, hard split, two-tone split background, separate backgrounds, side-by-side character cards, paired portraits, versus screen, before and after, comparison layout, isolated characters, characters standing apart, tiny secondary character, distant secondary character, simplified background character, low-detail secondary character, chibi secondary character, super deformed secondary character, blurred secondary character'
   };
 }
@@ -1025,11 +1043,22 @@ export function buildFinalImagePrompt(prompt, {
   const spatialGuidance = buildCharacterSpatialGuidance(sceneCharacterList, sceneInteractions, sceneInteractionActions);
   const needsPenetrationInset = 是插入局部放大场景({
     sceneNsfwRating,
+    sourcePrompt: cleanPrompt,
     sceneDescription,
     sceneInteractions,
     sceneInteractionActions,
     sceneMustShow
   });
+  const hasDirectInteraction = 场景存在直接互动({
+    prompt: cleanPrompt,
+    sceneInteractions,
+    sceneInteractionActions
+  });
+  const needsMultiCompositionGuard = sceneCharacterList.length >= 2
+    && hasDirectInteraction
+    && !已有统一构图提示(cleanPrompt);
+  const needsScaleGuard = sceneCharacterList.length >= 2
+    && !/consistent character scale|same ground plane|same focal plane|natural proportions/i.test(cleanPrompt);
   const interactionTags = buildCharacterInteractionTags(
     sceneCharacterList,
     sceneInteractionActions,
@@ -1136,9 +1165,9 @@ export function buildFinalImagePrompt(prompt, {
     cleanPrompt,
     actionEmphasisPrompt,
     environmentEnhancementPrompt,
-    useNaturalLanguage ? 'consistent character scale, same ground plane.' : heightConstraints.basePrompt,
+    needsScaleGuard ? (useNaturalLanguage ? 'consistent character scale, same ground plane.' : heightConstraints.basePrompt) : '',
     spatialGuidance.basePrompt,
-    useNaturalLanguage ? 'single unified composition, shared central action, overlapping silhouettes, connected pose.' : balancedMultiCharacter.positive,
+    needsMultiCompositionGuard ? (useNaturalLanguage ? 'single unified composition, connected pose.' : balancedMultiCharacter.positive) : '',
     needsPenetrationInset ? (useNaturalLanguage ? 'single magnified inset showing cross-section penetration focus.' : 插入局部放大正向提示词) : '',
     postPositive,
     normalizedArtistStylePrompt

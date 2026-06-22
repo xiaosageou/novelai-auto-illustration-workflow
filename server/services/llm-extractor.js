@@ -1910,11 +1910,11 @@ export class LLMExtractor {
       : `【NSFW 等级】${nsfwRating}（请严格按照系统 Prompt 中对该等级的 tag 规则生成，不得遗漏也不得升级）`;
     const nsfwPerspectiveLine = nsfwRating !== 'sfw'
       ? (isNaturalLanguage
-          ? "【NSFW 镜头机位（必须）】base_prompt 中必须用自然语言描述一个明确的主视角（如 'viewed from a three-quarter angle'、'shot from slightly above'、'side view showing both characters'），并描述至少一个空间纵深细节（如 'with foreground/background depth'、'foreshortening visible'）。必须让关键身体互动、遮挡层次和接触点清楚可读；只描述一套连贯机位，禁止矛盾的视角描述。"
-          : "【NSFW 透视与机位（必须）】base_prompt 必须根据人物相对位置与动作接触关系加入一个明确主视角（如 pov、from_above、from_below、side_view、over_the_shoulder、three-quarter_view），并加入至少一个空间透视 tag（如 dynamic_perspective、foreshortening、depth_of_field、foreground_background）。必须让关键身体互动、遮挡层次和接触点清楚可见；只能使用一套连贯机位，禁止 multiple_views、split_screen 或互相矛盾的角度。")
+          ? "【NSFW 镜头机位】base_prompt 中优先用自然语言描述一个符合场景站位的主视角（如 'side view showing both characters'、'shot from slightly above'、'viewed from over the shoulder'）。只有接触点不清楚时再加入一个空间纵深细节（如 'with foreground/background depth' 或 'foreshortening visible'）。保持一套连贯机位，禁止矛盾视角。"
+          : "【NSFW 透视与机位】base_prompt 优先根据人物相对位置与动作接触关系选择一个明确主视角（如 pov、from_above、from_below、side_view、over_the_shoulder、three-quarter_view）。只有接触点或遮挡层次不清楚时，再加入一个空间透视 tag（如 foreshortening 或 foreground_background）。保持一套连贯机位，禁止 multiple_views、split_screen 或互相矛盾的角度。")
       : '';
     const penetrationInsetLine = nsfwRating === 'nsfw_explicit'
-      ? "【插入场景放大图规则（必须判断）】若场景包含真实的性器官插入/性交/penetration，必须采用“主图正常外视角 + 仅一个局部放大 inset”的结构：主图中禁止直接做 x-ray/cutaway，x-ray 或剖面只能出现在放大 inset 内，并聚焦插入接触点。若不是插入场景（如手交、抚摸、接吻、脱衣、非插入式口交/挑逗），则禁止加入 inset_image、magnified_inset、xray_inset。"
+      ? "【插入场景放大图规则（按需）】若真实插入/性交/penetration 的接触点在普通外视角中难以表达，可以采用“主图正常外视角 + 仅一个局部放大 inset”的结构；x-ray 或剖面只能出现在 inset 内。若普通外视角已经足够清楚，或场景并非插入行为（手交、抚摸、接吻、脱衣、非插入式口交/挑逗），不要加入 inset_image、magnified_inset、xray_inset。"
       : '';
     const plotTracesLine = plotTraces
       ? (isNaturalLanguage
@@ -2128,14 +2128,24 @@ export class LLMExtractor {
         .filter(Boolean)
         .filter(tag => !characterSpecificTags.has(tag.toLowerCase()))
         .join(', ');
-      const hasNsfwViewpoint = /(?:^|,\s*)(?:pov|from_above|from_below|side_view|over_the_shoulder|three-quarter_view)(?:\s*,|$)/i.test(cleanedBasePrompt);
-      const hasNsfwSpatialPerspective = /(?:^|,\s*)(?:dynamic_perspective|foreshortening|depth_of_field|foreground_background)(?:\s*,|$)/i.test(cleanedBasePrompt);
+      const hasNsfwViewpoint = isNaturalLanguage
+        ? /\b(?:pov|point of view|side view|three[- ]quarter|from above|from below|shot from|viewed from|over[- ]the[- ]shoulder|front view|rear view|close view)\b/i.test(cleanedBasePrompt)
+        : /(?:^|,\s*)(?:pov|from_above|from_below|side_view|over_the_shoulder|three-quarter_view|front_view|rear_view)(?:\s*,|$)/i.test(cleanedBasePrompt);
+      const hasNsfwSpatialPerspective = isNaturalLanguage
+        ? /\b(?:foreground|background|depth|foreshorten|overlap|clear spatial|spatial depth)\b/i.test(cleanedBasePrompt)
+        : /(?:^|,\s*)(?:foreshortening|foreground_background|depth_of_field|dynamic_perspective)(?:\s*,|$)/i.test(cleanedBasePrompt);
       const resolvedBasePrompt = nsfwRating !== 'sfw'
-        ? uniqueTags([
-            ...cleanedBasePrompt.split(/[,，]/),
-            ...(!hasNsfwViewpoint ? ['three-quarter_view'] : []),
-            ...(!hasNsfwSpatialPerspective ? ['dynamic_perspective', 'depth_of_field'] : [])
-          ]).join(', ')
+        ? (isNaturalLanguage
+            ? uniqueTags([
+                ...cleanedBasePrompt.split(/[,，]/),
+                ...(!hasNsfwViewpoint ? ['A clear single camera angle shows the interaction.'] : []),
+                ...(!hasNsfwSpatialPerspective ? ['The bodies remain spatially readable with foreground and background separation.'] : [])
+              ]).join(', ')
+            : uniqueTags([
+                ...cleanedBasePrompt.split(/[,，]/),
+                ...(!hasNsfwViewpoint ? ['three-quarter_view'] : []),
+                ...(!hasNsfwSpatialPerspective ? ['foreground_background'] : [])
+              ]).join(', '))
         : cleanedBasePrompt;
       const prompt = uniqueTags([
         ...resolvedBasePrompt.split(/[,，]/),
