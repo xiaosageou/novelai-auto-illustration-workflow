@@ -1549,7 +1549,6 @@ export class PipelineManager {
       comparableText(updates.trigger_sentence) !== comparableText(currentScene.trigger_sentence) ||
       comparableText(updates.nsfw_rating) !== comparableText(currentScene.nsfw_rating) ||
       comparableText(updates.visual_description) !== comparableText(currentScene.visual_description || currentScene.scene_desc) ||
-      comparableText(updates.source_context) !== comparableText(currentScene.source_context) ||
       comparableText(updates.core_action) !== comparableText(currentScene.core_action) ||
       stringifyComparable(comparableStringList(updates.character_names)) !== stringifyComparable(comparableStringList(currentScene.character_names))
     );
@@ -1596,6 +1595,7 @@ export class PipelineManager {
       negative_character_prompts: Array.isArray(updates.negative_character_prompts)
         ? updates.negative_character_prompts.map(item => String(item || '').trim()).filter(Boolean)
         : currentScene.negative_character_prompts,
+      source_context: '',
       width: Number.isFinite(Number(updates.width)) ? Number(updates.width) : currentScene.width,
       height: Number.isFinite(Number(updates.height)) ? Number(updates.height) : currentScene.height
     };

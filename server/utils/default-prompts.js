@@ -138,7 +138,6 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
   {
     "scene_idx": 1,
     "trigger_sentence": "逐字复制正文中的连续原文短片段，8-30字，能Ctrl+F精准命中",
-    "source_context": "trigger_sentence 前后最关键的原文上下文，控制在200-400字",
     "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
     "visual_description": "一个瞬间定格的单帧画面，40-80字，只描述这一帧已经看得见的状态",
     "character_names": ["本场景实际可见或直接参与互动的主要人物，最多4人"],
@@ -150,7 +149,6 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 输出前自检（必须逐项核对后再输出）：
 - 场景数量是否与用户消息指定的精确数量完全一致？
 - 每个 trigger_sentence 是否逐字复制自正文，字数在 8-30 字之间，能 Ctrl+F 精准命中？
-- source_context 是否只保留了当前画面直接相关的上下文，而不是整段乱贴？
 - 场景是否覆盖了整章不同事件阶段，而不是集中在章节开头或同一连续段落？
 - 如果本章同时存在 NSFW 与 SFW 场景，是否已经向 NSFW 场景倾斜，多选取 NSFW，适当保留 SFW？
 - SFW 场景数量是否没有超过 NSFW，且只承担必要铺垫、反差、停顿或结果镜头？
@@ -574,7 +572,6 @@ export const DEFAULT_REGENERATE_SCENE_PROMPT = `<sandbox mode="cinematic_storybo
 {
   "scene_idx": 1,
   "trigger_sentence": "传入的触发句本身，必须与传入的字符串完全一致",
-  "source_context": "trigger_sentence 前后最关键的原文上下文，控制在200-400字",
   "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
   "visual_description": "一个瞬间定格的单帧画面，40-80字，只描述这一帧已经看得见的状态，禁止过程动作",
   "character_names": ["本场景实际可见或直接参与互动的主要人物，最多4人"],
@@ -584,7 +581,6 @@ export const DEFAULT_REGENERATE_SCENE_PROMPT = `<sandbox mode="cinematic_storybo
 
 输出前自检（必须逐项核对）：
 - 你的 visual_description 中在涉及 NSFW 裸露动作时是否足够直白、直接描写了对应的衣物状态与器官部位？
-- source_context 是否只保留了触发句前后最关键的相关上下文？
 - visual_description 是否是瞬间定格的单帧画面，而不是“然后、随后、接着”的过程动作？
 - 当前场景的可见人物是否不超过 4 个？若原文是多人场景，是否只保留了最主要的 1-4 个角色？
 - core_action 是否只概括这一帧的核心互动，而不是前后过程？`;

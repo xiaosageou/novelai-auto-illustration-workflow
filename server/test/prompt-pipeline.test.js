@@ -157,7 +157,6 @@ test('scene extraction sends the locally calculated exact count to the LLM', asy
   assert.match(userMessage, /scene_idx 必须从 1 连续编号到 2/);
   assert.match(userMessage, /SCENES_JSON_START/);
   assert.match(userMessage, /SCENES_JSON_END/);
-  assert.match(userMessage, /source_context/);
   assert.match(userMessage, /core_action/);
   assert.doesNotMatch(userMessage, /selection_reason/);
   assert.match(userMessage, /瞬间定格|单帧|过程动作/);
@@ -628,12 +627,10 @@ test('scene normalization preserves lightweight scene-card fields without select
     scene_idx: 1,
     trigger_sentence: '她抬起了头',
     visual_description: '雨夜里她抬头看向门外',
-    source_context: '她抬起了头，雨水顺着脸颊滑落。门外脚步声渐近。',
     core_action: '她抬头看向门外来人',
     character_names: ['她']
   });
 
-  assert.equal(scene.source_context, '她抬起了头，雨水顺着脸颊滑落。门外脚步声渐近。');
   assert.equal(scene.core_action, '她抬头看向门外来人');
   assert.ok(!('selection_reason' in scene) || !scene.selection_reason);
 });
@@ -724,7 +721,6 @@ test('updateSceneCard clears stale derived context when lightweight scene fields
               scene_idx: 1,
               trigger_sentence: '她抬起了头',
               visual_description: '旧描述',
-              source_context: '旧上下文',
               core_action: '旧动作',
               environment: '旧环境',
               cinematography: '旧镜头',
@@ -751,7 +747,6 @@ test('updateSceneCard clears stale derived context when lightweight scene fields
   const result = await pipeline.updateSceneCard('第一卷_第一章', 1, {
     trigger_sentence: '她抬起了头',
     visual_description: '新描述',
-    source_context: '新上下文',
     core_action: '新动作',
     environment: '旧环境',
     cinematography: '旧镜头',
@@ -1276,14 +1271,12 @@ test('advanced prompt receives lightweight scene-card context fields', async () 
   try {
     await extractor.generateScenePromptAdvanced({
       visual_description: '她在雨夜抬头看向门外',
-      source_context: '她抬起了头，雨水顺着脸颊滑落。门外脚步声渐近。',
       core_action: '她抬头看向门外来人',
       characters: [{ name: '甲', gender: 'woman' }]
     }, [], 'test');
 
-    assert.match(capturedUserMessage, /source_context/);
-    assert.match(capturedUserMessage, /门外脚步声渐近/);
     assert.match(capturedUserMessage, /core_action/);
+    assert.doesNotMatch(capturedUserMessage, /source_context/);
     assert.doesNotMatch(capturedUserMessage, /selection_reason/);
   } finally {
     globalThis.fetch = originalFetch;
