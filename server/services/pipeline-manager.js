@@ -1551,7 +1551,6 @@ export class PipelineManager {
       comparableText(updates.visual_description) !== comparableText(currentScene.visual_description || currentScene.scene_desc) ||
       comparableText(updates.source_context) !== comparableText(currentScene.source_context) ||
       comparableText(updates.core_action) !== comparableText(currentScene.core_action) ||
-      comparableText(updates.selection_reason) !== comparableText(currentScene.selection_reason) ||
       stringifyComparable(comparableStringList(updates.character_names)) !== stringifyComparable(comparableStringList(currentScene.character_names))
     );
     const derivedFieldsUnchanged = (
@@ -1594,6 +1593,9 @@ export class PipelineManager {
       character_prompts: Array.isArray(updates.character_prompts)
         ? updates.character_prompts.map(item => String(item || '').trim()).filter(Boolean)
         : currentScene.character_prompts,
+      negative_character_prompts: Array.isArray(updates.negative_character_prompts)
+        ? updates.negative_character_prompts.map(item => String(item || '').trim()).filter(Boolean)
+        : currentScene.negative_character_prompts,
       width: Number.isFinite(Number(updates.width)) ? Number(updates.width) : currentScene.width,
       height: Number.isFinite(Number(updates.height)) ? Number(updates.height) : currentScene.height
     };

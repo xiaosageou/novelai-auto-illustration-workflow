@@ -142,8 +142,7 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
     "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
     "visual_description": "一个瞬间定格的单帧画面，40-80字，只描述这一帧已经看得见的状态",
     "character_names": ["本场景实际可见或直接参与互动的主要人物，最多4人"],
-    "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触",
-    "selection_reason": "20-40字说明为什么这一帧适合作为插画"
+    "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触"
   }
 ]
 </sandbox>
@@ -160,8 +159,7 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 - character_names 是否只保留了主要人物，并严格不超过 4 人？
 - 每个 nsfw_rating 是否是 sfw / nsfw_mild / nsfw_moderate / nsfw_explicit 四选一？
 - 若 nsfw_rating 为 nsfw_moderate 或 nsfw_explicit，visual_description 中是否已包含极其直白的裸露/身体描写细节，绝对禁止隐喻和意境规避？
-- core_action 是否只概括这一帧的核心互动，而不是讲述前后过程？
-- selection_reason 是否说明了这张图值得画的原因？`;
+- core_action 是否只概括这一帧的核心互动，而不是讲述前后过程？`;
 
 // ═══════════════════════════════════════════════════════════
 // Prompt 2 · 全书角色 DNA 提取（小说切片 → 角色外观词典）
@@ -580,8 +578,7 @@ export const DEFAULT_REGENERATE_SCENE_PROMPT = `<sandbox mode="cinematic_storybo
   "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
   "visual_description": "一个瞬间定格的单帧画面，40-80字，只描述这一帧已经看得见的状态，禁止过程动作",
   "character_names": ["本场景实际可见或直接参与互动的主要人物，最多4人"],
-  "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触",
-  "selection_reason": "20-40字说明为什么这一帧适合作为插画"
+  "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触"
 }
 </sandbox>
 

@@ -10,6 +10,39 @@ import { mergeProjectProgressSnapshot } from './projectProgressState.js';
 
 const API_BASE = import.meta.env.DEV ? "http://localhost:5001" : "";
 
+function AutoResizeTextarea({ style, value, onChange, minRows = 2, ...props }) {
+  const textareaRef = useRef(null);
+
+  const resize = () => {
+    const element = textareaRef.current;
+    if (!element) return;
+    element.style.height = 'auto';
+    element.style.height = `${element.scrollHeight}px`;
+  };
+
+  useEffect(() => {
+    resize();
+  }, [value]);
+
+  return (
+    <textarea
+      {...props}
+      ref={textareaRef}
+      rows={minRows}
+      value={value}
+      onChange={(event) => {
+        onChange?.(event);
+        requestAnimationFrame(resize);
+      }}
+      style={{
+        ...style,
+        resize: 'none',
+        overflow: 'hidden'
+      }}
+    />
+  );
+}
+
 function App() {
   // 核心业务状态
   const [config, setConfig] = useState({
@@ -1109,7 +1142,6 @@ function App() {
     visual_description: String(scene.visual_description || scene.scene_desc || ''),
     source_context: String(scene.source_context || ''),
     core_action: String(scene.core_action || ''),
-    selection_reason: String(scene.selection_reason || ''),
     environment: String(scene.environment || ''),
     cinematography: String(scene.cinematography || ''),
     interactions: String(scene.interactions || ''),
@@ -1123,6 +1155,9 @@ function App() {
     final_negative: String(scene.final_negative || scene.prepared_prompt?.finalNegative || ''),
     character_prompts: Array.isArray(scene.character_prompts || scene.prepared_prompt?.characterPrompts)
       ? (scene.character_prompts || scene.prepared_prompt?.characterPrompts).join('\n')
+      : '',
+    negative_character_prompts: Array.isArray(scene.negative_character_prompts || scene.prepared_prompt?.negativeCharacterPrompts)
+      ? (scene.negative_character_prompts || scene.prepared_prompt?.negativeCharacterPrompts).join('\n')
       : '',
     width: scene.width || scene.prepared_prompt?.width || '',
     height: scene.height || scene.prepared_prompt?.height || '',
@@ -1180,7 +1215,6 @@ function App() {
     visual_description: String(draft.visual_description || '').trim(),
     source_context: String(draft.source_context || '').trim(),
     core_action: String(draft.core_action || '').trim(),
-    selection_reason: String(draft.selection_reason || '').trim(),
     environment: String(draft.environment || '').trim(),
     cinematography: String(draft.cinematography || '').trim(),
     interactions: String(draft.interactions || '').trim(),
@@ -1193,6 +1227,10 @@ function App() {
     base_prompt: String(draft.base_prompt || '').trim(),
     final_negative: String(draft.final_negative || '').trim(),
     character_prompts: String(draft.character_prompts || '')
+      .split(/\r?\n/)
+      .map(item => item.trim())
+      .filter(Boolean),
+    negative_character_prompts: String(draft.negative_character_prompts || '')
       .split(/\r?\n/)
       .map(item => item.trim())
       .filter(Boolean),
@@ -2269,17 +2307,16 @@ function App() {
                     ['visual_description', 'Visual Description', 4],
                     ['source_context', 'Source Context', 4],
                     ['core_action', 'Core Action', 2],
-                    ['selection_reason', 'Selection Reason', 2],
                     ['character_names', 'Character Names', 2]
                   ].map(([field, label, rows]) => (
                     <label key={field} style={sceneEditorLabelStyle}>
                       {label}
-                      <textarea
+                      <AutoResizeTextarea
                         style={{
                           ...sceneEditorTextareaStyle,
                           background: 'linear-gradient(180deg, rgba(8,11,26,0.82), rgba(12,18,38,0.72))'
                         }}
-                        rows={rows}
+                        minRows={rows}
                         value={sceneEditor.draft[field]}
                         onChange={(e) => updateSceneDraft(draft => ({ ...draft, [field]: e.target.value }))}
                       />
@@ -2325,7 +2362,7 @@ function App() {
                   ].map(([field, label, rows]) => (
                     <label key={field} style={sceneEditorLabelStyle}>
                       {label}
-                      <textarea style={sceneEditorTextareaStyle} rows={rows} value={sceneEditor.draft[field]} onChange={(e) => updateSceneDraft(draft => ({ ...draft, [field]: e.target.value }))} />
+                      <AutoResizeTextarea style={sceneEditorTextareaStyle} minRows={rows} value={sceneEditor.draft[field]} onChange={(e) => updateSceneDraft(draft => ({ ...draft, [field]: e.target.value }))} />
                     </label>
                   ))}
                 </div>
@@ -2413,7 +2450,7 @@ function App() {
                         删除
                       </button>
                     </div>
-                    <textarea style={sceneEditorTextareaStyle} rows={2} placeholder="description" value={entity.description} onChange={(e) => updateSceneDraft(draft => ({ ...draft, visual_entities: draft.visual_entities.map((item, itemIndex) => itemIndex === index ? { ...item, description: e.target.value } : item) }))} />
+                    <AutoResizeTextarea style={sceneEditorTextareaStyle} minRows={2} placeholder="description" value={entity.description} onChange={(e) => updateSceneDraft(draft => ({ ...draft, visual_entities: draft.visual_entities.map((item, itemIndex) => itemIndex === index ? { ...item, description: e.target.value } : item) }))} />
                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                       <input type="checkbox" checked={entity.must_show !== false} onChange={(e) => updateSceneDraft(draft => ({ ...draft, visual_entities: draft.visual_entities.map((item, itemIndex) => itemIndex === index ? { ...item, must_show: e.target.checked } : item) }))} />
                       must_show
@@ -2434,6 +2471,7 @@ function App() {
                           sceneEditor.draft.final_prompt && `正向提示词:\n${sceneEditor.draft.final_prompt}`,
                           sceneEditor.draft.base_prompt && `V4 Base Prompt:\n${sceneEditor.draft.base_prompt}`,
                           sceneEditor.draft.character_prompts && `V4 Character Prompts:\n${sceneEditor.draft.character_prompts}`,
+                          sceneEditor.draft.negative_character_prompts && `V4 Character Negative Prompts:\n${sceneEditor.draft.negative_character_prompts}`,
                           sceneEditor.draft.final_negative && `负向提示词:\n${sceneEditor.draft.final_negative}`
                         ].filter(Boolean);
                         navigator.clipboard.writeText(parts.join('\n\n'));
@@ -2447,11 +2485,12 @@ function App() {
                     ['final_prompt', 'Final Prompt', 4],
                     ['base_prompt', 'Base Prompt', 4],
                     ['character_prompts', 'Character Prompts (一行一个)', 4],
+                    ['negative_character_prompts', 'Character Negative Prompts (一行一个)', 4],
                     ['final_negative', 'Final Negative', 3]
                   ].map(([field, label, rows]) => (
                     <label key={field} style={sceneEditorLabelStyle}>
                       {label}
-                      <textarea style={sceneEditorTextareaStyle} rows={rows} value={sceneEditor.draft[field]} onChange={(e) => updateSceneDraft(draft => ({ ...draft, [field]: e.target.value }))} />
+                      <AutoResizeTextarea style={sceneEditorTextareaStyle} minRows={rows} value={sceneEditor.draft[field]} onChange={(e) => updateSceneDraft(draft => ({ ...draft, [field]: e.target.value }))} />
                     </label>
                   ))}
                 </div>

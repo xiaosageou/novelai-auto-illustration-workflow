@@ -159,7 +159,7 @@ test('scene extraction sends the locally calculated exact count to the LLM', asy
   assert.match(userMessage, /SCENES_JSON_END/);
   assert.match(userMessage, /source_context/);
   assert.match(userMessage, /core_action/);
-  assert.match(userMessage, /selection_reason/);
+  assert.doesNotMatch(userMessage, /selection_reason/);
   assert.match(userMessage, /瞬间定格|单帧|过程动作/);
   assert.match(userMessage, /NSFW/);
   assert.match(userMessage, /多选取.*NSFW|向\s*NSFW\s*场景倾斜/);
@@ -623,20 +623,19 @@ test('scene normalization limits visible characters to four primary people', () 
   assert.equal(groupScene.interaction_actions[0].source, '甲');
 });
 
-test('scene normalization preserves lightweight scene-card fields', () => {
+test('scene normalization preserves lightweight scene-card fields without selection reason', () => {
   const scene = normalizeSceneCard({
     scene_idx: 1,
     trigger_sentence: '她抬起了头',
     visual_description: '雨夜里她抬头看向门外',
     source_context: '她抬起了头，雨水顺着脸颊滑落。门外脚步声渐近。',
     core_action: '她抬头看向门外来人',
-    selection_reason: '情绪与来人压迫感在这一帧交汇',
     character_names: ['她']
   });
 
   assert.equal(scene.source_context, '她抬起了头，雨水顺着脸颊滑落。门外脚步声渐近。');
   assert.equal(scene.core_action, '她抬头看向门外来人');
-  assert.equal(scene.selection_reason, '情绪与来人压迫感在这一帧交汇');
+  assert.ok(!('selection_reason' in scene) || !scene.selection_reason);
 });
 
 test('updateSceneCard persists edited structured scene fields', async () => {
@@ -690,16 +689,19 @@ test('updateSceneCard persists edited structured scene fields', async () => {
       { name: '丁', pose: '后方' },
       { name: '戊', pose: '远景路人' }
     ],
-    character_names: ['甲', '乙', '丙', '丁', '戊']
+    character_names: ['甲', '乙', '丙', '丁', '戊'],
+    negative_character_prompts: ['avoid_long_hair', 'avoid_armor']
   });
 
   assert.equal(result.scene.visual_description, '新描述');
   assert.equal(result.scene.characters.length, 4);
   assert.deepEqual(result.scene.character_names, ['甲', '乙', '丙', '丁']);
+  assert.deepEqual(result.scene.negative_character_prompts, ['avoid_long_hair', 'avoid_armor']);
 
   const saved = JSON.parse(await fs.readFile(path.join(projectDir, 'pipeline_progress.json'), 'utf-8'));
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].visual_description, '新描述');
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].characters.length, 4);
+  assert.deepEqual(saved.completed_chapters['第一卷_第一章'].scenes[0].negative_character_prompts, ['avoid_long_hair', 'avoid_armor']);
 });
 
 test('updateSceneCard clears stale derived context when lightweight scene fields change', async () => {
@@ -724,7 +726,6 @@ test('updateSceneCard clears stale derived context when lightweight scene fields
               visual_description: '旧描述',
               source_context: '旧上下文',
               core_action: '旧动作',
-              selection_reason: '旧理由',
               environment: '旧环境',
               cinematography: '旧镜头',
               interactions: '旧互动',
@@ -752,7 +753,6 @@ test('updateSceneCard clears stale derived context when lightweight scene fields
     visual_description: '新描述',
     source_context: '新上下文',
     core_action: '新动作',
-    selection_reason: '新理由',
     environment: '旧环境',
     cinematography: '旧镜头',
     interactions: '旧互动',
@@ -1268,14 +1268,57 @@ test('advanced prompt receives lightweight scene-card context fields', async () 
       visual_description: '她在雨夜抬头看向门外',
       source_context: '她抬起了头，雨水顺着脸颊滑落。门外脚步声渐近。',
       core_action: '她抬头看向门外来人',
-      selection_reason: '情绪与来人压迫感在这一帧交汇',
       characters: [{ name: '甲', gender: 'woman' }]
     }, [], 'test');
 
     assert.match(capturedUserMessage, /source_context/);
     assert.match(capturedUserMessage, /门外脚步声渐近/);
     assert.match(capturedUserMessage, /core_action/);
-    assert.match(capturedUserMessage, /selection_reason/);
+    assert.doesNotMatch(capturedUserMessage, /selection_reason/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('advanced prompt tolerates character_prompts count mismatch without hard failure', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+  extractor.searchDanbooruTags = async () => ({ results: [] });
+  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
+
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async (_url, options) => {
+    fetchCount += 1;
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              orientation: 'square',
+              base_prompt: 'empty station platform, cold light',
+              character_prompts: [
+                { name: '甲', prompt: 'girl, black_hair', negative_prompt: '', interaction_actions: [] },
+                { name: '乙', prompt: 'boy, white_shirt', negative_prompt: '', interaction_actions: [] }
+              ],
+              negative_prompt: ''
+            })
+          }
+        }]
+      })
+    };
+  };
+
+  try {
+    const result = await extractor.generateScenePromptAdvanced({
+      visual_description: '空荡站台上只有冷光和风声，没有实际可见人物',
+      characters: []
+    }, [], 'test');
+
+    assert.equal(result.base_prompt, 'empty station platform, cold light');
+    assert.equal(result.character_prompts.length, 2);
+    assert.equal(fetchCount, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
