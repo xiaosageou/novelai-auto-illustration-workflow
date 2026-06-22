@@ -11,7 +11,7 @@ import { globalCooldownManager } from './utils/cooldown.js';
 import { enqueueUniqueJob, removeQueuedJobs } from './utils/job-queue.js';
 import { readJson, writeJsonAtomic } from './utils/db.js';
 import { parseFile } from './utils/file-parser.js';
-import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL, DEFAULT_ADVANCED_PROMPT_LEGACY } from './utils/default-prompts.js';
+import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL } from './utils/default-prompts.js';
 
 const BASE_DIR = process.cwd();
 const CONFIG_PATH = path.join(BASE_DIR, 'illustrator_config.json');
@@ -50,7 +50,6 @@ const DEFAULT_CONFIG = {
   cjk_scene_divisor: 600,
   english_scene_divisor: 350,
   proxy_url: "",
-  danbooru_mcp_url: "https://sakizuki-danboorusearch.hf.space/mcp/mcp,https://sakizuki-danboorusearchonline.ms.show/mcp/mcp",
   useVibeTransfer: false,
   vibeBundlePath: "2026-06-04.naiv4vibebundle",
   vibeStrength: 0.45,
@@ -60,9 +59,8 @@ const DEFAULT_CONFIG = {
   nai_url: "https://image.novelai.net",
   system_prompt_extract_scenes: DEFAULT_EXTRACT_SCENES_PROMPT,
   system_prompt_character_dna: DEFAULT_CHARACTER_DNA_PROMPT,
-  system_prompt_advanced_prompt: DEFAULT_ADVANCED_PROMPT_LEGACY,
   system_prompt_advanced_prompt_nl: DEFAULT_ADVANCED_PROMPT_V45_NL,
-  prompt_style: 'natural_language'
+  system_prompt_advanced_prompt: DEFAULT_ADVANCED_PROMPT
 };
 
 function runningInDocker() {
@@ -724,7 +722,7 @@ app.post('/api/projects/:projectName/character-dna-slices/:sliceIndex/update', a
   }
 });
 
-// 覆盖更新指定角色 DNA tags
+// 覆盖更新指定角色 DNA 外貌短语（保留旧路由以兼容已有前端/项目数据）
 app.put('/api/projects/:projectName/characters/:characterName/tags', async (req, res) => {
   try {
     const { projectName, characterName } = req.params;
@@ -743,7 +741,7 @@ app.put('/api/projects/:projectName/characters/:characterName/tags', async (req,
     await pipeline.projectProgress.save();
     res.json({
       success: true,
-      message: `角色「${characterName}」DNA tags 已更新`,
+      message: `角色「${characterName}」DNA 外貌短语已更新`,
       character: pipeline.projectProgress.getGlobalCharacters()[characterName]
     });
   } catch (error) {

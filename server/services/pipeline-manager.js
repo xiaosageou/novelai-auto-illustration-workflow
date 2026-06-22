@@ -132,8 +132,6 @@ export class PipelineManager {
       system_prompt_character_dna: this.config.system_prompt_character_dna || "",
       system_prompt_advanced_prompt: this.config.system_prompt_advanced_prompt || "",
       system_prompt_advanced_prompt_nl: this.config.system_prompt_advanced_prompt_nl || "",
-      danbooru_mcp_url: this.config.danbooru_mcp_url || "",
-      prompt_style: this.config.prompt_style || "natural_language",
       rateLimitEnabled: connection.rateLimitEnabled,
       rateLimitRpm: connection.rateLimitRpm,
       rateLimitKey: connection.rateLimitKey,
@@ -765,7 +763,7 @@ export class PipelineManager {
       sceneMustNotShow: scene.must_not_show || [],
       artistStylePrompt: this.config.artistStylePrompt || "",
       useCharacterSegments: false,
-      useNaturalLanguage: (this.config.prompt_style || "natural_language") === "natural_language"
+      useNaturalLanguage: true
     });
 
     // 将完整 Prompt 参数持久化到场景卡片
@@ -1241,7 +1239,7 @@ export class PipelineManager {
   }
 
   /**
-   * 仅使用场景已保存的最终 Prompt 重绘，不调用 LLM 或 MCP。
+   * 仅使用场景已保存的最终 Prompt 重绘，不调用 LLM。
    */
   async redrawSceneWithSavedPrompt(chapterKey, sceneIdx, { interleaved = false } = {}) {
     if (!interleaved) {

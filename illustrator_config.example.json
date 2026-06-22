@@ -18,7 +18,6 @@
   "scale": 5.5,
   "sampler": "k_euler_ancestral",
   "noiseSchedule": "karras",
-  "danbooru_mcp_url": "https://sakizuki-danboorusearch.hf.space/mcp/mcp,https://sakizuki-danboorusearchonline.ms.show/mcp/mcp",
   "useVibeTransfer": false,
   "vibeBundlePath": "2026-06-04.naiv4vibebundle",
   "vibeStrength": 0.45,

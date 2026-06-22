@@ -13,7 +13,6 @@ import {
   countEnglishWords,
   getSceneCountMetrics,
   LLMExtractor,
-  mapVisualTextToTags,
   postChatCompletionWith429Retry,
   readLlmResponse,
   SCENES_JSON_END,
@@ -22,7 +21,6 @@ import {
 import { NovelAIClient } from '../services/nai-client.js';
 import { globalCooldownManager } from '../utils/cooldown.js';
 import {
-  buildCharacterInteractionTags,
   buildFinalImagePrompt,
   enforceV45PromptBudget,
   estimateV45Tokens
@@ -766,14 +764,6 @@ test('updateSceneCard clears stale derived context when lightweight scene fields
   assert.deepEqual(result.scene.must_not_show, []);
 });
 
-test('explicit vaginal fluids only map to generic physical evidence, leaving explicit tag choice to MCP and LLM', () => {
-  const tagText = mapVisualTextToTags('钰慧的大腿间有大量的淫水顺着流下，滴在沙滩上。').join(', ');
-
-  assert.match(tagText, /wet_thighs/);
-  assert.doesNotMatch(tagText, /pussy_juice|cumdrip/);
-  assert.doesNotMatch(tagText, /\bsweat\b/);
-});
-
 test('legacy custom advanced prompt receives the current structured output contract', () => {
   const legacyPrompt = `Output JSON:
 {
@@ -1039,8 +1029,6 @@ test('LLM response extraction supports content parts and fake-stream SSE chunks'
 
 test('legacy LLM prompt output is rejected without deterministic fallback', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
-  extractor.searchDanbooruTags = async () => ({ results: [] });
-  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
 
   const originalFetch = globalThis.fetch;
   let fetchCount = 0;
@@ -1080,8 +1068,6 @@ test('legacy LLM prompt output is rejected without deterministic fallback', asyn
 
 test('advanced prompt retries truncated JSON before accepting valid structured output', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
-  extractor.searchDanbooruTags = async () => ({ results: [] });
-  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
 
   const originalFetch = globalThis.fetch;
   let fetchCount = 0;
@@ -1122,8 +1108,6 @@ test('advanced prompt retries truncated JSON before accepting valid structured o
 
 test('advanced prompt asks LLM to self-trim when estimated tokens exceed 460', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
-  extractor.searchDanbooruTags = async () => ({ results: [] });
-  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
 
   const originalFetch = globalThis.fetch;
   let fetchCount = 0;
@@ -1184,8 +1168,6 @@ test('advanced prompt asks LLM to self-trim when estimated tokens exceed 460', a
 
 test('NSFW advanced prompt asks for camera choice and adds light fallback when LLM omits it', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
-  extractor.searchDanbooruTags = async () => ({ results: [] });
-  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
 
   const originalFetch = globalThis.fetch;
   let capturedUserMessage = '';
@@ -1235,8 +1217,6 @@ test('NSFW advanced prompt asks for camera choice and adds light fallback when L
 
 test('advanced prompt receives lightweight scene-card context fields', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
-  extractor.searchDanbooruTags = async () => ({ results: [] });
-  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
 
   const originalFetch = globalThis.fetch;
   let capturedUserMessage = '';
@@ -1283,8 +1263,6 @@ test('advanced prompt receives lightweight scene-card context fields', async () 
 
 test('advanced prompt tolerates character_prompts count mismatch without hard failure', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
-  extractor.searchDanbooruTags = async () => ({ results: [] });
-  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
 
   const originalFetch = globalThis.fetch;
   let fetchCount = 0;
@@ -1327,8 +1305,6 @@ test('advanced prompt tolerates character_prompts count mismatch without hard fa
 
 test('self-directed undressing does not require a target interaction marker on another character', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
-  extractor.searchDanbooruTags = async () => ({ results: [] });
-  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({
@@ -1391,8 +1367,6 @@ test('self-directed undressing does not require a target interaction marker on a
 
 test('LLM can explicitly disable pairing validation for non-paired actions like crying', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
-  extractor.searchDanbooruTags = async () => ({ results: [] });
-  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({
@@ -1454,8 +1428,6 @@ test('LLM can explicitly disable pairing validation for non-paired actions like 
 
 test('advanced prompt validation accepts directional penetration roles', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
-  extractor.searchDanbooruTags = async () => ({ results: [] });
-  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({
@@ -1511,8 +1483,9 @@ test('advanced prompt validation accepts directional penetration roles', async (
       }]
     }, [], 'test');
 
-    assert.equal(result.character_prompts[0].interaction_actions[0].role, 'source');
-    assert.equal(result.character_prompts[1].interaction_actions[0].role, 'target');
+    assert.equal(result.character_prompts[0].name, '阿宾');
+    assert.equal(result.character_prompts[1].name, '王忆如');
+    assert.ok(!('interaction_actions' in result.character_prompts[0]));
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1520,8 +1493,6 @@ test('advanced prompt validation accepts directional penetration roles', async (
 
 test('advanced prompt validation ignores mutual hints for directional sex', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
-  extractor.searchDanbooruTags = async () => ({ results: [] });
-  extractor.getRelatedDanbooruTags = async () => ({ results: [] });
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({
@@ -1533,25 +1504,16 @@ test('advanced prompt validation ignores mutual hints for directional sex', asyn
           content: JSON.stringify({
             orientation: 'square',
             base_prompt: 'nsfw, explicit, 1girl, 1boy, bedroom',
-            interaction_requirements: [{
-              action: 'sex',
-              source: '阿宾',
-              target: '王忆如',
-              requires_pairing: true,
-              mutual: false
-            }],
             character_prompts: [
               {
                 name: '阿宾',
                 prompt: 'boy, short_hair, completely_nude, leaning_forward',
-                negative_prompt: '',
-                interaction_actions: [{ role: 'source', action: 'sex' }]
+                negative_prompt: ''
               },
               {
                 name: '王忆如',
                 prompt: 'girl, long_hair, completely_nude, lying_on_back',
-                negative_prompt: '',
-                interaction_actions: [{ role: 'target', action: 'sex' }]
+                negative_prompt: ''
               }
             ],
             negative_prompt: ''
@@ -1577,14 +1539,15 @@ test('advanced prompt validation ignores mutual hints for directional sex', asyn
       }]
     }, [], 'test');
 
-    assert.equal(result.character_prompts[0].interaction_actions[0].role, 'source');
-    assert.equal(result.character_prompts[1].interaction_actions[0].role, 'target');
+    assert.equal(result.character_prompts[0].name, '阿宾');
+    assert.equal(result.character_prompts[1].name, '王忆如');
+    assert.equal(result.interaction_actions, undefined);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('directional sex actions preserve source and target markers in final prompts', () => {
+test('directional sex actions add natural language interaction context without role markers', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, bedroom, sex', {
     sceneCharacters: [
       { name: '钰慧', gender: 'woman', position: 'left' },
@@ -1600,12 +1563,12 @@ test('directional sex actions preserve source and target markers in final prompt
     sceneNsfwRating: 'nsfw_explicit'
   });
 
-  assert.match(result.characterPrompts[0], /target#sex/);
-  assert.match(result.characterPrompts[1], /source#sex/);
-  assert.doesNotMatch(result.characterPrompts.join(' '), /mutual#sex/);
+  assert.match(result.characterPrompts[0], /receives sex from the man on the right/i);
+  assert.match(result.characterPrompts[1], /performs sex on the woman on the left/i);
+  assert.doesNotMatch(result.characterPrompts.join(' '), /(?:source|target|mutual)#/);
 });
 
-test('directional sex actions ignore mutual hints and still emit source target markers', () => {
+test('directional sex actions ignore mutual hints in natural language context', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, bedroom, sex', {
     sceneCharacters: [
       { name: '王忆如', gender: 'woman', position: 'left' },
@@ -1621,9 +1584,9 @@ test('directional sex actions ignore mutual hints and still emit source target m
     sceneNsfwRating: 'nsfw_explicit'
   });
 
-  assert.match(result.characterPrompts[0], /target#sex/);
-  assert.match(result.characterPrompts[1], /source#sex/);
-  assert.doesNotMatch(result.characterPrompts.join(' '), /mutual#sex/);
+  assert.match(result.characterPrompts[0], /receives sex from the man on the right/i);
+  assert.match(result.characterPrompts[1], /performs sex on the woman on the left/i);
+  assert.doesNotMatch(result.characterPrompts.join(' '), /(?:source|target|mutual)#/);
 });
 
 test('penetration scenes only keep inset xray guidance when explicitly requested', () => {
@@ -1703,13 +1666,13 @@ test('three-character interaction graph keeps both directed contacts and partner
     { x: 0.5, y: 0.5 },
     { x: 0.7, y: 0.7 }
   ]);
-  assert.match(result.characterPrompts[0], /source#penetration/);
+  assert.match(result.characterPrompts[0], /performs penetration on the woman in the center/i);
   assert.match(result.characterPrompts[0], /woman in the center/);
-  assert.match(result.characterPrompts[1], /target#penetration/);
-  assert.match(result.characterPrompts[1], /target#sucking_nipple/);
+  assert.match(result.characterPrompts[1], /receives penetration from the man on the left/i);
+  assert.match(result.characterPrompts[1], /receives sucking nipple from the woman on the right/i);
   assert.match(result.characterPrompts[1], /man on the left/);
   assert.match(result.characterPrompts[1], /woman on the right/);
-  assert.match(result.characterPrompts[2], /source#sucking_nipple/);
+  assert.match(result.characterPrompts[2], /performs sucking nipple on the woman in the center/i);
   assert.match(result.characterPrompts[2], /woman in the center/);
   assert.match(result.basePrompt, /single unified three-character composition/);
   assert.match(result.basePrompt, /readable interaction graph/);
@@ -2133,59 +2096,21 @@ test('NAI 429 retries use exponential backoff before degraded mode', async () =>
   assert.deepEqual(waits, [15000, 30000]);
 });
 
-test('interaction actions map source, target, and mutual roles to NAI V4.5 tags', () => {
-  const characters = [{ name: '甲' }, { name: '乙' }];
-  assert.deepEqual(
-    buildCharacterInteractionTags(characters, [
-      { action: 'hug', source: '甲', target: '乙', mutual: false }
-    ]),
-    [['source#hug'], ['target#hug']]
-  );
-  assert.deepEqual(
-    buildCharacterInteractionTags(characters, [
-      { action: 'kiss', source: '甲', target: '乙', mutual: true }
-    ]),
-    [['mutual#kiss'], ['mutual#kiss']]
-  );
-  assert.deepEqual(
-    buildCharacterInteractionTags(characters, [], [
-      {
-        name: '甲',
-        interaction_actions: [
-          { role: 'source', action: 'grabbing' },
-          { role: 'mutual', action: 'looking_at_another' }
-        ]
-      },
-      {
-        name: '乙',
-        interaction_actions: [
-          { role: 'target', action: 'grabbing' },
-          { role: 'mutual', action: 'looking_at_another' }
-        ]
-      }
-    ]),
-    [
-      ['source#grabbing', 'mutual#looking_at_another'],
-      ['target#grabbing', 'mutual#looking_at_another']
-    ]
-  );
-});
-
-test('V4.5 prompt budget keeps interaction and identity tags under the shared limit', () => {
+test('V4.5 prompt budget keeps interaction and identity phrases under the shared limit', () => {
   const filler = Array.from({ length: 250 }, (_, index) => `decorative_detail_${index}`).join(', ');
   const budgeted = enforceV45PromptBudget(
     `1girl, 1boy, exactly_two_characters, ${filler}`,
     [
-      `girl, blonde_hair, blue_eyes, source#hug, ${filler}`,
-      `boy, black_hair, red_eyes, target#hug, ${filler}`
+      `girl, blonde_hair, blue_eyes, performs hug on the man on the right, ${filler}`,
+      `boy, black_hair, red_eyes, receives hug from the woman on the left, ${filler}`
     ],
     460
   );
 
   assert.ok(budgeted.estimatedTokens <= 460);
   assert.match(budgeted.basePrompt, /exactly_two_characters/);
-  assert.match(budgeted.characterPrompts[0], /source#hug/);
-  assert.match(budgeted.characterPrompts[1], /target#hug/);
+  assert.match(budgeted.characterPrompts[0], /performs hug/);
+  assert.match(budgeted.characterPrompts[1], /receives hug/);
 });
 
 test('V4.5 prompt budget preserves artist style prompt under the shared limit', () => {
@@ -2206,15 +2131,15 @@ test('V4.5 prompt budget preserves artist style prompt under the shared limit', 
   assert.match(result.basePrompt, /artist:rella/);
 });
 
-test('V4.5 token estimator stays close to NovelAI web count for mixed NL and tag prompts', () => {
+test('V4.5 token estimator stays close to NovelAI web count for mixed natural language prompts', () => {
   const basePrompt = `3girls, 3boys, Laboratory interior with cool fluorescent light. Symmetric composition: three girls bent over in rear compartments, three boys standing in front. Convex lenses reflect buttocks, mirrors show faces. Viewed from slightly elevated front angle, with clear foreground/background depth. nsfw, explicit. The main scene shows a full external view. A single magnified inset reveals vaginal penetration in cross-section, focusing on one couple., three-quarter_view, dynamic_perspective, depth_of_field, consistent character scale, same ground plane., single unified three-character composition, distinct left center right staging, readable interaction graph, single unified composition, shared central action, overlapping silhouettes, connected pose., single magnified inset showing cross-section penetration focus., single coherent image., 1.3::masterpiece, best quality ::, official art, year2024, year2025, 1.3::artist:youngjoo kjy ::, artist:nardack, artist:rella, artist:qiandaiyiyu, artist:atdan, artist:void_0, artist:stu_dts, artist:wo_jiushi_kanbudong, artist:nixeu, -3::3D ::, rim lighting, deep shadows, high contrast, no text`;
   const characterPrompts = [
-    `1girl, exposing curly pubic hair. Bent over presenting hindquarters, expression blank with lips pressed., average height, target#vaginal_penetration`,
-    `1boy, Black-haired lean boy with aristocratic features. Pants off, penis erect. Heavy breathing, burning gaze fixed on red-dressed woman, standing ready., slightly shorter, source#vaginal_penetration`,
-    `1girl, lower body nude. Bent over presenting hindquarters, slight smile on lips., slightly taller, target#vaginal_penetration`,
-    `1boy, Short black-haired boy with average build. Shirt on, pants removed exposing erect penis. Standing with focused excited expression, preparing to penetrate., determined, focused eyes, firm expression, average height, source#vaginal_penetration`,
-    `1girl, Black-haired young woman with dark eyes, lower body exposed. Bent over presenting hindquarters, resigned frown on brow., average height, target#vaginal_penetration`,
-    `1boy, Brown-haired stocky boy with large penis fully erect. Pants removed. Heavy breath, eager expression, standing with penis aimed forward., average height, source#vaginal_penetration`
+    `1girl, exposing curly pubic hair. Bent over presenting hindquarters, expression blank with lips pressed., average height, receives vaginal penetration from the man in front`,
+    `1boy, Black-haired lean boy with aristocratic features. Pants off, penis erect. Heavy breathing, burning gaze fixed on red-dressed woman, standing ready., slightly shorter, performs vaginal penetration on the woman behind`,
+    `1girl, lower body nude. Bent over presenting hindquarters, slight smile on lips., slightly taller, receives vaginal penetration from the man in front`,
+    `1boy, Short black-haired boy with average build. Shirt on, pants removed exposing erect penis. Standing with focused excited expression, preparing to penetrate., determined, focused eyes, firm expression, average height, performs vaginal penetration on the woman behind`,
+    `1girl, Black-haired young woman with dark eyes, lower body exposed. Bent over presenting hindquarters, resigned frown on brow., average height, receives vaginal penetration from the man in front`,
+    `1boy, Brown-haired stocky boy with large penis fully erect. Pants removed. Heavy breath, eager expression, standing with penis aimed forward., average height, performs vaginal penetration on the woman behind`
   ];
 
   const estimated = estimateV45Tokens([basePrompt, ...characterPrompts].join(', '));
@@ -2248,8 +2173,8 @@ test('character prompts follow left-to-right order with aligned UC and interacti
   });
 
   assert.match(result.characterPrompts[0], /blonde_hair/);
-  assert.match(result.characterPrompts[0], /source#hug/);
-  assert.match(result.characterPrompts[0], /performs hug on the other character from the left/);
+  assert.doesNotMatch(result.characterPrompts.join(' '), /(?:source|target|mutual)#/);
+  assert.match(result.characterPrompts[0], /performs hug on the man on the right from the left/);
   assert.deepEqual(result.negativeCharacterPrompts, [
     'black_hair, black_shirt',
     'blonde_hair, white_dress'

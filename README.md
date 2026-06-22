@@ -1,13 +1,12 @@
 # NovelAI Illustrator
 
-一个用于小说批量配图的本地工作台。项目使用 React + Vite 前端和 Node.js 后端，围绕章节拆分、场景提炼、Danbooru MCP 标签检索、NovelAI 出图、断点续跑和后续 EPUB 导出组织整条流水线。
+一个用于小说批量配图的本地工作台。项目使用 React + Vite 前端和 Node.js 后端，围绕章节拆分、场景提炼、自然语言 Prompt 合成、NovelAI 出图、断点续跑和后续 EPUB 导出组织整条流水线。
 
 ## 当前能力
 
 - 导入 `.txt`、`.docx`、`.epub`、`.pdf` 小说文件并创建项目
 - 自动解析卷章结构：中文按 `ceil(有效字符数 / 600)`，英文按 `ceil(总词数 / 350)` 生成分镜场景
-- 使用 LLM 生成结构化场景描述和最终生图 Prompt
-- 通过 Danbooru MCP 服务补全标签和场景语义
+- 使用 LLM 生成结构化场景描述和 V4.5 自然语言生图 Prompt
 - 调用 NovelAI V4.5 / V4 系列模型生成插图
 - 支持 Vibe Transfer、多角色场景、单场景重绘、仅 NAI 重绘
 - 支持章节级断点续跑、失败记录、SSE 实时日志和冷却状态同步
@@ -29,7 +28,6 @@
 - Windows PowerShell 或 CMD
 - 可访问 LLM 接口
 - 可用的 NovelAI Token
-- 可访问的 Danbooru MCP 服务
 
 ## 快速开始
 
@@ -63,7 +61,6 @@ cd ..
 - `llm_model`: 场景提炼与提示词生成使用的模型
 - `nai_token`: NovelAI Bearer Token
 - `nai_model`: 默认 `nai-diffusion-4-5-full`
-- `danbooru_mcp_url`: 一个或多个 MCP 地址，逗号分隔
 - `vibeBundlePath`: 启用 Vibe Transfer 时使用的 bundle 文件
 
 仓库提供 `illustrator_config.example.json` 模板。
@@ -76,7 +73,7 @@ cd ..
 1. 新建项目并导入小说文本
 2. 后端解析卷章并写入 `projects/<项目名>/book.txt`
 3. 流水线生成章节场景卡片并落盘到 `pipeline_progress.json`
-4. 每个场景调用 LLM + Danbooru MCP 生成 Prompt
+4. 每个场景调用 LLM 生成 V4.5 自然语言 Prompt
 5. 调用 NovelAI 生图并保存到 `projects/<项目名>/illustrations/`
 6. 前端通过 SSE 实时接收冷却、进度、日志和失败信息
 
@@ -112,5 +109,5 @@ node --check server\services\nai-client.js
 
 - 默认会尝试使用 `http://127.0.0.1:7890` 作为全局代理
 - `projects/` 下会包含原文、进度和生成图片，体积会持续增长
-- NovelAI、LLM、MCP 的可用性会直接影响流水线稳定性
+- NovelAI 与 LLM 的可用性会直接影响流水线稳定性
 - 如果已有旧进度文件，续跑前应先确认当前配置与模型版本是否一致

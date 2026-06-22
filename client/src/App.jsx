@@ -84,10 +84,8 @@ function App() {
     vibeStrength: 0.45,
     vibeInfoExtracted: 1.0,
     vibeNormalizeStrengths: true,
-    danbooru_mcp_url: "https://sakizuki-danboorusearch.hf.space/mcp/mcp,https://sakizuki-danboorusearchonline.ms.show/mcp/mcp",
     nai_url: "https://image.novelai.net",
     artistStylePrompt: "",
-    prompt_style: "natural_language",
     system_prompt_advanced_prompt_nl: ""
   });
 
@@ -1398,7 +1396,7 @@ function App() {
           </label>
         ))}
         <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-          每个字段输入逗号分隔的结构化标签。保存后会自动重建基础 tags。
+          每个字段输入逗号分隔的结构化视觉短语。保存后会自动重建基础外貌短语。
         </div>
       </div>
     );
@@ -1657,7 +1655,7 @@ function App() {
           <div className="glass-panel" style={{ height: '100%', overflowY: 'auto', padding: '12px' }}>
             {Object.keys(characters).length === 0 ? (
               <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', marginTop: '40px' }}>
-                暂无提取的角色资料，点击上方开始智能分析提取 DNA 标签
+                暂无提取的角色资料，点击上方开始智能分析提取 DNA 特征
               </div>
             ) : (
               Object.entries(characters).map(([name, data]) => (
@@ -1974,7 +1972,7 @@ function App() {
                                   e.stopPropagation();
                                   redrawScene(selectedChapter, scene.scene_idx);
                                 }}
-                                title="重新调用 LLM/MCP 生成 Prompt，然后加入 NAI 串行重绘队列"
+                                title="重新调用 LLM 生成 Prompt，然后加入 NAI 串行重绘队列"
                               >
                                 {isSceneLoading === 'queued'
                                   ? '📋 排队中'
@@ -2809,17 +2807,8 @@ function App() {
                     </div>
                     {renderTaskLlmCard('characterDna', '角色 DNA', '提取和更新人物外貌、别名与稳定特征', '#22c55e')}
                     {renderTaskLlmCard('scene', '场景生成', '章节分镜提取与单场景描述重构', '#38bdf8')}
-                    {renderTaskLlmCard('naiTags', 'NAI Tags', '把分镜与角色 DNA 转换为结构化生图标签', '#c084fc')}
+                    {renderTaskLlmCard('naiTags', '生图 Prompt', '把分镜与角色 DNA 转换为 V4.5 自然语言生图参数', '#c084fc')}
                     {renderTaskLlmCard('trim', 'Prompt 精简', '单词粘连修复与超额预算精简（推荐轻量快速模型）', '#f59e0b')}
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>DanbooruSearchOnline MCP URL</label>
-                    <input
-                      type="text"
-                      value={config.danbooru_mcp_url || ""}
-                      onChange={(e) => setConfig({ ...config, danbooru_mcp_url: e.target.value })}
-                      style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
-                    />
                   </div>
                   <div>
                     <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>NovelAI Token (pst-开头)</label>
@@ -3024,73 +3013,13 @@ function App() {
                     />
                   </div>
 
-                  {/* 生图模式开关 */}
-                  <div style={{ background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.3)', borderRadius: '8px', padding: '12px 14px' }}>
-                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '8px', fontWeight: '600' }}>生图 Prompt 风格模式</label>
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                      <label
-                        style={{
-                          flex: 1, display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px',
-                          borderRadius: '6px', cursor: 'pointer',
-                          background: config.prompt_style !== 'danbooru_tags' ? 'rgba(168,85,247,0.2)' : 'rgba(255,255,255,0.04)',
-                          border: config.prompt_style !== 'danbooru_tags' ? '1px solid rgba(168,85,247,0.6)' : '1px solid var(--border-light)',
-                          transition: 'all 0.2s'
-                        }}
-                      >
-                        <input
-                          type="radio"
-                          name="prompt_style"
-                          value="natural_language"
-                          checked={config.prompt_style !== 'danbooru_tags'}
-                          onChange={() => setConfig({ ...config, prompt_style: 'natural_language' })}
-                          style={{ accentColor: 'var(--color-pink)' }}
-                        />
-                        <div>
-                          <div style={{ fontSize: '0.82rem', fontWeight: '600', color: 'white' }}>✨ V4.5 自然语言模式（推荐）</div>
-                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>LLM 输出连贯英文短句，适配 T5 编码器。跳过 MCP 标签检索。权重语法最高 1.3。</div>
-                        </div>
-                      </label>
-                      <label
-                        style={{
-                          flex: 1, display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px',
-                          borderRadius: '6px', cursor: 'pointer',
-                          background: config.prompt_style === 'danbooru_tags' ? 'rgba(168,85,247,0.2)' : 'rgba(255,255,255,0.04)',
-                          border: config.prompt_style === 'danbooru_tags' ? '1px solid rgba(168,85,247,0.6)' : '1px solid var(--border-light)',
-                          transition: 'all 0.2s'
-                        }}
-                      >
-                        <input
-                          type="radio"
-                          name="prompt_style"
-                          value="danbooru_tags"
-                          checked={config.prompt_style === 'danbooru_tags'}
-                          onChange={() => setConfig({ ...config, prompt_style: 'danbooru_tags' })}
-                          style={{ accentColor: 'var(--color-pink)' }}
-                        />
-                        <div>
-                          <div style={{ fontSize: '0.82rem', fontWeight: '600', color: 'white' }}>🏷️ Danbooru 标签模式（旧版）</div>
-                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>LLM 输出逗号分隔的 Danbooru 标签串。使用 MCP 检索标签候选。</div>
-                        </div>
-                      </label>
-                    </div>
-                  </div>
-
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>3a. 高级生图参数生成 System Prompt（✨ V4.5 自然语言版）</label>
+                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>3. 高级生图参数生成 System Prompt（V4.5 自然语言版）</label>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>LLM 使用自然语言句子描述场景和角色。适用于 V4.5 Full / T5 编码器模型。权重上限 1.3。</div>
                     <textarea 
                       value={config.system_prompt_advanced_prompt_nl || ""}
                       onChange={(e) => setConfig({ ...config, system_prompt_advanced_prompt_nl: e.target.value })}
                       style={{ width: '100%', height: '200px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(168,85,247,0.35)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>3b. 高级生图参数生成 System Prompt（🏷️ 旧版 Danbooru 标签版）</label>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>用于将具体的场景描述加人物 DNA 信息转换为结构化生图参数（正向、负向与构图）</div>
-                    <textarea 
-                      value={config.system_prompt_advanced_prompt || ""}
-                      onChange={(e) => setConfig({ ...config, system_prompt_advanced_prompt: e.target.value })}
-                      style={{ width: '100%', height: '170px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
                     />
                   </div>
                   <div>

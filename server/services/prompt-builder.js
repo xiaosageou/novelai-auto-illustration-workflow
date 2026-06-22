@@ -5,7 +5,6 @@ import {
   deduplicatePromptTokens,
   removeNonEnglishPromptTokens
 } from '../utils/prompt-cleaner.js';
-import { applyRules } from './regex-mapper.js';
 
 /**
  * V4.5 自然语言模式权重守卫
@@ -207,6 +206,15 @@ function 构建动作关系负面提示词(prompt = '') {
     return 'swinging sword, swinging weapon, sword pointing away, lowered sword, sheathed sword, sword on back, sword behind body, hidden blade, cropped weapon, missing sword, self-directed sword, sword near own neck, gap between sword and throat';
   }
   return '';
+}
+
+function 构建私密场景负面词({ prompt = '', sceneEnvironment = '', sceneDescription = '' } = {}) {
+  const text = `${prompt} ${sceneEnvironment} ${sceneDescription}`;
+  const isPublic = /街|路|广场|教室|课堂|走廊|地铁|公交|车厢|酒吧|餐厅|商场|公共|人群|观众|围观|street|road|square|classroom|corridor|subway|train|bus|bar|restaurant|mall|public|crowd|onlookers/i.test(text);
+  const isPrivate = /卧室|房间|寝室|浴室|浴池|书房|私人|密室|无人|独处|bedroom|private room|bathroom|bath|study room|secluded|alone|no onlookers/i.test(text);
+  return isPrivate && !isPublic
+    ? 'silhouette, shadow, shadowy figure, outline of person, foreground silhouette, foreground shadow'
+    : '';
 }
 
 function 是插入局部放大场景({
@@ -464,48 +472,6 @@ function 是强方向性交互动作(action = '') {
   return /^(?:sex|penetration|vaginal(?:_penetration)?|anal(?:_penetration)?|handjob|footjob|blowjob|fellatio|irrumatio|paizuri|cunnilingus)$/i.test(normalized);
 }
 
-export function buildCharacterInteractionTags(sceneCharacters = [], interactionActions = [], structuredCharacterPrompts = []) {
-  const characters = Array.isArray(sceneCharacters) ? sceneCharacters : [];
-  const tags = characters.map(() => []);
-  const byName = new Map(characters.map((char, index) => [String(char?.name || '').trim().toLowerCase(), index]));
-
-  for (const item of Array.isArray(interactionActions) ? interactionActions : []) {
-    const action = 标准化互动动作(item?.action);
-    if (!action) continue;
-    const sourceIndex = byName.get(String(item?.source || '').trim().toLowerCase());
-    const targetIndex = byName.get(String(item?.target || '').trim().toLowerCase());
-    const isMutual = item?.mutual === true && !是强方向性交互动作(action);
-    if (isMutual) {
-      if (sourceIndex !== undefined) tags[sourceIndex].push(`mutual#${action}`);
-      if (targetIndex !== undefined) tags[targetIndex].push(`mutual#${action}`);
-    } else {
-      if (sourceIndex !== undefined) tags[sourceIndex].push(`source#${action}`);
-      if (targetIndex !== undefined) tags[targetIndex].push(`target#${action}`);
-    }
-  }
-
-  (Array.isArray(structuredCharacterPrompts) ? structuredCharacterPrompts : []).forEach((item, index) => {
-    const characterIndex = byName.get(String(item?.name || '').trim().toLowerCase()) ?? index;
-    if (!tags[characterIndex]) return;
-    const actions = Array.isArray(item?.interaction_actions)
-      ? item.interaction_actions
-      : (item?.interaction_action ? [{
-          role: item?.interaction_role,
-          action: item?.interaction_action
-        }] : []);
-    for (const interaction of actions) {
-      const role = String(interaction?.role || '').toLowerCase();
-      const action = 标准化互动动作(interaction?.action);
-      if (action && ['source', 'target', 'mutual'].includes(role)) {
-        if (role === 'mutual' && 是强方向性交互动作(action)) continue;
-        tags[characterIndex].push(`${role}#${action}`);
-      }
-    }
-  });
-
-  return tags.map(items => [...new Set(items)]);
-}
-
 function 构建互动自然语言(sceneCharacters = [], interactionActions = []) {
   const characters = Array.isArray(sceneCharacters) ? sceneCharacters : [];
   const sentences = characters.map(() => []);
@@ -585,7 +551,6 @@ export function estimateV45Tokens(text = '') {
 }
 
 function promptTokenPriority(token = '') {
-  if (/^(?:source|target|mutual)#/i.test(token)) return 100;
   if (/^(?:girl|boy|other|1girl|1boy|1other|[1-6](?:girls|boys|others))$/i.test(token)) return 95;
   if (/(?:^|::)\s*artist:|^artist:|official art|year20\d\d/i.test(token)) return 92;
   if (/exactly_|only_|facing |interaction directed|characters facing/i.test(token)) return 90;
@@ -1059,11 +1024,6 @@ export function buildFinalImagePrompt(prompt, {
     && !已有统一构图提示(cleanPrompt);
   const needsScaleGuard = sceneCharacterList.length >= 2
     && !/consistent character scale|same ground plane|same focal plane|natural proportions/i.test(cleanPrompt);
-  const interactionTags = buildCharacterInteractionTags(
-    sceneCharacterList,
-    sceneInteractionActions,
-    structuredPromptList
-  );
   const interactionSentences = 构建互动自然语言(sceneCharacterList, sceneInteractionActions);
   const negativeCharacterPrompts = [];
   const characterPrompts = sceneCharacterList.map((char, index) => {
@@ -1079,10 +1039,6 @@ export function buildFinalImagePrompt(prompt, {
     negativeCharacterPrompts.push(
       removeNonEnglishPromptTokens(typeof structured === 'string' ? '' : structured?.negative_prompt || '')
     );
-
-    // ★ 修复：不直接注入中文 sceneTags（appearance/clothing/expression/pose/position 都是中文）
-    // 仅用场景字段拼接扫描文本供正则匹配，不写入最终 prompt
-    const scanText = `${char?.appearance || ''} ${char?.clothing || ''} ${char?.pose || ''}`;
 
     let finalCharPrompt;
     if (useNaturalLanguage) {
@@ -1121,7 +1077,6 @@ export function buildFinalImagePrompt(prompt, {
         净化多人身高标签(finalCharPrompt),
         heightConstraints.byName.get(heightKey) || '',
         spatialGuidance.characterDirections[index] || '',
-        interactionTags[index]?.join(', ') || '',
         interactionSentences[index]?.join(' ') || ''
       );
       finalCharPrompt = 按逗号拆分提示词(finalCharPrompt)
@@ -1129,9 +1084,6 @@ export function buildFinalImagePrompt(prompt, {
         .join(', ');
     }
 
-    // 对每个角色应用正则规则匹配服装和动作特征
-    finalCharPrompt = applyRules(scanText, finalCharPrompt);
-    
     return finalCharPrompt;
   }).filter(Boolean);
 
@@ -1175,9 +1127,9 @@ export function buildFinalImagePrompt(prompt, {
   // 对 basePrompt 应用全局正则规则
   if (useNaturalLanguage) {
     // V4.5 自然语言模式：不过滤 non-English，只进行权重守卫
-    basePrompt = clampNaturalLanguageWeights(normalizeArtistTag(applyRules(prompt, basePrompt)));
+    basePrompt = clampNaturalLanguageWeights(normalizeArtistTag(basePrompt));
   } else {
-    basePrompt = removeNonEnglishPromptTokens(normalizeArtistTag(applyRules(prompt, basePrompt)));
+    basePrompt = removeNonEnglishPromptTokens(normalizeArtistTag(basePrompt));
   }
   let budgetedPrompts;
   if (useNaturalLanguage) {
@@ -1235,6 +1187,7 @@ export function buildFinalImagePrompt(prompt, {
     构建额外人物负面提示词(sceneCharacterList),
     构建动作关系负面提示词(cleanPrompt),
     balancedMultiCharacter.negative,
+    构建私密场景负面词({ prompt: cleanPrompt, sceneEnvironment, sceneDescription }),
     (Array.isArray(sceneMustNotShow) ? sceneMustNotShow : [])
       .map(item => String(item || '').trim())
       .filter(item => item && /^[\x20-\x7E]+$/.test(item))
