@@ -489,7 +489,6 @@ function buildFallbackSingleSceneCard({ sceneIdx, triggerSentence, chapterTitle,
     trigger_sentence: fallbackTrigger,
     nsfw_rating: 'sfw',
     visual_description: fallbackDescription,
-    source_context: fallbackDescription.substring(0, 400),
     core_action: fallbackTrigger,
     character_names: [],
     environment: '',
@@ -510,7 +509,6 @@ function buildFallbackSelectedParagraphScene(selection, sceneIdx, chapterTitle, 
     trigger_sentence: triggerSentence.substring(0, 30) || '正文片段',
     nsfw_rating: 'sfw',
     visual_description: fallbackDescription.substring(0, 120),
-    source_context: fallbackDescription.substring(0, 400),
     core_action: triggerSentence.substring(0, 60),
     character_names: [],
     environment: '',
@@ -566,7 +564,6 @@ function ensureStructuredScenePrompt(prompt) {
 {
   "scene_idx": 1,
   "trigger_sentence": "逐字复制正文中的连续原文短片段，8-30字，能Ctrl+F精准命中",
-  "source_context": "trigger_sentence 前后最关键的原文上下文，控制在 200-400 字",
   "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
   "visual_description": "一个瞬间定格的单帧画面，40-80 字，只描述这一帧已经看得见的状态",
   "character_names": ["本帧实际可见或直接参与互动的主要人物，最多 4 人"],
@@ -895,9 +892,8 @@ function buildSceneExtractionUserContent({
   parts.push(
     ``,
     `【轻量场景卡字段（必须）】`,
-    `- 每个场景只输出：scene_idx、trigger_sentence、source_context、nsfw_rating、visual_description、character_names、core_action。`,
+    `- 每个场景只输出：scene_idx、trigger_sentence、nsfw_rating、visual_description、character_names、core_action。`,
     `- 不要输出 environment、cinematography、characters、interactions、interaction_actions、plot_traces、text_elements、visual_entities、must_show、must_not_show。`,
-    `- source_context 保留 trigger_sentence 前后最关键的原文上下文，控制在 200-400 字。`,
     `- character_names 最多 4 人；多人场景只保留这一帧真正推动画面的主要人物。`,
     `- 如果本章同时存在 NSFW 与 SFW 场景，名额要向 NSFW 场景倾斜：多选取 NSFW 场景，适当选取 SFW 场景。`,
     `- SFW 场景只保留少量真正必要的铺垫、反差、情绪停顿或结果镜头，不要让 SFW 数量超过 NSFW。`,
@@ -1307,7 +1303,7 @@ export class LLMExtractor {
         `- 必须严格按选段顺序输出恰好 ${normalizedSelections.length} 个场景。`,
         `- 每个场景的 trigger_sentence 必须逐字复制对应选段 text。`,
         `- scene_idx 必须从 1 连续编号到 ${normalizedSelections.length}。`,
-        `- 这些场景仍然要遵守轻量场景卡格式：必须包含 source_context、core_action，并且 visual_description 必须是瞬间定格。`
+        `- 这些场景仍然要遵守轻量场景卡格式：必须包含 core_action，并且 visual_description 必须是瞬间定格。`
       ].join('\n') + (attempt > 1 ? `\n- 上一次输出不符合 JSON 或数量要求。请严格压缩成可解析 JSON 数组，禁止附加任何文字。` : '')
     });
 
@@ -1614,11 +1610,7 @@ export class LLMExtractor {
     const visualDescription = sceneInput.scene_desc || sceneInput.visual_description || buildSceneDescription(sceneInput);
     pushJob(
       'scene_environment',
-      [
-        visualDescription,
-        sceneInput.source_context ? `原文上下文：${sceneInput.source_context}` : '',
-        sceneInput.environment ? `环境：${sceneInput.environment}` : ''
-      ].filter(Boolean).join('；'),
+      sceneInput.environment ? `环境：${sceneInput.environment}` : '',
       'full_scene'
     );
 
@@ -1705,7 +1697,6 @@ export class LLMExtractor {
     if (!sceneInput || typeof sceneInput !== 'object') return preserveTextForLlm(sceneInput);
   return JSON.stringify({
       visual_description: sceneInput.visual_description || sceneInput.scene_desc || buildSceneDescription(sceneInput),
-      source_context: sceneInput.source_context || '',
       core_action: sceneInput.core_action || '',
       character_names: Array.isArray(sceneInput.character_names) ? sceneInput.character_names : [],
       environment: sceneInput.environment || '',
@@ -1949,7 +1940,7 @@ export class LLMExtractor {
       "请为以下中文小说插画场景生成 NovelAI 生图参数。",
       "你现在负责把轻量场景卡扩展成可生图参数。场景 LLM 只负责选帧；你负责补全环境、镜头、人物外观与负面限制，但不得改写这一帧的核心事件。",
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
-      "如果 scene card 里有 source_context、core_action，请把它们当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
+      "如果 scene card 里有 core_action，请把它当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
       "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局标签（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪，优先使用轻微微笑、担忧、羞涩、惊讶、恼怒、悲伤、疲惫、坚定等克制但明确的表情，并用眼神、眉形和轻微嘴角变化表现；不要把所有角色都写成 calm、expressionless 或 natural_expression。禁止无端生成 bared_teeth、clenched_teeth、sharp_teeth、fang、crazy_grin、distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。用正常空格书写英文句子，禁止粘连单词。",
       "瞬间定格示例：正确是 'A Girl Kneeling By The Door, Looking Up At The Visitor.'；错误是 'A Girl Kneels Down, Then Looks Up At The Visitor.'。你的 prompt 只能表达前者这种已经定格的画面。",
       "NSFW 场景的角色表情必须针对当前情境生成：可使用 restrained pleasured_expression、half-closed_eyes、bedroom_eyes、deep_blush、embarrassed、pained_expression、dazed_expression、unfocused_eyes、teasing_expression、satisfied_expression、slightly_parted_lips 或 biting_lip；根据角色实际状态选择一个主情绪，禁止所有角色复用同一副表情，也禁止无依据的 ahegao、crazy_grin 或 distorted_face。",

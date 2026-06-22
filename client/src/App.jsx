@@ -1140,7 +1140,6 @@ function App() {
     trigger_sentence: String(scene.trigger_sentence || ''),
     nsfw_rating: String(scene.nsfw_rating || 'sfw'),
     visual_description: String(scene.visual_description || scene.scene_desc || ''),
-    source_context: String(scene.source_context || ''),
     core_action: String(scene.core_action || ''),
     environment: String(scene.environment || ''),
     cinematography: String(scene.cinematography || ''),
@@ -1213,7 +1212,6 @@ function App() {
     trigger_sentence: String(draft.trigger_sentence || '').trim(),
     nsfw_rating: String(draft.nsfw_rating || 'sfw').trim() || 'sfw',
     visual_description: String(draft.visual_description || '').trim(),
-    source_context: String(draft.source_context || '').trim(),
     core_action: String(draft.core_action || '').trim(),
     environment: String(draft.environment || '').trim(),
     cinematography: String(draft.cinematography || '').trim(),
@@ -2341,7 +2339,6 @@ function App() {
                   </div>
                   {[
                     ['visual_description', 'Visual Description', 4],
-                    ['source_context', 'Source Context', 4],
                     ['core_action', 'Core Action', 2],
                     ['character_names', 'Character Names', 2]
                   ].map(([field, label, rows]) => (
