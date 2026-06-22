@@ -858,6 +858,16 @@ test('final NAI prompts remove untranslated CJK tag fragments', () => {
   assert.match(result.finalPositive, /elegant/);
 });
 
+test('final negative prompt includes mosaic globally', () => {
+  const result = buildFinalImagePrompt('1girl, bedroom, simple_background', {
+    sceneCharacters: [{ name: '女', gender: 'woman' }],
+    structuredCharacterPrompts: [{ name: '女', prompt: '1girl, standing', negative_prompt: '' }],
+    extraNegative: ''
+  });
+
+  assert.match(result.finalNegative, /\bmosaic\b/i);
+});
+
 test('multi-character prompts balance detail unless a character is intentionally backgrounded', () => {
   const balanced = buildFinalImagePrompt(
     '2characters, close-up, focus on lower body, focus on buttocks, bedroom',

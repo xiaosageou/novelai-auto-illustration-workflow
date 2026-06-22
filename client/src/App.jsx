@@ -1332,6 +1332,42 @@ function App() {
     );
   };
 
+  const renderSceneLegacySummary = (scene = {}) => {
+    const sceneCharacters = Array.isArray(scene.characters) ? scene.characters : [];
+    const summaryRows = [
+      ['核心动作', scene.core_action],
+      ['环境', scene.environment],
+      ['镜头', scene.cinematography],
+      ['互动', scene.interactions],
+      ['痕迹', scene.plot_traces],
+      ['文字', scene.text_elements],
+      ['角色', sceneCharacters.map(char => char?.name).filter(Boolean).join('、') || (Array.isArray(scene.character_names) ? scene.character_names.join('、') : '')],
+      ['必含', Array.isArray(scene.must_show) ? scene.must_show.join(', ') : ''],
+      ['避开', Array.isArray(scene.must_not_show) ? scene.must_not_show.join(', ') : '']
+    ].filter(([, value]) => String(value || '').trim());
+
+    if (summaryRows.length === 0) return null;
+
+    return (
+      <div style={{
+        marginTop: '10px',
+        display: 'grid',
+        gap: '6px',
+        padding: '10px 12px',
+        borderRadius: '10px',
+        background: 'rgba(255,255,255,0.025)',
+        border: '1px solid rgba(255,255,255,0.06)'
+      }}>
+        {summaryRows.slice(0, 5).map(([label, value]) => (
+          <div key={label} style={{ display: 'grid', gridTemplateColumns: '44px 1fr', gap: '8px', alignItems: 'start' }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>{label}</span>
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5, wordBreak: 'break-word' }}>{value}</span>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const renderFeatureEditor = () => {
     if (!editingCharacterFeatures) return null;
     return (
