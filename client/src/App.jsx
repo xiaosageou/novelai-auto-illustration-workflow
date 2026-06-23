@@ -7,6 +7,11 @@ import {
 import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
 import { isNaiLogMessage } from './logClassification.js';
 import { mergeProjectProgressSnapshot } from './projectProgressState.js';
+import {
+  SCENE_CHARACTER_DETAIL_FIELDS,
+  buildCharacterReferenceSummary,
+  characterHasSceneDetails
+} from './sceneEditorCharacters.js';
 
 const API_BASE = import.meta.env.DEV ? "http://localhost:5001" : "";
 
@@ -128,6 +133,7 @@ function App() {
   const [sceneEditor, setSceneEditor] = useState(null);
   const [sceneEditorDirty, setSceneEditorDirty] = useState(false);
   const [savingScene, setSavingScene] = useState(false);
+  const [expandedSceneCharacterDetails, setExpandedSceneCharacterDetails] = useState({});
   const [editingCharacterName, setEditingCharacterName] = useState("");
   const [editingCharacterFeatures, setEditingCharacterFeatures] = useState(null);
   const [savingCharacterTags, setSavingCharacterTags] = useState(false);
@@ -1074,6 +1080,7 @@ function App() {
     '外貌标签',
     '身材标签',
     '胸部标签',
+    'NSFW标签',
     '发型标签',
     '发色标签',
     '眼睛标签',
@@ -1181,6 +1188,7 @@ function App() {
   });
 
   const openSceneEditor = (chapterKey, scene) => {
+    setExpandedSceneCharacterDetails({});
     setSceneEditor({
       chapterKey,
       sceneIdx: scene.scene_idx,
@@ -1195,6 +1203,7 @@ function App() {
     setSceneEditor(null);
     setSceneEditorDirty(false);
     setSavingScene(false);
+    setExpandedSceneCharacterDetails({});
   };
 
   const updateSceneDraft = (updater) => {
@@ -2416,25 +2425,63 @@ function App() {
 
                 {(sceneEditor.draft.characters || []).map((character, index) => (
                   <div key={`character-${index}`} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', padding: '12px', display: 'grid', gap: '8px', background: 'rgba(5, 8, 20, 0.28)' }}>
+                    {(() => {
+                      const detailKey = `${sceneEditor.chapterKey}:${sceneEditor.sceneIdx}:${index}`;
+                      const hasDetails = characterHasSceneDetails(character);
+                      const isExpanded = hasDetails || expandedSceneCharacterDetails[detailKey] === true;
+                      const dnaReference = buildCharacterReferenceSummary(characters?.[character.name] || null);
+                      return (
+                        <>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <strong style={{ fontSize: '0.85rem' }}>角色 {index + 1}</strong>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{ padding: '4px 8px', fontSize: '0.72rem', color: '#fca5a5', borderRadius: '999px' }}
-                        onClick={() => updateSceneDraft(draft => ({
-                          ...draft,
-                          characters: draft.characters.filter((_, itemIndex) => itemIndex !== index)
-                        }))}
-                      >
-                        删除
-                      </button>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        {!hasDetails && (
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            style={{ padding: '4px 8px', fontSize: '0.72rem', borderRadius: '999px' }}
+                            onClick={() => setExpandedSceneCharacterDetails(prev => ({ ...prev, [detailKey]: !prev[detailKey] }))}
+                          >
+                            {isExpanded ? '收起细节' : '补充细节'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{ padding: '4px 8px', fontSize: '0.72rem', color: '#fca5a5', borderRadius: '999px' }}
+                          onClick={() => updateSceneDraft(draft => ({
+                            ...draft,
+                            characters: draft.characters.filter((_, itemIndex) => itemIndex !== index)
+                          }))}
+                        >
+                          删除
+                        </button>
+                      </div>
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 140px', gap: '8px' }}>
                       <input style={sceneEditorInputStyle} placeholder="姓名" value={character.name} onChange={(e) => updateSceneDraft(draft => ({ ...draft, characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, name: e.target.value } : item) }))} />
                       <input style={sceneEditorInputStyle} placeholder="gender" value={character.gender} onChange={(e) => updateSceneDraft(draft => ({ ...draft, characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, gender: e.target.value } : item) }))} />
                     </div>
-                    {['appearance', 'clothing', 'expression', 'pose', 'position'].map(field => (
+                    {!isExpanded && (
+                      <div style={{
+                        display: 'grid',
+                        gap: '6px',
+                        padding: '10px 12px',
+                        borderRadius: '10px',
+                        border: '1px dashed rgba(148, 163, 184, 0.2)',
+                        background: 'rgba(255,255,255,0.02)'
+                      }}>
+                        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                          轻量场景卡当前只保留角色名。角色细节会在 Prompt 生成阶段继续补全。
+                        </div>
+                        {dnaReference && (
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5, wordBreak: 'break-word' }}>
+                            <strong style={{ color: 'white', fontSize: '0.78rem' }}>DNA参考：</strong> {dnaReference}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {isExpanded && SCENE_CHARACTER_DETAIL_FIELDS.map(field => (
                       <input
                         key={field}
                         style={sceneEditorInputStyle}
@@ -2443,6 +2490,9 @@ function App() {
                         onChange={(e) => updateSceneDraft(draft => ({ ...draft, characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: e.target.value } : item) }))}
                       />
                     ))}
+                        </>
+                      );
+                    })()}
                   </div>
                 ))}
                 </div>

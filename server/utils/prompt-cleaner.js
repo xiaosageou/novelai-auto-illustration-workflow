@@ -252,6 +252,7 @@ export function isTransientTag(tag) {
     "sexual_act", "penetration", "bound", "tied", "gagged", "slave_collar",
     "body_writing", "butt_writing", "thigh_writing", "blood_stains", "bleeding",
     "injured", "trembling", "shivering", "orgasm", "orgasm_expression", "panting", "gasping",
+    "erection", "erect", "hard_on", "cum", "ejaculation",
     "blushing", "blushed", "flushed", "submissive", "dominant", "slave",
     
     // 表情与瞬时神态
@@ -282,6 +283,7 @@ export function isTransientTag(tag) {
   const BAD_ROOTS = new Set([
     // 临时与交欢/受强迫状态词根
     "sweat", "sweating", "nude", "naked", "ahegao", "orgasm", "bleeding", "injured",
+    "erection", "erect", "cum", "ejaculation",
     "tremble", "trembling", "shiver", "shivering", "pant", "panting", "gasp", "gasping",
     "sobbing", "crying", "blush", "blushing", "flushed", "bound", "tied", "chained", 
     "restraint", "restrained", "handcuff", "handcuffed", "blindfold", "blindfolded", 

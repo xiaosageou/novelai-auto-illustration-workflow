@@ -1359,7 +1359,7 @@ export class LLMExtractor {
   }
 
   /**
-   * 从 10 章小说切片中提炼主要角色及其结构化外貌 DNA 标签（Prompts Bundle）
+   * 从 10 章小说切片中提炼主要角色及其结构化外貌 DNA 特征（Prompts Bundle）
    */
   async extractCharacterDNA(sliceText, model = "deepseek-chat", context = {}) {
     if (!this.apiKey) {
@@ -1454,7 +1454,7 @@ export class LLMExtractor {
 
         // 重新拼装出最干净、最常驻的外貌特征拼接串
         const allFeatureTags = [];
-        const orderedKeys = ["外貌标签", "身材标签", "胸部标签", "发型标签", "发色标签", "眼睛标签", "肤色标签", "年龄感标签", "服装基底标签", "特殊特征标签"];
+        const orderedKeys = ["外貌标签", "身材标签", "胸部标签", "NSFW标签", "发型标签", "发色标签", "眼睛标签", "肤色标签", "年龄感标签", "服装基底标签", "特殊特征标签"];
         for (const key of orderedKeys) {
           if (Array.isArray(cleanFeatures[key])) {
             allFeatureTags.push(...cleanFeatures[key]);

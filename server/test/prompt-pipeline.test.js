@@ -820,6 +820,157 @@ test('current scene state overrides conflicting DNA clothing, hair, and poses', 
   assert.match(result.basePrompt, /artist:nardack/);
 });
 
+test('character dna cleanup keeps stable nsfw traits and drops transient ones', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    status: 200,
+    json: async () => ({
+      choices: [{
+        finish_reason: 'stop',
+        message: {
+          content: JSON.stringify([{
+            name: '女主',
+            gender: 'woman',
+            role_type: '主角',
+            tags: 'long hair, large breasts, erection, pale skin',
+            features: {
+              外貌标签: ['beautiful'],
+              身材标签: ['slim'],
+              胸部标签: ['large breasts'],
+              NSFW标签: ['large breasts', 'erection'],
+              发型标签: ['long hair'],
+              发色标签: ['black hair'],
+              眼睛标签: ['red eyes'],
+              肤色标签: ['pale skin'],
+              年龄感标签: ['young woman'],
+              服装基底标签: ['white dress'],
+              特殊特征标签: []
+            },
+            evidence: [],
+            confidence: 0.9,
+            source_chapters: ['第1章']
+          }])
+        }
+      }]
+    })
+  });
+
+  try {
+    const result = await extractor.extractCharacterDNA('测试正文', 'test-model', { knownCharacters: {}, sourceChapters: ['第1章'] });
+    assert.equal(result.length, 1);
+    assert.deepEqual(result[0].features.NSFW标签, ['large breasts']);
+    assert.match(result[0].tags, /large breasts/);
+    assert.doesNotMatch(result[0].tags, /\berection\b/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('normal scene prompt inherits stable nsfw dna traits', () => {
+  const result = buildFinalImagePrompt('1girl, 1boy, bedroom, nsfw', {
+    sceneCharacters: [
+      { name: '甲', gender: 'woman' },
+      { name: '乙', gender: 'man' }
+    ],
+    characterAnchors: [
+      {
+        name: '甲',
+        正面提示词: 'woman, long hair, pale skin',
+        结构化特征: {
+          外貌标签: ['beautiful'],
+          身材标签: ['slim'],
+          胸部标签: ['medium breasts'],
+          NSFW标签: ['large breasts'],
+          发型标签: ['long hair'],
+          发色标签: ['black hair'],
+          眼睛标签: ['red eyes'],
+          肤色标签: ['pale skin'],
+          年龄感标签: ['young woman'],
+          服装基底标签: [],
+          特殊特征标签: []
+        }
+      },
+      {
+        name: '乙',
+        正面提示词: 'man, short hair',
+        结构化特征: {
+          外貌标签: ['handsome'],
+          身材标签: ['athletic build'],
+          胸部标签: [],
+          NSFW标签: ['large penis'],
+          发型标签: ['short hair'],
+          发色标签: ['black hair'],
+          眼睛标签: ['dark eyes'],
+          肤色标签: ['fair skin'],
+          年龄感标签: ['young man'],
+          服装基底标签: [],
+          特殊特征标签: []
+        }
+      }
+    ],
+    useCharacterSegments: false
+  });
+
+  assert.match(result.finalPositive, /large breasts/i);
+  assert.match(result.finalPositive, /large penis/i);
+});
+
+test('portrait composition excludes nsfw dna traits', () => {
+  const result = buildFinalImagePrompt('1girl, portrait, upper body', {
+    composition: '头像',
+    sceneCharacters: [{ name: '甲', gender: 'woman' }],
+    characterAnchors: [{
+      name: '甲',
+      正面提示词: 'woman, long hair, pale skin',
+      结构化特征: {
+        外貌标签: ['beautiful'],
+        身材标签: ['slim'],
+        胸部标签: ['huge breasts'],
+        NSFW标签: ['huge breasts'],
+        发型标签: ['long hair'],
+        发色标签: ['black hair'],
+        眼睛标签: ['red eyes'],
+        肤色标签: ['pale skin'],
+        年龄感标签: ['young woman'],
+        服装基底标签: [],
+        特殊特征标签: []
+      }
+    }],
+    useCharacterSegments: false
+  });
+
+  assert.doesNotMatch(result.finalPositive, /huge breasts/i);
+});
+
+test('chest close-up can inherit chest-related nsfw dna traits', () => {
+  const result = buildFinalImagePrompt('1girl, nsfw', {
+    composition: '部位特写',
+    sceneType: '胸部',
+    sceneCharacters: [{ name: '甲', gender: 'woman' }],
+    characterAnchors: [{
+      name: '甲',
+      正面提示词: 'woman, pale skin',
+      结构化特征: {
+        外貌标签: ['beautiful'],
+        身材标签: ['slim'],
+        胸部标签: ['large breasts'],
+        NSFW标签: ['huge breasts'],
+        发型标签: ['long hair'],
+        发色标签: ['black hair'],
+        眼睛标签: ['red eyes'],
+        肤色标签: ['pale skin'],
+        年龄感标签: ['young woman'],
+        服装基底标签: [],
+        特殊特征标签: []
+      }
+    }],
+    useCharacterSegments: false
+  });
+
+  assert.match(result.finalPositive, /large breasts|huge breasts/i);
+});
+
 test('final NAI prompts remove untranslated CJK tag fragments', () => {
   const result = buildFinalImagePrompt('1girl, bedroom, 清幽寝殿', {
     sceneCharacters: [{ name: '女', gender: 'woman' }],

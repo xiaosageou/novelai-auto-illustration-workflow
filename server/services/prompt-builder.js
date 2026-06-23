@@ -768,7 +768,7 @@ export function 构建角色锚点注入提示词(anchor, options) {
       const allow = /(breast|breasts|bust|cup|cleavage|nipple|nipples|areola|chest|skin|complexion|pale|fair|tan|young|adult|teen)/i;
       const deny = /(face|eyes?|hair|lips?|mouth|nose|dress|robe|hanfu|armor|outfit|clothing|upper body|waist|portrait|full body)/i;
 
-      const tokens = 从结构化特征挑选(['胸部标签', '肤色标签', '年龄感标签'], 14)
+      const tokens = 从结构化特征挑选(['胸部标签', 'NSFW标签', '肤色标签', '年龄感标签'], 14)
         .filter((token) => allow.test(token) && !deny.test(token));
       if (tokens.length > 0) return tokens.join(', ');
 
@@ -791,6 +791,7 @@ export function 构建角色锚点注入提示词(anchor, options) {
       '外貌标签',
       '身材标签',
       '胸部标签',
+      'NSFW标签',
       '发型标签',
       '发色标签',
       '眼睛标签',
@@ -1000,7 +1001,7 @@ export function buildFinalImagePrompt(prompt, {
   // 4. 角色 DNA 标签 (Prompts Bundle) 计算与注入
   // 将匹配到的角色 DNA 结构化数据转换成适合当前构图的 tags
   const charDnaTagsArray = characterAnchors.map(anchor => {
-    return 构建角色锚点注入提示词(anchor, { 构图: composition });
+    return 构建角色锚点注入提示词(anchor, { 构图: composition, 部位: sceneType });
   }).filter(Boolean);
 
   const structuredPromptList = Array.isArray(structuredCharacterPrompts) ? structuredCharacterPrompts : [];
@@ -1031,7 +1032,7 @@ export function buildFinalImagePrompt(prompt, {
     const matchedAnchor = 按姓名查找(characterAnchors, char?.name)
       || (!hasCharacterName ? characterAnchors[index] || null : null);
     const dnaTags = matchedAnchor
-      ? 构建角色锚点注入提示词(matchedAnchor, { 构图: composition, 当前角色: char })
+      ? 构建角色锚点注入提示词(matchedAnchor, { 构图: composition, 部位: sceneType, 当前角色: char })
       : (!hasCharacterName ? charDnaTagsArray[index] || '' : '');
     const structured = 按姓名查找(structuredPromptList, char?.name)
       || (!hasCharacterName ? structuredPromptList[index] || null : null);
