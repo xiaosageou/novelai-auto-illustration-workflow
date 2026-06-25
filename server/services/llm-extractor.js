@@ -183,13 +183,75 @@ function normalizeCharacterInteractionList(raw = null) {
   return single ? [single] : null;
 }
 
-function readCharacterInteractionField(item = null) {
+function normalizeSceneInteractionList(raw = null) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => ({
+      action: normalizeInteractionMarkerAction(item?.action || ''),
+      source: String(item?.source || '').trim(),
+      target: String(item?.target || '').trim(),
+      mutual: item?.mutual === true
+    }))
+    .filter((item) => item.action && item.source && item.target && item.source !== item.target);
+}
+
+function uniqueSceneInteractions(interactions = []) {
+  const seen = new Set();
+  return interactions.filter((item) => {
+    const action = normalizeInteractionMarkerAction(item?.action || '');
+    const source = String(item?.source || '').trim();
+    const target = String(item?.target || '').trim();
+    if (!action || !source || !target || source === target) return false;
+    const key = `${action}\u0000${source}\u0000${target}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function inferCharacterInteractionTarget(raw = null, characterName = '', sceneInteractions = []) {
+  if (!raw || typeof raw !== 'object') return null;
+  const role = String(raw.role || '').trim().toLowerCase();
+  const action = normalizeInteractionMarkerAction(raw.action || '');
+  const name = String(characterName || '').trim();
+  if (!/^(source|target|mutual)$/.test(role) || !action || !name) return null;
+
+  for (const interaction of sceneInteractions) {
+    if (normalizeInteractionMarkerAction(interaction?.action || '') !== action) continue;
+    const source = String(interaction?.source || '').trim();
+    const target = String(interaction?.target || '').trim();
+    if (role === 'source' && source === name) return target;
+    if (role === 'target' && target === name) return source;
+    if (role === 'mutual' && source === name) return target;
+    if (role === 'mutual' && target === name) return source;
+  }
+  return null;
+}
+
+function normalizeCharacterInteractionListWithSceneTargets(raw = null, characterName = '', sceneInteractions = []) {
+  if (raw == null) return null;
+  const rawItems = Array.isArray(raw) ? raw : [raw];
+  const items = rawItems
+    .map((item) => {
+      const normalized = normalizeCharacterInteraction(item);
+      if (normalized) return normalized;
+      const inferredTarget = inferCharacterInteractionTarget(item, characterName, sceneInteractions);
+      return inferredTarget
+        ? normalizeCharacterInteraction({ ...item, target: inferredTarget })
+        : null;
+    })
+    .filter(Boolean);
+  return items.length > 0 ? items : null;
+}
+
+function readCharacterInteractionField(item = null, sceneInteractions = []) {
   if (!item || typeof item !== 'object') return null;
+  const characterName = String(item?.name || '').trim();
   if (Object.prototype.hasOwnProperty.call(item, 'interaction')) {
-    return normalizeCharacterInteractionList(item.interaction);
+    return normalizeCharacterInteractionListWithSceneTargets(item.interaction, characterName, sceneInteractions);
   }
   if (Object.prototype.hasOwnProperty.call(item, 'interaction_actions')) {
-    return normalizeCharacterInteractionList(item.interaction_actions);
+    return normalizeCharacterInteractionListWithSceneTargets(item.interaction_actions, characterName, sceneInteractions);
   }
   return null;
 }
@@ -1861,14 +1923,19 @@ export class LLMExtractor {
       if (!base_prompt) {
         throw new Error("缺少非空 base_prompt；旧式 prompt 单字段不再接受");
       }
+      const sceneInteractions = uniqueSceneInteractions([
+        ...inferSceneInteractionActions(sceneDesc),
+        ...normalizeSceneInteractionList(parsed?.interaction_requirements)
+      ]);
       const character_prompts = Array.isArray(parsed?.character_prompts)
-        ? parsed.character_prompts.map(item => {
+        ? parsed.character_prompts.map((item, index) => {
           if (typeof item === 'string') return { name: '', prompt: item.trim() };
+          const resolvedName = String(item?.name || expectedSceneCharacters[index]?.name || '').trim();
           return {
-            name: (item?.name || '').trim(),
+            name: resolvedName,
             prompt: (item?.prompt || '').trim(),
             negative_prompt: String(item?.negative_prompt || '').trim(),
-            interaction: readCharacterInteractionField(item)
+            interaction: readCharacterInteractionField({ ...item, name: resolvedName }, sceneInteractions)
           };
         }).filter(item => item.prompt)
         : [];
@@ -1978,7 +2045,10 @@ export class LLMExtractor {
           }
 
           const normalized = parseAdvancedContent(rawContent);
-          const inferredInteractions = inferSceneInteractionActions(sceneDesc);
+          const inferredInteractions = uniqueSceneInteractions([
+            ...inferSceneInteractionActions(sceneDesc),
+            ...normalizeSceneInteractionList(extractValidJson(rawContent)?.parsed?.interaction_requirements)
+          ]);
           if (attempt <= 2) {
             validateCharacterInteractions(
               normalized.character_prompts,

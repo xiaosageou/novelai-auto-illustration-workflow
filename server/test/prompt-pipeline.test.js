@@ -2059,6 +2059,12 @@ test('advanced prompt validation accepts directional penetration roles', async (
     assert.equal(result.character_prompts[0].name, '阿宾');
     assert.equal(result.character_prompts[1].name, '王忆如');
     assert.ok(!('interaction_actions' in result.character_prompts[0]));
+    assert.deepEqual(result.character_prompts[0].interaction, [
+      { role: 'source', action: 'penetration', target: '王忆如' }
+    ]);
+    assert.deepEqual(result.character_prompts[1].interaction, [
+      { role: 'target', action: 'penetration', target: '阿宾' }
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }
