@@ -1478,13 +1478,13 @@ test('self-directed undressing does not require a target interaction marker on a
             character_prompts: [
               {
                 name: '钰慧',
-                prompt: 'girl, long_hair, topless, embarrassed',
+                prompt: 'girl, long_hair, source#undressing, topless, embarrassed',
                 negative_prompt: '',
                 interaction_actions: [{ role: 'source', action: 'undressing' }]
               },
               {
                 name: '阿宾',
-                prompt: 'boy, short_hair, staring, surprised',
+                prompt: 'boy, short_hair, target#undressing, staring, surprised',
                 negative_prompt: '',
                 interaction_actions: [{ role: 'source', action: 'staring' }]
               }
@@ -1540,13 +1540,13 @@ test('LLM can explicitly disable pairing validation for non-paired actions like 
             character_prompts: [
               {
                 name: '钰慧',
-                prompt: 'girl, long_hair, crying, tearful',
+                prompt: 'girl, long_hair, source#crying, tearful',
                 negative_prompt: '',
                 interaction_actions: []
               },
               {
                 name: '阿宾',
-                prompt: 'boy, short_hair, worried, standing',
+                prompt: 'boy, short_hair, target#crying, worried, standing',
                 negative_prompt: '',
                 interaction_actions: []
               }
@@ -1597,8 +1597,8 @@ test('advanced prompt tells LLM to map scene interactions into source and target
               orientation: 'square',
               base_prompt: 'A bedroom scene with both characters facing each other.',
               character_prompts: [
-                { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '' },
-                { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '' }
+                { name: '钰慧', prompt: 'A young woman with source#undressing, loosening her clothes with a shy expression.', negative_prompt: '' },
+                { name: '阿宾', prompt: 'A young man with target#undressing, watching her in tense surprise.', negative_prompt: '' }
               ],
               negative_prompt: ''
             })
@@ -1633,6 +1633,164 @@ test('advanced prompt tells LLM to map scene interactions into source and target
   }
 });
 
+test('advanced prompt retries when directional interaction markers are missing from character prompts', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount++;
+    const content = fetchCount === 1
+      ? JSON.stringify({
+          orientation: 'square',
+          base_prompt: 'A bedroom scene with both characters facing each other.',
+          character_prompts: [
+            { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '' },
+            { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '' }
+          ],
+          negative_prompt: ''
+        })
+      : JSON.stringify({
+          orientation: 'square',
+          base_prompt: 'A bedroom scene with both characters facing each other.',
+          character_prompts: [
+            { name: '钰慧', prompt: 'A young woman with source#undressing, loosening her clothes with a shy expression.', negative_prompt: '' },
+            { name: '阿宾', prompt: 'A young man with target#undressing, watching her in tense surprise.', negative_prompt: '' }
+          ],
+          negative_prompt: ''
+        });
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: { content }
+        }]
+      })
+    };
+  };
+
+  try {
+    const result = await extractor.generateScenePromptAdvanced({
+      visual_description: '钰慧在阿宾面前脱衣',
+      characters: [
+        { name: '钰慧', gender: 'woman' },
+        { name: '阿宾', gender: 'man' }
+      ],
+      interaction_actions: [
+        { action: 'undressing', source: '钰慧', target: '阿宾', mutual: false }
+      ]
+    }, [], 'test');
+
+    assert.equal(fetchCount, 2);
+    assert.match(result.character_prompts[0].prompt, /source#undressing/i);
+    assert.match(result.character_prompts[1].prompt, /target#undressing/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('advanced prompt infers directional interaction markers from scene content without interaction_actions', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount++;
+    const content = fetchCount === 1
+      ? JSON.stringify({
+          orientation: 'square',
+          base_prompt: 'A bedroom scene with both characters facing each other.',
+          character_prompts: [
+            { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '' },
+            { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '' }
+          ],
+          negative_prompt: ''
+        })
+      : JSON.stringify({
+          orientation: 'square',
+          base_prompt: 'A bedroom scene with both characters facing each other.',
+          character_prompts: [
+            { name: '钰慧', prompt: 'A young woman with source#undressing, loosening her clothes with a shy expression.', negative_prompt: '' },
+            { name: '阿宾', prompt: 'A young man with target#undressing, watching her in tense surprise.', negative_prompt: '' }
+          ],
+          negative_prompt: ''
+        });
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: { content }
+        }]
+      })
+    };
+  };
+
+  try {
+    const result = await extractor.generateScenePromptAdvanced({
+      visual_description: '钰慧在阿宾面前脱衣',
+      core_action: '钰慧在阿宾面前主动脱衣，阿宾看着她',
+      characters: [
+        { name: '钰慧', gender: 'woman' },
+        { name: '阿宾', gender: 'man' }
+      ]
+    }, [], 'test');
+
+    assert.equal(fetchCount, 2);
+    assert.match(result.character_prompts[0].prompt, /source#undressing/i);
+    assert.match(result.character_prompts[1].prompt, /target#undressing/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('advanced prompt does not require interaction markers when scene has no direct interaction', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount++;
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              orientation: 'square',
+              base_prompt: 'A courtyard scene with two characters standing apart.',
+              character_prompts: [
+                { name: '甲', prompt: 'A young woman standing on the left, looking toward the gate.', negative_prompt: '' },
+                { name: '乙', prompt: 'A young man standing on the right, looking at the falling rain.', negative_prompt: '' }
+              ],
+              negative_prompt: ''
+            })
+          }
+        }]
+      })
+    };
+  };
+
+  try {
+    const result = await extractor.generateScenePromptAdvanced({
+      visual_description: '甲和乙在庭院里分开站立，各自看向不同方向',
+      core_action: '两人分开站立，没有身体接触',
+      characters: [
+        { name: '甲', gender: 'woman' },
+        { name: '乙', gender: 'man' }
+      ]
+    }, [], 'test');
+
+    assert.equal(fetchCount, 1);
+    assert.doesNotMatch(result.character_prompts[0].prompt, /(?:source|target|mutual)#/i);
+    assert.doesNotMatch(result.character_prompts[1].prompt, /(?:source|target|mutual)#/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('advanced prompt validation accepts directional penetration roles', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
@@ -1656,13 +1814,13 @@ test('advanced prompt validation accepts directional penetration roles', async (
             character_prompts: [
               {
                 name: '阿宾',
-                prompt: 'boy, short_hair, completely_nude, leaning_forward',
+                prompt: 'boy, short_hair, source#penetration, completely_nude, leaning_forward',
                 negative_prompt: '',
                 interaction_actions: [{ role: 'source', action: 'penetration' }]
               },
               {
                 name: '王忆如',
-                prompt: 'girl, long_hair, completely_nude, lying_on_back',
+                prompt: 'girl, long_hair, target#penetration, completely_nude, lying_on_back',
                 negative_prompt: '',
                 interaction_actions: [{ role: 'target', action: 'penetration' }]
               }
@@ -1714,12 +1872,12 @@ test('advanced prompt validation ignores mutual hints for directional sex', asyn
             character_prompts: [
               {
                 name: '阿宾',
-                prompt: 'boy, short_hair, completely_nude, leaning_forward',
+                prompt: 'boy, short_hair, source#sex, completely_nude, leaning_forward',
                 negative_prompt: ''
               },
               {
                 name: '王忆如',
-                prompt: 'girl, long_hair, completely_nude, lying_on_back',
+                prompt: 'girl, long_hair, target#sex, completely_nude, lying_on_back',
                 negative_prompt: ''
               }
             ],
@@ -1773,6 +1931,26 @@ test('directional sex actions add natural language interaction context without r
   assert.match(result.characterPrompts[0], /receives sex from the man on the right/i);
   assert.match(result.characterPrompts[1], /performs sex on the woman on the left/i);
   assert.doesNotMatch(result.characterPrompts.join(' '), /(?:source|target|mutual)#/);
+});
+
+test('natural language character prompts keep explicit source and target markers for directional interactions', () => {
+  const result = buildFinalImagePrompt('A bedroom scene with two characters facing each other.', {
+    sceneCharacters: [
+      { name: '钰慧', gender: 'woman', position: 'left' },
+      { name: '阿宾', gender: 'man', position: 'right' }
+    ],
+    sceneInteractionActions: [
+      { action: 'undressing', source: '钰慧', target: '阿宾', mutual: false }
+    ],
+    structuredCharacterPrompts: [
+      { name: '钰慧', prompt: 'A young woman with source#undressing, loosening her clothes with a shy expression.' },
+      { name: '阿宾', prompt: 'A young man with target#undressing, watching her in tense surprise.' }
+    ],
+    useNaturalLanguage: true
+  });
+
+  assert.match(result.characterPrompts[0], /source#undressing/i);
+  assert.match(result.characterPrompts[1], /target#undressing/i);
 });
 
 test('directional sex actions ignore mutual hints in natural language context', () => {
