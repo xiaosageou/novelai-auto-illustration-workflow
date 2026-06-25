@@ -282,8 +282,8 @@ Never describe the same concept twice. If you wrote "night", do NOT also write "
 ### Rule 4.5 — Multi-Character Interaction Mapping
 When the scene card contains interaction_actions, first determine which character is the active source, which is the receiving target, and whether the interaction is mutual.
 - Keep the shared relationship readable in base_prompt, but put each character's own role and reaction inside that character's prompt.
-- Follow NovelAI V4 multi-character prompting guidance when useful: source#action marks the active party, target#action marks the receiving party, and mutual#action marks a reciprocal action.
-- Example: if the scene says { "action": "undressing", "source": "Yuhui", "target": "Abin" }, Yuhui's prompt can use source#undressing or natural language like "She is undressing herself in front of him.", while Abin's prompt can use target#undressing or natural language like "He is watching her undress in front of him."
+- Follow NovelAI V4 multi-character prompting guidance directly: source#action marks the active party, target#action marks the receiving party, and mutual#action marks a reciprocal action.
+- Example: if the scene says { "action": "undressing", "source": "Yuhui", "target": "Abin" }, Yuhui's prompt should include source#undressing, while Abin's prompt should include target#undressing.
 - Never assign the same interaction role text to both characters when the action is directional.
 
 ### Rule 5 — Self-Review Before Output
@@ -349,7 +349,9 @@ For NSFW characters, describe physical state directly and objectively:
 - Do NOT add quality booster phrases such as masterpiece or best quality — the pipeline handles these.
 - base_prompt must be a non-empty string.
 - character_prompts should have one entry per visible scene character, in scene-card order. If there are no visible characters, use an empty array.
+- In multi-character mode, subject count tags belong in base_prompt, while each character prompt should use girl / boy / other without a number.
 - If the scene has 2 or more visible characters, every character_prompts item MUST include an interaction field. Use null when that character has no direct interaction in the frozen frame.
+- Inside character_prompts, use ONLY the field name "interaction". Do NOT output "interaction_actions" there. That older field name belongs only to the scene card input and will be treated as legacy compatibility.
 - negative_prompt must be short and scene-specific.
 - Keep base_prompt under 80 tokens, each character prompt under 60 tokens, and all prompt text under 460 tokens.`;
 

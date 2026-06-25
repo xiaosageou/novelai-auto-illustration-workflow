@@ -472,67 +472,32 @@ function 是强方向性交互动作(action = '') {
   return /^(?:sex|penetration|vaginal(?:_penetration)?|anal(?:_penetration)?|handjob|footjob|blowjob|fellatio|irrumatio|paizuri|cunnilingus)$/i.test(normalized);
 }
 
-function 构建互动自然语言(sceneCharacters = [], interactionActions = []) {
+function 构建互动动作标签(sceneCharacters = [], interactionActions = []) {
   const characters = Array.isArray(sceneCharacters) ? sceneCharacters : [];
-  const sentences = characters.map(() => []);
+  const tagsByCharacter = characters.map(() => []);
   const byName = new Map(characters.map((char, index) => [String(char?.name || '').trim().toLowerCase(), index]));
-  const subjectFor = (char) => {
-    const gender = String(char?.gender || '').toLowerCase();
-    if (/woman|girl|female/.test(gender)) return 'She';
-    if (/man|boy|male/.test(gender)) return 'He';
-    return 'They';
-  };
-  const positionFor = (char) => {
-    const text = String(char?.position || '').toLowerCase();
-    if (/left|左/.test(text)) return ' from the left';
-    if (/right|右/.test(text)) return ' from the right';
-    return '';
-  };
-  const partnerFor = (char, index) => {
-    const gender = String(char?.gender || '').toLowerCase();
-    const noun = /woman|girl|female/.test(gender)
-      ? 'woman'
-      : (/man|boy|male/.test(gender) ? 'man' : 'character');
-    const position = String(char?.position || '').toLowerCase();
-    if (/left|左/.test(position)) return `the ${noun} on the left`;
-    if (/right|右/.test(position)) return `the ${noun} on the right`;
-    if (/center|middle|中央|中间|正中/.test(position)) return `the ${noun} in the center`;
-    if (/foreground|front|前景|前方/.test(position)) return `the ${noun} in the foreground`;
-    if (/background|rear|back|远景|背景|后方/.test(position)) return `the ${noun} in the background`;
-    if (characters.length === 3) {
-      return `the ${noun} ${index === 0 ? 'on the left' : (index === 1 ? 'in the center' : 'on the right')}`;
-    }
-    return `the other ${noun}`;
-  };
 
   for (const interaction of Array.isArray(interactionActions) ? interactionActions : []) {
     const action = 标准化互动动作(interaction?.action);
     if (!action) continue;
     const sourceIndex = byName.get(String(interaction?.source || '').trim().toLowerCase());
     const targetIndex = byName.get(String(interaction?.target || '').trim().toLowerCase());
-    const actionWords = action.replace(/_/g, ' ');
     const isMutual = interaction?.mutual === true && !是强方向性交互动作(action);
     if (isMutual) {
       if (sourceIndex !== undefined && targetIndex !== undefined) {
-        sentences[sourceIndex].push(`${subjectFor(characters[sourceIndex])} mutually performs ${actionWords} with ${partnerFor(characters[targetIndex], targetIndex)}${positionFor(characters[sourceIndex])}.`);
-        sentences[targetIndex].push(`${subjectFor(characters[targetIndex])} mutually performs ${actionWords} with ${partnerFor(characters[sourceIndex], sourceIndex)}${positionFor(characters[targetIndex])}.`);
+        tagsByCharacter[sourceIndex].push(`mutual#${action}`);
+        tagsByCharacter[targetIndex].push(`mutual#${action}`);
       }
     } else {
       if (sourceIndex !== undefined) {
-        const targetDescription = targetIndex !== undefined
-          ? partnerFor(characters[targetIndex], targetIndex)
-          : 'the other character';
-        sentences[sourceIndex].push(`${subjectFor(characters[sourceIndex])} performs ${actionWords} on ${targetDescription}${positionFor(characters[sourceIndex])}.`);
+        tagsByCharacter[sourceIndex].push(`source#${action}`);
       }
       if (targetIndex !== undefined) {
-        const sourceDescription = sourceIndex !== undefined
-          ? partnerFor(characters[sourceIndex], sourceIndex)
-          : 'the other character';
-        sentences[targetIndex].push(`${subjectFor(characters[targetIndex])} receives ${actionWords} from ${sourceDescription}${positionFor(characters[targetIndex])}.`);
+        tagsByCharacter[targetIndex].push(`target#${action}`);
       }
     }
   }
-  return sentences.map(items => [...new Set(items)]);
+  return tagsByCharacter.map(items => [...new Set(items)]);
 }
 
 export function estimateV45Tokens(text = '') {
@@ -555,6 +520,7 @@ function promptTokenPriority(token = '') {
   if (/(?:^|::)\s*artist:|^artist:|official art|year20\d\d/i.test(token)) return 92;
   if (/exactly_|only_|facing |interaction directed|characters facing/i.test(token)) return 90;
   if (/hair|eyes|dress|robe|shirt|skirt|armor|uniform|skin|breasts|muscular|petite/i.test(token)) return 75;
+  if (/^(?:source|target|mutual)#/i.test(token)) return 72;
   if (/hug|kiss|hold|grab|push|pull|point|attack|look|pose|standing|sitting|kneeling/i.test(token)) return 70;
   if (/masterpiece|aesthetic|quality|absurdres|detailed|lighting|atmosphere/i.test(token)) return 20;
   return 50;
@@ -1025,7 +991,7 @@ export function buildFinalImagePrompt(prompt, {
     && !已有统一构图提示(cleanPrompt);
   const needsScaleGuard = sceneCharacterList.length >= 2
     && !/consistent character scale|same ground plane|same focal plane|natural proportions/i.test(cleanPrompt);
-  const interactionSentences = 构建互动自然语言(sceneCharacterList, sceneInteractionActions);
+  const interactionTags = 构建互动动作标签(sceneCharacterList, sceneInteractionActions);
   const negativeCharacterPrompts = [];
   const characterPrompts = sceneCharacterList.map((char, index) => {
     const hasCharacterName = Boolean(String(char?.name || '').trim());
@@ -1065,7 +1031,7 @@ export function buildFinalImagePrompt(prompt, {
     finalCharPrompt = 清理体液与汗水冲突(finalCharPrompt);
     const genderTag = 角色性别标签(char?.gender);
     if (genderTag === 'girl' || genderTag === 'boy') {
-      finalCharPrompt = mergePositivePromptParts(`1${genderTag}`, 移除角色局部数量标签(finalCharPrompt));
+      finalCharPrompt = mergePositivePromptParts(genderTag, 移除角色局部数量标签(finalCharPrompt));
     }
     finalCharPrompt = 净化角色表情提示词(
       finalCharPrompt,
@@ -1074,11 +1040,15 @@ export function buildFinalImagePrompt(prompt, {
     );
     if (sceneCharacterList.length >= 2) {
       const heightKey = String(char?.name || '').trim().toLowerCase() || `#${index}`;
+      const charInteractionTags = (interactionTags[index] || []).filter(tag => {
+        const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return !new RegExp(`\\b${escaped}\\b`, 'i').test(finalCharPrompt);
+      });
       finalCharPrompt = mergePositivePromptParts(
         净化多人身高标签(finalCharPrompt),
         heightConstraints.byName.get(heightKey) || '',
         spatialGuidance.characterDirections[index] || '',
-        interactionSentences[index]?.join(' ') || ''
+        charInteractionTags.join(', ')
       );
       finalCharPrompt = 按逗号拆分提示词(finalCharPrompt)
         .filter(token => !/^(?:on[_ ]?(?:the[_ ]?)?(?:left|right)|left[_ ]?(?:side|foreground|background)?|right[_ ]?(?:side|foreground|background)?|far[_ ]?(?:left|right))$/i.test(token))

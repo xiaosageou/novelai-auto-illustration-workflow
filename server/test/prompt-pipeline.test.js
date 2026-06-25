@@ -809,7 +809,7 @@ test('current scene state overrides conflicting DNA clothing, hair, and poses', 
   assert.match(result.characterPrompts[0], /completely_nude/);
   assert.doesNotMatch(result.characterPrompts[0], /on_back|hair_bun|hair_ornament|robe/);
   assert.doesNotMatch(result.characterPrompts[1], /daoist_robe|black_robe/);
-  assert.match(result.characterPrompts[1], /^1boy,/);
+  assert.match(result.characterPrompts[1], /^boy,/);
   assert.match(result.characterPrompts[1], /crazed_expression/);
   assert.match(result.characterPrompts[1], /\bgrin\b/);
   assert.doesNotMatch(result.characterPrompts[1], /closed mouth|natural expression/);
@@ -1681,8 +1681,8 @@ test('advanced prompt retries when 2-character scene omits required interaction 
     }, [], 'test');
 
     assert.equal(fetchCount, 2);
-    assert.deepEqual(result.character_prompts[0].interaction, { role: 'source', action: 'undressing', target: '阿宾' });
-    assert.deepEqual(result.character_prompts[1].interaction, { role: 'target', action: 'undressing', target: '钰慧' });
+    assert.deepEqual(result.character_prompts[0].interaction, [{ role: 'source', action: 'undressing', target: '阿宾' }]);
+    assert.deepEqual(result.character_prompts[1].interaction, [{ role: 'target', action: 'undressing', target: '钰慧' }]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1736,8 +1736,8 @@ test('advanced prompt retries when inferred interaction field is missing, then a
     }, [], 'test');
 
     assert.equal(fetchCount, 2);
-    assert.deepEqual(result.character_prompts[0].interaction, { role: 'source', action: 'undressing', target: '阿宾' });
-    assert.deepEqual(result.character_prompts[1].interaction, { role: 'target', action: 'undressing', target: '钰慧' });
+    assert.deepEqual(result.character_prompts[0].interaction, [{ role: 'source', action: 'undressing', target: '阿宾' }]);
+    assert.deepEqual(result.character_prompts[1].interaction, [{ role: 'target', action: 'undressing', target: '钰慧' }]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1782,8 +1782,172 @@ test('advanced prompt accepts structurally valid interaction fields even when th
     }, [], 'test');
 
     assert.equal(fetchCount, 1);
-    assert.deepEqual(result.character_prompts[0].interaction, { role: 'source', action: 'stripping', target: '阿宾' });
-    assert.deepEqual(result.character_prompts[1].interaction, { role: 'target', action: 'watching', target: '钰慧' });
+    assert.deepEqual(result.character_prompts[0].interaction, [{ role: 'source', action: 'stripping', target: '阿宾' }]);
+    assert.deepEqual(result.character_prompts[1].interaction, [{ role: 'target', action: 'watching', target: '钰慧' }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('advanced prompt accepts interaction arrays for multi-target scenes', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount++;
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              orientation: 'landscape',
+              base_prompt: 'nsfw, explicit. Wide shot from a slight low angle, showing three nude figures on a bed.',
+              character_prompts: [
+                {
+                  name: '阿宾',
+                  prompt: 'Young man kneeling while penetrating one woman and fingering another.',
+                  negative_prompt: 'dress',
+                  interaction: [
+                    { role: 'source', action: 'penis_in_vagina', target: 'Cindy' },
+                    { role: 'source', action: 'fingering', target: '淑华' }
+                  ]
+                },
+                {
+                  name: 'Cindy',
+                  prompt: 'Young woman lying on her back with legs raised.',
+                  negative_prompt: 'stubble',
+                  interaction: [
+                    { role: 'target', action: 'penis_in_vagina', target: '阿宾' }
+                  ]
+                },
+                {
+                  name: '淑华',
+                  prompt: 'Young woman kneeling beside the bed.',
+                  negative_prompt: 'masculine features',
+                  interaction: [
+                    { role: 'target', action: 'fingering', target: '阿宾' }
+                  ]
+                }
+              ],
+              negative_prompt: 'text, watermark'
+            })
+          }
+        }]
+      })
+    };
+  };
+
+  try {
+    const result = await extractor.generateScenePromptAdvanced({
+      visual_description: '阿宾同时与Cindy和淑华发生接触',
+      core_action: '阿宾插入Cindy，同时手指插入淑华',
+      characters: [
+        { name: '阿宾', gender: 'man' },
+        { name: 'Cindy', gender: 'woman' },
+        { name: '淑华', gender: 'woman' }
+      ],
+      interaction_actions: [
+        { action: 'penis_in_vagina', source: '阿宾', target: 'Cindy', mutual: false },
+        { action: 'fingering', source: '阿宾', target: '淑华', mutual: false }
+      ]
+    }, [], 'test');
+
+    assert.equal(fetchCount, 1);
+    assert.deepEqual(result.character_prompts[0].interaction, [
+      { role: 'source', action: 'penis_in_vagina', target: 'Cindy' },
+      { role: 'source', action: 'fingering', target: '淑华' }
+    ]);
+    assert.deepEqual(result.character_prompts[1].interaction, [
+      { role: 'target', action: 'penis_in_vagina', target: '阿宾' }
+    ]);
+    assert.deepEqual(result.character_prompts[2].interaction, [
+      { role: 'target', action: 'fingering', target: '阿宾' }
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('advanced prompt accepts legacy character interaction_actions field as interaction compatibility', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount++;
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              orientation: 'landscape',
+              base_prompt: 'Indoor bedroom scene on a bed with three nude figures in simultaneous contact.',
+              character_prompts: [
+                {
+                  name: '阿宾',
+                  prompt: 'Young man kneeling center while penetrating one woman and fingering another.',
+                  negative_prompt: 'female features',
+                  interaction_actions: [
+                    { role: 'source', action: 'vaginal_penetration', target: 'Cindy' },
+                    { role: 'source', action: 'fingering', target: '淑华' }
+                  ]
+                },
+                {
+                  name: 'Cindy',
+                  prompt: 'Young woman lying beneath him on the bed.',
+                  negative_prompt: 'short hair',
+                  interaction_actions: [
+                    { role: 'target', action: 'vaginal_penetration', target: '阿宾' }
+                  ]
+                },
+                {
+                  name: '淑华',
+                  prompt: 'Young woman kneeling beside him on the bed.',
+                  negative_prompt: 'masculine features',
+                  interaction_actions: [
+                    { role: 'target', action: 'fingering', target: '阿宾' }
+                  ]
+                }
+              ],
+              negative_prompt: 'text, watermark'
+            })
+          }
+        }]
+      })
+    };
+  };
+
+  try {
+    const result = await extractor.generateScenePromptAdvanced({
+      visual_description: '阿宾同时插入Cindy并手指插入淑华',
+      core_action: '阿宾同时与Cindy和淑华发生明确性接触',
+      characters: [
+        { name: '阿宾', gender: 'man' },
+        { name: 'Cindy', gender: 'woman' },
+        { name: '淑华', gender: 'woman' }
+      ],
+      interaction_actions: [
+        { action: 'vaginal_penetration', source: '阿宾', target: 'Cindy', mutual: false },
+        { action: 'fingering', source: '阿宾', target: '淑华', mutual: false }
+      ]
+    }, [], 'test');
+
+    assert.equal(fetchCount, 1);
+    assert.deepEqual(result.character_prompts[0].interaction, [
+      { role: 'source', action: 'vaginal_penetration', target: 'Cindy' },
+      { role: 'source', action: 'fingering', target: '淑华' }
+    ]);
+    assert.deepEqual(result.character_prompts[1].interaction, [
+      { role: 'target', action: 'vaginal_penetration', target: '阿宾' }
+    ]);
+    assert.deepEqual(result.character_prompts[2].interaction, [
+      { role: 'target', action: 'fingering', target: '阿宾' }
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1956,7 +2120,7 @@ test('advanced prompt validation ignores mutual hints for directional sex', asyn
   }
 });
 
-test('directional sex actions add natural language interaction context without role markers', () => {
+test('directional sex actions add official source and target action tags', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, bedroom, sex', {
     sceneCharacters: [
       { name: '钰慧', gender: 'woman', position: 'left' },
@@ -1972,9 +2136,8 @@ test('directional sex actions add natural language interaction context without r
     sceneNsfwRating: 'nsfw_explicit'
   });
 
-  assert.match(result.characterPrompts[0], /receives sex from the man on the right/i);
-  assert.match(result.characterPrompts[1], /performs sex on the woman on the left/i);
-  assert.doesNotMatch(result.characterPrompts.join(' '), /(?:source|target|mutual)#/);
+  assert.match(result.characterPrompts[0], /target#sex/i);
+  assert.match(result.characterPrompts[1], /source#sex/i);
 });
 
 test('natural language character prompts keep explicit source and target markers for directional interactions', () => {
@@ -1997,7 +2160,7 @@ test('natural language character prompts keep explicit source and target markers
   assert.match(result.characterPrompts[1], /target#undressing/i);
 });
 
-test('directional sex actions ignore mutual hints in natural language context', () => {
+test('directional sex actions ignore mutual hints and still use source target tags', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, bedroom, sex', {
     sceneCharacters: [
       { name: '王忆如', gender: 'woman', position: 'left' },
@@ -2013,9 +2176,9 @@ test('directional sex actions ignore mutual hints in natural language context', 
     sceneNsfwRating: 'nsfw_explicit'
   });
 
-  assert.match(result.characterPrompts[0], /receives sex from the man on the right/i);
-  assert.match(result.characterPrompts[1], /performs sex on the woman on the left/i);
-  assert.doesNotMatch(result.characterPrompts.join(' '), /(?:source|target|mutual)#/);
+  assert.match(result.characterPrompts[0], /target#sex/i);
+  assert.match(result.characterPrompts[1], /source#sex/i);
+  assert.doesNotMatch(result.characterPrompts.join(' '), /mutual#sex/i);
 });
 
 test('penetration scenes only keep inset xray guidance when explicitly requested', () => {
@@ -2095,14 +2258,10 @@ test('three-character interaction graph keeps both directed contacts and partner
     { x: 0.5, y: 0.5 },
     { x: 0.7, y: 0.7 }
   ]);
-  assert.match(result.characterPrompts[0], /performs penetration on the woman in the center/i);
-  assert.match(result.characterPrompts[0], /woman in the center/);
-  assert.match(result.characterPrompts[1], /receives penetration from the man on the left/i);
-  assert.match(result.characterPrompts[1], /receives sucking nipple from the woman on the right/i);
-  assert.match(result.characterPrompts[1], /man on the left/);
-  assert.match(result.characterPrompts[1], /woman on the right/);
-  assert.match(result.characterPrompts[2], /performs sucking nipple on the woman in the center/i);
-  assert.match(result.characterPrompts[2], /woman in the center/);
+  assert.match(result.characterPrompts[0], /source#penetration/i);
+  assert.match(result.characterPrompts[1], /target#penetration/i);
+  assert.match(result.characterPrompts[1], /target#sucking_nipple/i);
+  assert.match(result.characterPrompts[2], /source#sucking_nipple/i);
   assert.match(result.basePrompt, /single unified three-character composition/);
   assert.match(result.basePrompt, /readable interaction graph/);
 });
@@ -2530,16 +2689,16 @@ test('V4.5 prompt budget keeps interaction and identity phrases under the shared
   const budgeted = enforceV45PromptBudget(
     `1girl, 1boy, exactly_two_characters, ${filler}`,
     [
-      `girl, blonde_hair, blue_eyes, performs hug on the man on the right, ${filler}`,
-      `boy, black_hair, red_eyes, receives hug from the woman on the left, ${filler}`
+      `girl, blonde_hair, blue_eyes, source#hug, ${filler}`,
+      `boy, black_hair, red_eyes, target#hug, ${filler}`
     ],
     460
   );
 
   assert.ok(budgeted.estimatedTokens <= 460);
   assert.match(budgeted.basePrompt, /exactly_two_characters/);
-  assert.match(budgeted.characterPrompts[0], /performs hug/);
-  assert.match(budgeted.characterPrompts[1], /receives hug/);
+  assert.match(budgeted.characterPrompts[0], /source#hug/);
+  assert.match(budgeted.characterPrompts[1], /target#hug/);
 });
 
 test('V4.5 prompt budget preserves artist style prompt under the shared limit', () => {
@@ -2602,8 +2761,7 @@ test('character prompts follow left-to-right order with aligned UC and interacti
   });
 
   assert.match(result.characterPrompts[0], /blonde_hair/);
-  assert.doesNotMatch(result.characterPrompts.join(' '), /(?:source|target|mutual)#/);
-  assert.match(result.characterPrompts[0], /performs hug on the man on the right from the left/);
+  assert.match(result.characterPrompts[0], /source#hug/);
   assert.deepEqual(result.negativeCharacterPrompts, [
     'black_hair, black_shirt',
     'blonde_hair, white_dress'
@@ -2817,4 +2975,92 @@ test('final prompt keeps characters separated while reinforcing interaction dire
   assert.match(result.basePrompt, /interaction directed from left to right/);
   assert.doesNotMatch(result.characterPrompts[0], /black hair|black shirt/);
   assert.doesNotMatch(result.characterPrompts[1], /blonde hair|white dress/);
+});
+
+test('pipeline converts LLM per-character interactions into source target tags when scene interaction_actions is empty', async () => {
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nai-llm-interact-'));
+  const pipeline = new PipelineManager({ projectName: 'llm-interact-test' });
+  const scene = {
+    scene_idx: 1,
+    visual_description: '阿宾在卧室中与两个女人发生关系',
+    environment: 'bedroom',
+    nsfw_rating: 'nsfw_explicit',
+    interactions: '',
+    interaction_actions: [],
+    characters: [
+      { name: '阿宾', gender: 'man', position: 'center' },
+      { name: 'Cindy', gender: 'woman', position: 'left' },
+      { name: '淑华', gender: 'woman', position: 'right' }
+    ]
+  };
+  pipeline.illustrationsDir = outputDir;
+  pipeline.autoMatchCharacterDNA = () => [];
+  pipeline.getVibeBundleForModel = async () => null;
+  pipeline.naiTagsExtractor.generateScenePromptAdvanced = async () => ({
+    orientation: 'landscape',
+    base_prompt: 'bedroom, three people, dim lighting',
+    character_prompts: [
+      {
+        name: '阿宾',
+        prompt: 'Young man, athletic build, nude.',
+        negative_prompt: '',
+        interaction: [
+          { role: 'source', action: 'vaginal_penetration', target: 'Cindy' },
+          { role: 'source', action: 'fingering', target: '淑华' }
+        ]
+      },
+      {
+        name: 'Cindy',
+        prompt: 'Woman, lying on back, nude.',
+        negative_prompt: '',
+        interaction: { role: 'target', action: 'vaginal_penetration', target: '阿宾' }
+      },
+      {
+        name: '淑华',
+        prompt: 'Young woman, kneeling, nude.',
+        negative_prompt: '',
+        interaction: { role: 'target', action: 'fingering', target: '阿宾' }
+      }
+    ],
+    negative_prompt: ''
+  });
+  let capturedCharacterPrompts = [];
+  pipeline.naiClient.generateImage = async (prompt, opts) => {
+    capturedCharacterPrompts = opts.characterPrompts || [];
+    return { imageBytes: Uint8Array.from([137, 80, 78, 71]) };
+  };
+  pipeline.projectProgress = {
+    setChapterStatus() {},
+    save: async () => {}
+  };
+
+  try {
+    await pipeline.generateSingleScene(
+      { chapter: '测试章', content: '阿宾在卧室中与两个女人发生关系' },
+      scene,
+      [scene],
+      '测试章',
+      'test-llm',
+      'nai-diffusion-4-5-full'
+    );
+
+    assert.equal(scene.status, 'SUCCESS');
+    assert.equal(capturedCharacterPrompts.length, 3);
+    const allPrompts = capturedCharacterPrompts.join('\n');
+    assert.match(allPrompts, /source#vaginal_penetration/i);
+    assert.match(allPrompts, /source#fingering/i);
+    assert.match(allPrompts, /target#vaginal_penetration/i);
+    assert.match(allPrompts, /target#fingering/i);
+    // 确保 source 和 target 标签分配给了正确的角色
+    const sourcePrompt = capturedCharacterPrompts.find(p => /source#/.test(p));
+    const targetPenetration = capturedCharacterPrompts.find(p => /target#vaginal_penetration/i.test(p));
+    const targetFingering = capturedCharacterPrompts.find(p => /target#fingering/i.test(p));
+    assert.ok(sourcePrompt, 'should have a character with source tags');
+    assert.ok(targetPenetration, 'should have a character with target#vaginal_penetration');
+    assert.ok(targetFingering, 'should have a character with target#fingering');
+    assert.notEqual(sourcePrompt, targetPenetration, 'source and target should be different characters');
+    assert.notEqual(sourcePrompt, targetFingering, 'source and target should be different characters');
+  } finally {
+    await fs.rm(outputDir, { recursive: true, force: true });
+  }
 });

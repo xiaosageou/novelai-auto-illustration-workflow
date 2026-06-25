@@ -11,6 +11,9 @@ import {
   SCENE_CHARACTER_DETAIL_FIELDS,
   buildCharacterReferenceSummary,
   characterHasSceneDetails,
+  formatSceneCharacterInteractionLines,
+  normalizeSceneCharacterInteractionList,
+  parseSceneCharacterInteractionLines,
   syncSceneCharacterInteractions,
   syncSceneCharactersFromNames
 } from './sceneEditorCharacters.js';
@@ -1160,11 +1163,17 @@ function App() {
     const promptInteractionSeed = Array.isArray(scene.character_prompt_interactions || scene.prepared_prompt?.characterPromptInteractions)
       ? (scene.character_prompt_interactions || scene.prepared_prompt?.characterPromptInteractions).map(item => ({
           name: String(item?.name || '').trim(),
-          role: String(item?.role || '').trim(),
-          action: String(item?.action || '').trim(),
-          target: String(item?.target || '').trim()
+          interactions: normalizeSceneCharacterInteractionList(item)
         }))
       : [];
+
+    const characterPromptInteractions = syncSceneCharacterInteractions(syncedCharacters, [], promptInteractionSeed);
+    const finalCharacterPrompts = Array.isArray(scene.character_prompts || scene.prepared_prompt?.characterPrompts)
+      ? (scene.character_prompts || scene.prepared_prompt?.characterPrompts)
+        .map(prompt => String(prompt || '').trim())
+        .filter(Boolean)
+        .join('\n')
+      : '';
 
     return {
       trigger_sentence: String(scene.trigger_sentence || ''),
@@ -1182,16 +1191,14 @@ function App() {
       final_prompt: String(scene.final_prompt || scene.prepared_prompt?.finalPositive || ''),
       base_prompt: String(scene.base_prompt || scene.prepared_prompt?.basePrompt || ''),
       final_negative: String(scene.final_negative || scene.prepared_prompt?.finalNegative || ''),
-      character_prompts: Array.isArray(scene.character_prompts || scene.prepared_prompt?.characterPrompts)
-        ? (scene.character_prompts || scene.prepared_prompt?.characterPrompts).join('\n')
-        : '',
+      character_prompts: finalCharacterPrompts,
       negative_character_prompts: Array.isArray(scene.negative_character_prompts || scene.prepared_prompt?.negativeCharacterPrompts)
         ? (scene.negative_character_prompts || scene.prepared_prompt?.negativeCharacterPrompts).join('\n')
         : '',
       width: scene.width || scene.prepared_prompt?.width || '',
       height: scene.height || scene.prepared_prompt?.height || '',
       characters: syncedCharacters,
-      character_prompt_interactions: syncSceneCharacterInteractions(syncedCharacters, [], promptInteractionSeed),
+      character_prompt_interactions: characterPromptInteractions,
       visual_entities: Array.isArray(scene.visual_entities)
         ? scene.visual_entities.map(entity => ({
             type: String(entity?.type || 'object'),
@@ -1250,16 +1257,14 @@ function App() {
     final_negative: String(draft.final_negative || '').trim(),
     character_prompts: String(draft.character_prompts || '')
       .split(/\r?\n/)
-      .map(item => item.trim())
+      .map(item => String(item || '').trim())
       .filter(Boolean),
     character_prompt_interactions: (Array.isArray(draft.characters) ? draft.characters : []).map((char, index) => {
-      const interaction = draft.character_prompt_interactions?.[index];
-      if (!interaction || !Object.values(interaction).some(value => String(value || '').trim())) return null;
+      const interactions = normalizeSceneCharacterInteractionList(draft.character_prompt_interactions?.[index]);
+      if (interactions.length === 0) return null;
       return {
         name: String(char?.name || '').trim(),
-        role: String(interaction?.role || '').trim(),
-        action: String(interaction?.action || '').trim(),
-        target: String(interaction?.target || '').trim()
+        interactions
       };
     }),
     negative_character_prompts: String(draft.negative_character_prompts || '')
@@ -2460,7 +2465,7 @@ function App() {
                     onClick={() => updateSceneDraft(draft => ({
                       ...draft,
                       characters: [...draft.characters, { name: '', gender: 'unknown', appearance: '', clothing: '', expression: '', pose: '', position: '' }],
-                      character_prompt_interactions: [...(draft.character_prompt_interactions || []), { role: '', action: '', target: '' }]
+                      character_prompt_interactions: [...(draft.character_prompt_interactions || []), []]
                     }))}
                   >
                     <Plus size={12} /> 添加角色
@@ -2507,35 +2512,21 @@ function App() {
                       <input style={sceneEditorInputStyle} placeholder="姓名" value={character.name} onChange={(e) => updateSceneDraft(draft => ({ ...draft, characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, name: e.target.value } : item) }))} />
                       <input style={sceneEditorInputStyle} placeholder="gender" value={character.gender} onChange={(e) => updateSceneDraft(draft => ({ ...draft, characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, gender: e.target.value } : item) }))} />
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr', gap: '8px' }}>
-                      <input
-                        style={sceneEditorInputStyle}
-                        placeholder="interaction role"
-                        value={sceneEditor.draft.character_prompt_interactions?.[index]?.role || ''}
+                    <label style={{ ...sceneEditorLabelStyle, gap: '6px' }}>
+                      <span>Interactions (一行一个，`role | action | target`)</span>
+                      <AutoResizeTextarea
+                        style={sceneEditorTextareaStyle}
+                        minRows={2}
+                        placeholder={'source | penis_in_vagina | Cindy\ntarget | fingering | 阿宾'}
+                        value={formatSceneCharacterInteractionLines(sceneEditor.draft.character_prompt_interactions?.[index])}
                         onChange={(e) => updateSceneDraft(draft => ({
                           ...draft,
-                          character_prompt_interactions: (draft.character_prompt_interactions || []).map((item, itemIndex) => itemIndex === index ? { ...(item || {}), role: e.target.value } : item)
+                          character_prompt_interactions: (draft.character_prompt_interactions || []).map((item, itemIndex) => (
+                            itemIndex === index ? parseSceneCharacterInteractionLines(e.target.value) : item
+                          ))
                         }))}
                       />
-                      <input
-                        style={sceneEditorInputStyle}
-                        placeholder="interaction action"
-                        value={sceneEditor.draft.character_prompt_interactions?.[index]?.action || ''}
-                        onChange={(e) => updateSceneDraft(draft => ({
-                          ...draft,
-                          character_prompt_interactions: (draft.character_prompt_interactions || []).map((item, itemIndex) => itemIndex === index ? { ...(item || {}), action: e.target.value } : item)
-                        }))}
-                      />
-                      <input
-                        style={sceneEditorInputStyle}
-                        placeholder="interaction target"
-                        value={sceneEditor.draft.character_prompt_interactions?.[index]?.target || ''}
-                        onChange={(e) => updateSceneDraft(draft => ({
-                          ...draft,
-                          character_prompt_interactions: (draft.character_prompt_interactions || []).map((item, itemIndex) => itemIndex === index ? { ...(item || {}), target: e.target.value } : item)
-                        }))}
-                      />
-                    </div>
+                    </label>
                     {!isExpanded && (
                       <div style={{
                         display: 'grid',
@@ -2553,10 +2544,12 @@ function App() {
                             <strong style={{ color: 'white', fontSize: '0.78rem' }}>DNA参考：</strong> {dnaReference}
                           </div>
                         )}
-                        {Object.values(sceneEditor.draft.character_prompt_interactions?.[index] || {}).some(value => String(value || '').trim()) && (
+                        {normalizeSceneCharacterInteractionList(sceneEditor.draft.character_prompt_interactions?.[index]).length > 0 && (
                           <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
                             <strong style={{ color: 'white', fontSize: '0.78rem' }}>Interaction：</strong>{' '}
-                            {[sceneEditor.draft.character_prompt_interactions[index]?.role, sceneEditor.draft.character_prompt_interactions[index]?.action, sceneEditor.draft.character_prompt_interactions[index]?.target].filter(Boolean).join(' / ')}
+                            {normalizeSceneCharacterInteractionList(sceneEditor.draft.character_prompt_interactions?.[index])
+                              .map(({ role, action, target }) => [role, action, target].filter(Boolean).join(' / '))
+                              .join(' ; ')}
                           </div>
                         )}
                       </div>

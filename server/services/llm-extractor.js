@@ -173,6 +173,27 @@ function normalizeCharacterInteraction(raw = null) {
   return { role, action, target };
 }
 
+function normalizeCharacterInteractionList(raw = null) {
+  if (raw == null) return null;
+  if (Array.isArray(raw)) {
+    const items = raw.map(normalizeCharacterInteraction).filter(Boolean);
+    return items.length > 0 ? items : null;
+  }
+  const single = normalizeCharacterInteraction(raw);
+  return single ? [single] : null;
+}
+
+function readCharacterInteractionField(item = null) {
+  if (!item || typeof item !== 'object') return null;
+  if (Object.prototype.hasOwnProperty.call(item, 'interaction')) {
+    return normalizeCharacterInteractionList(item.interaction);
+  }
+  if (Object.prototype.hasOwnProperty.call(item, 'interaction_actions')) {
+    return normalizeCharacterInteractionList(item.interaction_actions);
+  }
+  return null;
+}
+
 function validateCharacterInteractions(characterPrompts = [], sceneCharacters = [], interactionActions = [], requireExplicitField = false, onWarn = null) {
   const prompts = Array.isArray(characterPrompts) ? characterPrompts : [];
   const interactions = Array.isArray(interactionActions) ? interactionActions : [];
@@ -198,7 +219,7 @@ function validateCharacterInteractions(characterPrompts = [], sceneCharacters = 
     prompts.map((item, index) => {
       const explicitName = String(item?.name || '').trim();
       const fallbackName = String(sceneCharacters[index]?.name || '').trim();
-      return [explicitName || fallbackName, normalizeCharacterInteraction(item?.interaction)];
+      return [explicitName || fallbackName, normalizeCharacterInteractionList(item?.interaction)];
     }).filter(([name]) => Boolean(name))
   );
 
@@ -211,21 +232,34 @@ function validateCharacterInteractions(characterPrompts = [], sceneCharacters = 
     const isMutual = interaction?.mutual === true && !isDirectionalInteractionAction(action);
     const expectedSourceRole = isMutual ? 'mutual' : 'source';
     const expectedTargetRole = isMutual ? 'mutual' : 'target';
-    const sourceInteraction = promptByName.get(source);
-    const targetInteraction = promptByName.get(target);
+    const sourceInteractions = promptByName.get(source);
+    const targetInteractions = promptByName.get(target);
 
-    if (!sourceInteraction) {
+    if (!sourceInteractions) {
       throw new Error(`角色「${source}」缺少可解析的 interaction 字段`);
     }
-    if (!targetInteraction) {
+    if (!targetInteractions) {
       throw new Error(`角色「${target}」缺少可解析的 interaction 字段`);
     }
 
-    if (!visibleNames.has(sourceInteraction.target) || sourceInteraction.target === source) {
-      throw new Error(`角色「${source}」interaction.target 无效`);
+    for (const item of sourceInteractions) {
+      if (!visibleNames.has(item.target) || item.target === source) {
+        throw new Error(`角色「${source}」interaction.target 无效`);
+      }
     }
-    if (!visibleNames.has(targetInteraction.target) || targetInteraction.target === target) {
-      throw new Error(`角色「${target}」interaction.target 无效`);
+    for (const item of targetInteractions) {
+      if (!visibleNames.has(item.target) || item.target === target) {
+        throw new Error(`角色「${target}」interaction.target 无效`);
+      }
+    }
+
+    const sourceInteraction = sourceInteractions.find((item) => item.target === target);
+    const targetInteraction = targetInteractions.find((item) => item.target === source);
+    if (!sourceInteraction) {
+      throw new Error(`角色「${source}」缺少指向「${target}」的 interaction 项`);
+    }
+    if (!targetInteraction) {
+      throw new Error(`角色「${target}」缺少指向「${source}」的 interaction 项`);
     }
 
     if (sourceInteraction.role !== expectedSourceRole || sourceInteraction.action !== action || sourceInteraction.target !== target) {
@@ -1834,7 +1868,7 @@ export class LLMExtractor {
             name: (item?.name || '').trim(),
             prompt: (item?.prompt || '').trim(),
             negative_prompt: String(item?.negative_prompt || '').trim(),
-            interaction: normalizeCharacterInteraction(item?.interaction)
+            interaction: readCharacterInteractionField(item)
           };
         }).filter(item => item.prompt)
         : [];

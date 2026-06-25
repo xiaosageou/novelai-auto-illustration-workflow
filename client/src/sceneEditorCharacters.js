@@ -8,6 +8,56 @@ export function createEmptySceneCharacterInteraction(defaults = {}) {
   };
 }
 
+export function normalizeSceneCharacterInteractionList(value = null) {
+  if (Array.isArray(value)) {
+    return value
+      .map(item => createEmptySceneCharacterInteraction(item))
+      .filter(item => item.role && item.action && item.target);
+  }
+  if (value && typeof value === 'object' && Array.isArray(value.interactions)) {
+    return value.interactions
+      .map(item => createEmptySceneCharacterInteraction(item))
+      .filter(item => item.role && item.action && item.target);
+  }
+  const single = createEmptySceneCharacterInteraction(value);
+  return single.role && single.action && single.target ? [single] : [];
+}
+
+export function formatCharacterPromptInteractionTag(interactions = []) {
+  return normalizeSceneCharacterInteractionList(interactions)
+    .map(({ role, action, target }) => `[${role}:${action}->${target}]`)
+    .join(' ');
+}
+
+export function formatCharacterPromptDisplayLine(prompt = '', interactions = []) {
+  const cleanPrompt = String(prompt || '').trim();
+  const tag = formatCharacterPromptInteractionTag(interactions);
+  if (!tag) return cleanPrompt;
+  return cleanPrompt ? `${tag} ${cleanPrompt}` : tag;
+}
+
+export function stripCharacterPromptDisplayTag(prompt = '') {
+  return String(prompt || '').replace(/^(?:\[(?:source|target|mutual):[^\]]+\]\s*)+/i, '').trim();
+}
+
+export function formatSceneCharacterInteractionLines(interactions = []) {
+  return normalizeSceneCharacterInteractionList(interactions)
+    .map(({ role, action, target }) => `${role} | ${action} | ${target}`)
+    .join('\n');
+}
+
+export function parseSceneCharacterInteractionLines(value = '') {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [role, action, target] = line.split('|').map(item => String(item || '').trim());
+      return createEmptySceneCharacterInteraction({ role, action, target });
+    })
+    .filter(item => item.role && item.action && item.target);
+}
+
 export function createEmptySceneCharacter(name = '', defaults = {}) {
   return {
     name: String(name || '').trim(),
@@ -57,7 +107,7 @@ export function syncSceneCharacterInteractions(sceneCharacters = [], existingInt
       .map((interaction, index) => {
         const name = String(sceneCharacters[index]?.name || '').trim();
         if (!name) return null;
-        return [name, createEmptySceneCharacterInteraction(interaction)];
+        return [name, normalizeSceneCharacterInteractionList(interaction)];
       })
       .filter(Boolean)
   );
@@ -67,7 +117,7 @@ export function syncSceneCharacterInteractions(sceneCharacters = [], existingInt
       .map((interaction) => {
         const name = String(interaction?.name || '').trim();
         if (!name) return null;
-        return [name, createEmptySceneCharacterInteraction(interaction)];
+        return [name, normalizeSceneCharacterInteractionList(interaction)];
       })
       .filter(Boolean)
   );
@@ -76,7 +126,7 @@ export function syncSceneCharacterInteractions(sceneCharacters = [], existingInt
     const name = String(character?.name || '').trim();
     return existingByName.get(name)
       || seededByName.get(name)
-      || createEmptySceneCharacterInteraction();
+      || [];
   });
 }
 

@@ -4,6 +4,10 @@ import test from 'node:test';
 import {
   buildCharacterReferenceSummary,
   characterHasSceneDetails,
+  formatCharacterPromptDisplayLine,
+  formatSceneCharacterInteractionLines,
+  parseSceneCharacterInteractionLines,
+  stripCharacterPromptDisplayTag,
   syncSceneCharacterInteractions,
   syncSceneCharactersFromNames
 } from './sceneEditorCharacters.js';
@@ -115,15 +119,38 @@ test('syncSceneCharacterInteractions keeps interactions aligned to character nam
       { name: '阿宾' }
     ],
     [
-      { role: 'source', action: 'undressing', target: '阿宾' }
+      [{ role: 'source', action: 'undressing', target: '阿宾' }]
     ],
     [
-      { name: '阿宾', role: 'target', action: 'undressing', target: '钰慧' }
+      { name: '阿宾', interactions: [{ role: 'target', action: 'undressing', target: '钰慧' }] }
     ]
   );
 
   assert.deepEqual(result, [
+    [{ role: 'source', action: 'undressing', target: '阿宾' }],
+    [{ role: 'target', action: 'undressing', target: '钰慧' }]
+  ]);
+});
+
+test('formatCharacterPromptDisplayLine adds display-only interaction tag and stripCharacterPromptDisplayTag removes it', () => {
+  const line = formatCharacterPromptDisplayLine('A young woman loosening her clothes.', [
     { role: 'source', action: 'undressing', target: '阿宾' },
-    { role: 'target', action: 'undressing', target: '钰慧' }
+    { role: 'target', action: 'watching', target: '钰慧' }
+  ]);
+
+  assert.equal(line, '[source:undressing->阿宾] [target:watching->钰慧] A young woman loosening her clothes.');
+  assert.equal(stripCharacterPromptDisplayTag(line), 'A young woman loosening her clothes.');
+});
+
+test('formatSceneCharacterInteractionLines and parseSceneCharacterInteractionLines support multiple entries', () => {
+  const lines = formatSceneCharacterInteractionLines([
+    { role: 'source', action: 'penis_in_vagina', target: 'Cindy' },
+    { role: 'source', action: 'fingering', target: '淑华' }
+  ]);
+
+  assert.equal(lines, 'source | penis_in_vagina | Cindy\nsource | fingering | 淑华');
+  assert.deepEqual(parseSceneCharacterInteractionLines(lines), [
+    { role: 'source', action: 'penis_in_vagina', target: 'Cindy' },
+    { role: 'source', action: 'fingering', target: '淑华' }
   ]);
 });

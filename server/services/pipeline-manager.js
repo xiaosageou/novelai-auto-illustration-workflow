@@ -22,6 +22,31 @@ function normalizePresetList(presets = []) {
   }));
 }
 
+function normalizeCharacterPromptInteractionEntry(raw = null) {
+  if (!raw || typeof raw !== 'object') return null;
+  const role = String(raw?.role || '').trim();
+  const action = String(raw?.action || '').trim();
+  const target = String(raw?.target || '').trim();
+  if (!role || !action || !target) return null;
+  return { role, action, target };
+}
+
+function normalizeCharacterPromptInteractionList(raw = null) {
+  if (Array.isArray(raw)) {
+    return raw
+      .map(item => normalizeCharacterPromptInteractionEntry(item))
+      .filter(Boolean);
+  }
+  const nested = Array.isArray(raw?.interactions) ? raw.interactions : null;
+  if (nested) {
+    return nested
+      .map(item => normalizeCharacterPromptInteractionEntry(item))
+      .filter(Boolean);
+  }
+  const single = normalizeCharacterPromptInteractionEntry(raw);
+  return single ? [single] : [];
+}
+
 export function resolveTaskLlmConfig(config = {}, task = 'scene') {
   const prefixMap = {
     characterDna: 'llm_character_dna',
@@ -746,6 +771,26 @@ export class PipelineManager {
     }
 
     // D. 提示词装配与净化
+    // 将 LLM 返回的 per-character interaction 转换为场景级 interaction_actions，
+    // 确保 构建互动动作标签 能生成 source#/target# 标签注入到角色 prompt 中。
+    const llmInteractionActions = [];
+    for (const cp of (advancedParams.character_prompts || [])) {
+      const name = String(cp?.name || '').trim();
+      const interactions = normalizeCharacterPromptInteractionList(cp?.interaction);
+      for (const item of interactions) {
+        if (item.role === 'source') {
+          llmInteractionActions.push({ action: item.action, source: name, target: item.target, mutual: false });
+        } else if (item.role === 'target') {
+          llmInteractionActions.push({ action: item.action, source: item.target, target: name, mutual: false });
+        } else if (item.role === 'mutual') {
+          llmInteractionActions.push({ action: item.action, source: name, target: item.target, mutual: true });
+        }
+      }
+    }
+    const mergedInteractionActions = (scene.interaction_actions || []).length > 0
+      ? scene.interaction_actions
+      : llmInteractionActions;
+
     const promptResult = buildFinalImagePrompt(advancedParams.base_prompt || advancedParams.prompt, {
       composition,
       size: requestedSize,
@@ -757,7 +802,7 @@ export class PipelineManager {
       sceneEnvironment: scene.environment || '',
       sceneDescription: scene.visual_description || scene.scene_desc || '',
       sceneInteractions: scene.interactions || '',
-      sceneInteractionActions: scene.interaction_actions || [],
+      sceneInteractionActions: mergedInteractionActions,
       structuredCharacterPrompts: advancedParams.character_prompts || [],
       sceneMustShow: scene.must_show || [],
       sceneMustNotShow: scene.must_not_show || [],
@@ -775,9 +820,7 @@ export class PipelineManager {
       negativeCharacterPrompts: promptResult.negativeCharacterPrompts,
       characterPromptInteractions: (advancedParams.character_prompts || []).map(item => ({
         name: String(item?.name || '').trim(),
-        role: String(item?.interaction?.role || '').trim(),
-        action: String(item?.interaction?.action || '').trim(),
-        target: String(item?.interaction?.target || '').trim()
+        interactions: normalizeCharacterPromptInteractionList(item?.interaction)
       })),
       characterCenters: promptResult.characterCenters,
       width: promptResult.width,
@@ -1600,11 +1643,11 @@ export class PipelineManager {
       character_prompt_interactions: Array.isArray(updates.character_prompt_interactions)
         ? updates.character_prompt_interactions.map((item, index) => {
             if (!item || typeof item !== 'object') return null;
+            const interactions = normalizeCharacterPromptInteractionList(item);
+            if (interactions.length === 0) return null;
             return {
               name: String(item?.name || currentScene.characters?.[index]?.name || '').trim(),
-              role: String(item?.role || '').trim(),
-              action: String(item?.action || '').trim(),
-              target: String(item?.target || '').trim()
+              interactions
             };
           })
         : currentScene.character_prompt_interactions,
