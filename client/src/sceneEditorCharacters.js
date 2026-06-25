@@ -1,5 +1,13 @@
 export const SCENE_CHARACTER_DETAIL_FIELDS = ['appearance', 'clothing', 'expression', 'pose', 'position'];
 
+export function createEmptySceneCharacterInteraction(defaults = {}) {
+  return {
+    role: String(defaults?.role || '').trim(),
+    action: String(defaults?.action || '').trim(),
+    target: String(defaults?.target || '').trim()
+  };
+}
+
 export function createEmptySceneCharacter(name = '', defaults = {}) {
   return {
     name: String(name || '').trim(),
@@ -40,6 +48,35 @@ export function syncSceneCharactersFromNames(namesInput = '', existingCharacters
     return createEmptySceneCharacter(name, {
       gender: registryCharacter?.gender || 'unknown'
     });
+  });
+}
+
+export function syncSceneCharacterInteractions(sceneCharacters = [], existingInteractions = [], seededInteractions = []) {
+  const existingByName = new Map(
+    (Array.isArray(existingInteractions) ? existingInteractions : [])
+      .map((interaction, index) => {
+        const name = String(sceneCharacters[index]?.name || '').trim();
+        if (!name) return null;
+        return [name, createEmptySceneCharacterInteraction(interaction)];
+      })
+      .filter(Boolean)
+  );
+
+  const seededByName = new Map(
+    (Array.isArray(seededInteractions) ? seededInteractions : [])
+      .map((interaction) => {
+        const name = String(interaction?.name || '').trim();
+        if (!name) return null;
+        return [name, createEmptySceneCharacterInteraction(interaction)];
+      })
+      .filter(Boolean)
+  );
+
+  return (Array.isArray(sceneCharacters) ? sceneCharacters : []).map((character) => {
+    const name = String(character?.name || '').trim();
+    return existingByName.get(name)
+      || seededByName.get(name)
+      || createEmptySceneCharacterInteraction();
   });
 }
 

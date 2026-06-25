@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildCharacterReferenceSummary,
   characterHasSceneDetails,
+  syncSceneCharacterInteractions,
   syncSceneCharactersFromNames
 } from './sceneEditorCharacters.js';
 
@@ -105,4 +106,24 @@ test('syncSceneCharactersFromNames drops removed names and deduplicates repeated
   ]);
 
   assert.deepEqual(result.map((item) => item.name), ['阿宾', '王忆如']);
+});
+
+test('syncSceneCharacterInteractions keeps interactions aligned to character names and seeds generated values', () => {
+  const result = syncSceneCharacterInteractions(
+    [
+      { name: '钰慧' },
+      { name: '阿宾' }
+    ],
+    [
+      { role: 'source', action: 'undressing', target: '阿宾' }
+    ],
+    [
+      { name: '阿宾', role: 'target', action: 'undressing', target: '钰慧' }
+    ]
+  );
+
+  assert.deepEqual(result, [
+    { role: 'source', action: 'undressing', target: '阿宾' },
+    { role: 'target', action: 'undressing', target: '钰慧' }
+  ]);
 });

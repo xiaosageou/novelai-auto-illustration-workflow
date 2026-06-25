@@ -773,6 +773,12 @@ export class PipelineManager {
       basePrompt: promptResult.basePrompt,
       characterPrompts: promptResult.characterPrompts,
       negativeCharacterPrompts: promptResult.negativeCharacterPrompts,
+      characterPromptInteractions: (advancedParams.character_prompts || []).map(item => ({
+        name: String(item?.name || '').trim(),
+        role: String(item?.interaction?.role || '').trim(),
+        action: String(item?.interaction?.action || '').trim(),
+        target: String(item?.interaction?.target || '').trim()
+      })),
       characterCenters: promptResult.characterCenters,
       width: promptResult.width,
       height: promptResult.height
@@ -855,6 +861,7 @@ export class PipelineManager {
     scene.base_prompt = pp.basePrompt;
     scene.character_prompts = pp.characterPrompts;
     scene.negative_character_prompts = pp.negativeCharacterPrompts;
+    scene.character_prompt_interactions = pp.characterPromptInteractions;
     scene.character_centers = pp.characterCenters;
     scene.width = pp.width;
     scene.height = pp.height;
@@ -1590,6 +1597,17 @@ export class PipelineManager {
       character_prompts: Array.isArray(updates.character_prompts)
         ? updates.character_prompts.map(item => String(item || '').trim()).filter(Boolean)
         : currentScene.character_prompts,
+      character_prompt_interactions: Array.isArray(updates.character_prompt_interactions)
+        ? updates.character_prompt_interactions.map((item, index) => {
+            if (!item || typeof item !== 'object') return null;
+            return {
+              name: String(item?.name || currentScene.characters?.[index]?.name || '').trim(),
+              role: String(item?.role || '').trim(),
+              action: String(item?.action || '').trim(),
+              target: String(item?.target || '').trim()
+            };
+          })
+        : currentScene.character_prompt_interactions,
       negative_character_prompts: Array.isArray(updates.negative_character_prompts)
         ? updates.negative_character_prompts.map(item => String(item || '').trim()).filter(Boolean)
         : currentScene.negative_character_prompts,

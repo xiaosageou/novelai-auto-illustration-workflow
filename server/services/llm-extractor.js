@@ -173,7 +173,7 @@ function normalizeCharacterInteraction(raw = null) {
   return { role, action, target };
 }
 
-function validateCharacterInteractions(characterPrompts = [], sceneCharacters = [], interactionActions = [], requireExplicitField = false) {
+function validateCharacterInteractions(characterPrompts = [], sceneCharacters = [], interactionActions = [], requireExplicitField = false, onWarn = null) {
   const prompts = Array.isArray(characterPrompts) ? characterPrompts : [];
   const interactions = Array.isArray(interactionActions) ? interactionActions : [];
   const visibleCount = Array.isArray(sceneCharacters) ? sceneCharacters.length : 0;
@@ -189,6 +189,11 @@ function validateCharacterInteractions(characterPrompts = [], sceneCharacters = 
 
   if (!interactions.length) return;
 
+  const visibleNames = new Set(
+    (Array.isArray(sceneCharacters) ? sceneCharacters : [])
+      .map((character) => String(character?.name || '').trim())
+      .filter(Boolean)
+  );
   const promptByName = new Map(
     prompts.map((item, index) => {
       const explicitName = String(item?.name || '').trim();
@@ -209,11 +214,25 @@ function validateCharacterInteractions(characterPrompts = [], sceneCharacters = 
     const sourceInteraction = promptByName.get(source);
     const targetInteraction = promptByName.get(target);
 
-    if (!sourceInteraction || sourceInteraction.role !== expectedSourceRole || sourceInteraction.action !== action || sourceInteraction.target !== target) {
-      throw new Error(`角色「${source}」interaction 字段不符合预期`);
+    if (!sourceInteraction) {
+      throw new Error(`角色「${source}」缺少可解析的 interaction 字段`);
     }
-    if (!targetInteraction || targetInteraction.role !== expectedTargetRole || targetInteraction.action !== action || targetInteraction.target !== source) {
-      throw new Error(`角色「${target}」interaction 字段不符合预期`);
+    if (!targetInteraction) {
+      throw new Error(`角色「${target}」缺少可解析的 interaction 字段`);
+    }
+
+    if (!visibleNames.has(sourceInteraction.target) || sourceInteraction.target === source) {
+      throw new Error(`角色「${source}」interaction.target 无效`);
+    }
+    if (!visibleNames.has(targetInteraction.target) || targetInteraction.target === target) {
+      throw new Error(`角色「${target}」interaction.target 无效`);
+    }
+
+    if (sourceInteraction.role !== expectedSourceRole || sourceInteraction.action !== action || sourceInteraction.target !== target) {
+      onWarn?.(`角色「${source}」interaction 与本地推断不完全一致，继续按 LLM 返回结果放行`);
+    }
+    if (targetInteraction.role !== expectedTargetRole || targetInteraction.action !== action || targetInteraction.target !== source) {
+      onWarn?.(`角色「${target}」interaction 与本地推断不完全一致，继续按 LLM 返回结果放行`);
     }
   }
 }
@@ -1931,7 +1950,11 @@ export class LLMExtractor {
               normalized.character_prompts,
               expectedSceneCharacters,
               inferredInteractions,
-              true
+              true,
+              (message) => {
+                console.warn(`[LLM Extractor] ${message}`);
+                onProgressLog?.(`[LLM] ${message}`, "warning");
+              }
             );
           }
 

@@ -1743,6 +1743,52 @@ test('advanced prompt retries when inferred interaction field is missing, then a
   }
 });
 
+test('advanced prompt accepts structurally valid interaction fields even when they differ from inferred expectation', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount++;
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              orientation: 'square',
+              base_prompt: 'A bedroom scene with both characters facing each other.',
+              character_prompts: [
+                { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '', interaction: { role: 'source', action: 'stripping', target: '阿宾' } },
+                { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '', interaction: { role: 'target', action: 'watching', target: '钰慧' } }
+              ],
+              negative_prompt: ''
+            })
+          }
+        }]
+      })
+    };
+  };
+
+  try {
+    const result = await extractor.generateScenePromptAdvanced({
+      visual_description: '钰慧在阿宾面前脱衣',
+      core_action: '钰慧在阿宾面前主动脱衣，阿宾看着她',
+      characters: [
+        { name: '钰慧', gender: 'woman' },
+        { name: '阿宾', gender: 'man' }
+      ]
+    }, [], 'test');
+
+    assert.equal(fetchCount, 1);
+    assert.deepEqual(result.character_prompts[0].interaction, { role: 'source', action: 'stripping', target: '阿宾' });
+    assert.deepEqual(result.character_prompts[1].interaction, { role: 'target', action: 'watching', target: '钰慧' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('advanced prompt does not require interaction markers when scene has no direct interaction', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 

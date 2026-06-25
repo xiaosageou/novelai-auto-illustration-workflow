@@ -11,6 +11,7 @@ import {
   SCENE_CHARACTER_DETAIL_FIELDS,
   buildCharacterReferenceSummary,
   characterHasSceneDetails,
+  syncSceneCharacterInteractions,
   syncSceneCharactersFromNames
 } from './sceneEditorCharacters.js';
 
@@ -1155,6 +1156,15 @@ function App() {
           position: String(char?.position || '')
         }))
       : [];
+    const syncedCharacters = syncSceneCharactersFromNames(characterNamesText, normalizedCharacters, characters);
+    const promptInteractionSeed = Array.isArray(scene.character_prompt_interactions || scene.prepared_prompt?.characterPromptInteractions)
+      ? (scene.character_prompt_interactions || scene.prepared_prompt?.characterPromptInteractions).map(item => ({
+          name: String(item?.name || '').trim(),
+          role: String(item?.role || '').trim(),
+          action: String(item?.action || '').trim(),
+          target: String(item?.target || '').trim()
+        }))
+      : [];
 
     return {
       trigger_sentence: String(scene.trigger_sentence || ''),
@@ -1180,7 +1190,8 @@ function App() {
         : '',
       width: scene.width || scene.prepared_prompt?.width || '',
       height: scene.height || scene.prepared_prompt?.height || '',
-      characters: syncSceneCharactersFromNames(characterNamesText, normalizedCharacters, characters),
+      characters: syncedCharacters,
+      character_prompt_interactions: syncSceneCharacterInteractions(syncedCharacters, [], promptInteractionSeed),
       visual_entities: Array.isArray(scene.visual_entities)
         ? scene.visual_entities.map(entity => ({
             type: String(entity?.type || 'object'),
@@ -1241,6 +1252,16 @@ function App() {
       .split(/\r?\n/)
       .map(item => item.trim())
       .filter(Boolean),
+    character_prompt_interactions: (Array.isArray(draft.characters) ? draft.characters : []).map((char, index) => {
+      const interaction = draft.character_prompt_interactions?.[index];
+      if (!interaction || !Object.values(interaction).some(value => String(value || '').trim())) return null;
+      return {
+        name: String(char?.name || '').trim(),
+        role: String(interaction?.role || '').trim(),
+        action: String(interaction?.action || '').trim(),
+        target: String(interaction?.target || '').trim()
+      };
+    }),
     negative_character_prompts: String(draft.negative_character_prompts || '')
       .split(/\r?\n/)
       .map(item => item.trim())
@@ -2370,10 +2391,15 @@ function App() {
                           }
 
                           const characterNames = e.target.value;
+                          const syncedCharacters = syncSceneCharactersFromNames(characterNames, draft.characters, characters);
                           return {
                             ...draft,
                             character_names: characterNames,
-                            characters: syncSceneCharactersFromNames(characterNames, draft.characters, characters)
+                            characters: syncedCharacters,
+                            character_prompt_interactions: syncSceneCharacterInteractions(
+                              syncedCharacters,
+                              draft.character_prompt_interactions
+                            )
                           };
                         })}
                       />
@@ -2433,7 +2459,8 @@ function App() {
                     style={{ padding: '4px 10px', fontSize: '0.75rem', borderRadius: '999px' }}
                     onClick={() => updateSceneDraft(draft => ({
                       ...draft,
-                      characters: [...draft.characters, { name: '', gender: 'unknown', appearance: '', clothing: '', expression: '', pose: '', position: '' }]
+                      characters: [...draft.characters, { name: '', gender: 'unknown', appearance: '', clothing: '', expression: '', pose: '', position: '' }],
+                      character_prompt_interactions: [...(draft.character_prompt_interactions || []), { role: '', action: '', target: '' }]
                     }))}
                   >
                     <Plus size={12} /> 添加角色
@@ -2468,7 +2495,8 @@ function App() {
                           style={{ padding: '4px 8px', fontSize: '0.72rem', color: '#fca5a5', borderRadius: '999px' }}
                           onClick={() => updateSceneDraft(draft => ({
                             ...draft,
-                            characters: draft.characters.filter((_, itemIndex) => itemIndex !== index)
+                            characters: draft.characters.filter((_, itemIndex) => itemIndex !== index),
+                            character_prompt_interactions: (draft.character_prompt_interactions || []).filter((_, itemIndex) => itemIndex !== index)
                           }))}
                         >
                           删除
@@ -2478,6 +2506,35 @@ function App() {
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 140px', gap: '8px' }}>
                       <input style={sceneEditorInputStyle} placeholder="姓名" value={character.name} onChange={(e) => updateSceneDraft(draft => ({ ...draft, characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, name: e.target.value } : item) }))} />
                       <input style={sceneEditorInputStyle} placeholder="gender" value={character.gender} onChange={(e) => updateSceneDraft(draft => ({ ...draft, characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, gender: e.target.value } : item) }))} />
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr', gap: '8px' }}>
+                      <input
+                        style={sceneEditorInputStyle}
+                        placeholder="interaction role"
+                        value={sceneEditor.draft.character_prompt_interactions?.[index]?.role || ''}
+                        onChange={(e) => updateSceneDraft(draft => ({
+                          ...draft,
+                          character_prompt_interactions: (draft.character_prompt_interactions || []).map((item, itemIndex) => itemIndex === index ? { ...(item || {}), role: e.target.value } : item)
+                        }))}
+                      />
+                      <input
+                        style={sceneEditorInputStyle}
+                        placeholder="interaction action"
+                        value={sceneEditor.draft.character_prompt_interactions?.[index]?.action || ''}
+                        onChange={(e) => updateSceneDraft(draft => ({
+                          ...draft,
+                          character_prompt_interactions: (draft.character_prompt_interactions || []).map((item, itemIndex) => itemIndex === index ? { ...(item || {}), action: e.target.value } : item)
+                        }))}
+                      />
+                      <input
+                        style={sceneEditorInputStyle}
+                        placeholder="interaction target"
+                        value={sceneEditor.draft.character_prompt_interactions?.[index]?.target || ''}
+                        onChange={(e) => updateSceneDraft(draft => ({
+                          ...draft,
+                          character_prompt_interactions: (draft.character_prompt_interactions || []).map((item, itemIndex) => itemIndex === index ? { ...(item || {}), target: e.target.value } : item)
+                        }))}
+                      />
                     </div>
                     {!isExpanded && (
                       <div style={{
@@ -2494,6 +2551,12 @@ function App() {
                         {dnaReference && (
                           <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5, wordBreak: 'break-word' }}>
                             <strong style={{ color: 'white', fontSize: '0.78rem' }}>DNA参考：</strong> {dnaReference}
+                          </div>
+                        )}
+                        {Object.values(sceneEditor.draft.character_prompt_interactions?.[index] || {}).some(value => String(value || '').trim()) && (
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                            <strong style={{ color: 'white', fontSize: '0.78rem' }}>Interaction：</strong>{' '}
+                            {[sceneEditor.draft.character_prompt_interactions[index]?.role, sceneEditor.draft.character_prompt_interactions[index]?.action, sceneEditor.draft.character_prompt_interactions[index]?.target].filter(Boolean).join(' / ')}
                           </div>
                         )}
                       </div>
