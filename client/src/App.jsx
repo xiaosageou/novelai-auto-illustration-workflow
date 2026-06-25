@@ -10,7 +10,8 @@ import { mergeProjectProgressSnapshot } from './projectProgressState.js';
 import {
   SCENE_CHARACTER_DETAIL_FIELDS,
   buildCharacterReferenceSummary,
-  characterHasSceneDetails
+  characterHasSceneDetails,
+  syncSceneCharactersFromNames
 } from './sceneEditorCharacters.js';
 
 const API_BASE = import.meta.env.DEV ? "http://localhost:5001" : "";
@@ -1141,31 +1142,9 @@ function App() {
       .filter(Boolean)
   );
 
-  const buildSceneEditorDraft = (scene = {}) => ({
-    trigger_sentence: String(scene.trigger_sentence || ''),
-    nsfw_rating: String(scene.nsfw_rating || 'sfw'),
-    visual_description: String(scene.visual_description || scene.scene_desc || ''),
-    core_action: String(scene.core_action || ''),
-    environment: String(scene.environment || ''),
-    cinematography: String(scene.cinematography || ''),
-    interactions: String(scene.interactions || ''),
-    plot_traces: String(scene.plot_traces || ''),
-    text_elements: String(scene.text_elements || ''),
-    character_names: Array.isArray(scene.character_names) ? scene.character_names.join(', ') : '',
-    must_show: Array.isArray(scene.must_show) ? scene.must_show.join(', ') : '',
-    must_not_show: Array.isArray(scene.must_not_show) ? scene.must_not_show.join(', ') : '',
-    final_prompt: String(scene.final_prompt || scene.prepared_prompt?.finalPositive || ''),
-    base_prompt: String(scene.base_prompt || scene.prepared_prompt?.basePrompt || ''),
-    final_negative: String(scene.final_negative || scene.prepared_prompt?.finalNegative || ''),
-    character_prompts: Array.isArray(scene.character_prompts || scene.prepared_prompt?.characterPrompts)
-      ? (scene.character_prompts || scene.prepared_prompt?.characterPrompts).join('\n')
-      : '',
-    negative_character_prompts: Array.isArray(scene.negative_character_prompts || scene.prepared_prompt?.negativeCharacterPrompts)
-      ? (scene.negative_character_prompts || scene.prepared_prompt?.negativeCharacterPrompts).join('\n')
-      : '',
-    width: scene.width || scene.prepared_prompt?.width || '',
-    height: scene.height || scene.prepared_prompt?.height || '',
-    characters: Array.isArray(scene.characters)
+  const buildSceneEditorDraft = (scene = {}) => {
+    const characterNamesText = Array.isArray(scene.character_names) ? scene.character_names.join(', ') : '';
+    const normalizedCharacters = Array.isArray(scene.characters)
       ? scene.characters.map(char => ({
           name: String(char?.name || ''),
           gender: String(char?.gender || 'unknown'),
@@ -1175,17 +1154,44 @@ function App() {
           pose: String(char?.pose || ''),
           position: String(char?.position || '')
         }))
-      : [],
-    visual_entities: Array.isArray(scene.visual_entities)
-      ? scene.visual_entities.map(entity => ({
-          type: String(entity?.type || 'object'),
-          description: String(entity?.description || ''),
-          count: entity?.count || 1,
-          position: String(entity?.position || ''),
-          must_show: entity?.must_show !== false
-        }))
-      : []
-  });
+      : [];
+
+    return {
+      trigger_sentence: String(scene.trigger_sentence || ''),
+      nsfw_rating: String(scene.nsfw_rating || 'sfw'),
+      visual_description: String(scene.visual_description || scene.scene_desc || ''),
+      core_action: String(scene.core_action || ''),
+      environment: String(scene.environment || ''),
+      cinematography: String(scene.cinematography || ''),
+      interactions: String(scene.interactions || ''),
+      plot_traces: String(scene.plot_traces || ''),
+      text_elements: String(scene.text_elements || ''),
+      character_names: characterNamesText,
+      must_show: Array.isArray(scene.must_show) ? scene.must_show.join(', ') : '',
+      must_not_show: Array.isArray(scene.must_not_show) ? scene.must_not_show.join(', ') : '',
+      final_prompt: String(scene.final_prompt || scene.prepared_prompt?.finalPositive || ''),
+      base_prompt: String(scene.base_prompt || scene.prepared_prompt?.basePrompt || ''),
+      final_negative: String(scene.final_negative || scene.prepared_prompt?.finalNegative || ''),
+      character_prompts: Array.isArray(scene.character_prompts || scene.prepared_prompt?.characterPrompts)
+        ? (scene.character_prompts || scene.prepared_prompt?.characterPrompts).join('\n')
+        : '',
+      negative_character_prompts: Array.isArray(scene.negative_character_prompts || scene.prepared_prompt?.negativeCharacterPrompts)
+        ? (scene.negative_character_prompts || scene.prepared_prompt?.negativeCharacterPrompts).join('\n')
+        : '',
+      width: scene.width || scene.prepared_prompt?.width || '',
+      height: scene.height || scene.prepared_prompt?.height || '',
+      characters: syncSceneCharactersFromNames(characterNamesText, normalizedCharacters, characters),
+      visual_entities: Array.isArray(scene.visual_entities)
+        ? scene.visual_entities.map(entity => ({
+            type: String(entity?.type || 'object'),
+            description: String(entity?.description || ''),
+            count: entity?.count || 1,
+            position: String(entity?.position || ''),
+            must_show: entity?.must_show !== false
+          }))
+        : []
+    };
+  };
 
   const openSceneEditor = (chapterKey, scene) => {
     setExpandedSceneCharacterDetails({});
@@ -2358,7 +2364,18 @@ function App() {
                         }}
                         minRows={rows}
                         value={sceneEditor.draft[field]}
-                        onChange={(e) => updateSceneDraft(draft => ({ ...draft, [field]: e.target.value }))}
+                        onChange={(e) => updateSceneDraft(draft => {
+                          if (field !== 'character_names') {
+                            return { ...draft, [field]: e.target.value };
+                          }
+
+                          const characterNames = e.target.value;
+                          return {
+                            ...draft,
+                            character_names: characterNames,
+                            characters: syncSceneCharactersFromNames(characterNames, draft.characters, characters)
+                          };
+                        })}
                       />
                     </label>
                   ))}

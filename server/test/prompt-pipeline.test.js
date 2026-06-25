@@ -1577,6 +1577,62 @@ test('LLM can explicitly disable pairing validation for non-paired actions like 
   }
 });
 
+test('advanced prompt tells LLM to map scene interactions into source and target character prompts', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+
+  const originalFetch = globalThis.fetch;
+  let systemPrompt = '';
+  let userPrompt = '';
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    systemPrompt = request.messages.find(message => message.role === 'system')?.content || '';
+    userPrompt = request.messages.find(message => message.role === 'user')?.content || '';
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              orientation: 'square',
+              base_prompt: 'A bedroom scene with both characters facing each other.',
+              character_prompts: [
+                { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '' },
+                { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '' }
+              ],
+              negative_prompt: ''
+            })
+          }
+        }]
+      })
+    };
+  };
+
+  try {
+    await extractor.generateScenePromptAdvanced({
+      visual_description: '钰慧在阿宾面前脱衣',
+      characters: [
+        { name: '钰慧', gender: 'woman' },
+        { name: '阿宾', gender: 'man' }
+      ],
+      interaction_actions: [
+        { action: 'undressing', source: '钰慧', target: '阿宾', mutual: false }
+      ]
+    }, [], 'test');
+
+    assert.match(systemPrompt, /source#|target#|mutual#/i);
+    assert.match(userPrompt, /source 和 target/i);
+    assert.match(userPrompt, /NovelAI V4/i);
+    assert.match(userPrompt, /source#undressing/i);
+    assert.match(userPrompt, /target#undressing/i);
+    assert.match(userPrompt, /interaction_actions/i);
+    assert.match(userPrompt, /"source":\s*"钰慧"/);
+    assert.match(userPrompt, /"target":\s*"阿宾"/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('advanced prompt validation accepts directional penetration roles', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 

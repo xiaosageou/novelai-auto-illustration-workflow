@@ -279,6 +279,13 @@ Never describe the same concept twice. If you wrote "night", do NOT also write "
 - base_prompt: Describe ONLY the global scene — art style quality prefix, environment, lighting, atmosphere, camera angle, and multi-character spatial/interaction relationships. Do NOT describe any single character's hair, clothing, or expression here.
 - character_prompts[].prompt: Describe ONLY that character — physical appearance, hair, eyes, clothing, pose, expression, emotional state. Use natural sentences.
 
+### Rule 4.5 — Multi-Character Interaction Mapping
+When the scene card contains interaction_actions, first determine which character is the active source, which is the receiving target, and whether the interaction is mutual.
+- Keep the shared relationship readable in base_prompt, but put each character's own role and reaction inside that character's prompt.
+- Follow NovelAI V4 multi-character prompting guidance when useful: source#action marks the active party, target#action marks the receiving party, and mutual#action marks a reciprocal action.
+- Example: if the scene says { "action": "undressing", "source": "Yuhui", "target": "Abin" }, Yuhui's prompt can use source#undressing or natural language like "She is undressing herself in front of him.", while Abin's prompt can use target#undressing or natural language like "He is watching her undress in front of him."
+- Never assign the same interaction role text to both characters when the action is directional.
+
 ### Rule 5 — Self-Review Before Output
 Before writing your final output, silently check:
 1. Does any field contain a long comma-separated tag list? If yes, rewrite as sentences.

@@ -3,7 +3,8 @@ import test from 'node:test';
 
 import {
   buildCharacterReferenceSummary,
-  characterHasSceneDetails
+  characterHasSceneDetails,
+  syncSceneCharactersFromNames
 } from './sceneEditorCharacters.js';
 
 test('characterHasSceneDetails detects whether lightweight scene characters have manual details', () => {
@@ -51,4 +52,57 @@ test('buildCharacterReferenceSummary summarizes stable dna features for lightwei
 test('buildCharacterReferenceSummary returns empty string when no stable dna is available', () => {
   assert.equal(buildCharacterReferenceSummary({}), '');
   assert.equal(buildCharacterReferenceSummary({ features: {} }), '');
+});
+
+test('syncSceneCharactersFromNames builds lightweight characters from Character Names and preserves manual details', () => {
+  const result = syncSceneCharactersFromNames('钰慧, 阿宾', [
+    {
+      name: '钰慧',
+      gender: 'woman',
+      appearance: 'long hair',
+      clothing: '',
+      expression: 'shy',
+      pose: '',
+      position: 'left'
+    }
+  ], {
+    阿宾: { gender: 'man' }
+  });
+
+  assert.deepEqual(result, [
+    {
+      name: '钰慧',
+      gender: 'woman',
+      appearance: 'long hair',
+      clothing: '',
+      expression: 'shy',
+      pose: '',
+      position: 'left'
+    },
+    {
+      name: '阿宾',
+      gender: 'man',
+      appearance: '',
+      clothing: '',
+      expression: '',
+      pose: '',
+      position: ''
+    }
+  ]);
+});
+
+test('syncSceneCharactersFromNames drops removed names and deduplicates repeated names', () => {
+  const result = syncSceneCharactersFromNames('阿宾\n阿宾\n王忆如', [
+    {
+      name: '旧角色',
+      gender: 'unknown',
+      appearance: 'unused',
+      clothing: '',
+      expression: '',
+      pose: '',
+      position: ''
+    }
+  ]);
+
+  assert.deepEqual(result.map((item) => item.name), ['阿宾', '王忆如']);
 });

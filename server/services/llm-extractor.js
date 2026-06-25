@@ -1501,7 +1501,7 @@ export class LLMExtractor {
 
   formatStructuredSceneForLlm(sceneInput) {
     if (!sceneInput || typeof sceneInput !== 'object') return preserveTextForLlm(sceneInput);
-  return JSON.stringify({
+    return JSON.stringify({
       visual_description: sceneInput.visual_description || sceneInput.scene_desc || buildSceneDescription(sceneInput),
       core_action: sceneInput.core_action || '',
       character_names: Array.isArray(sceneInput.character_names) ? sceneInput.character_names : [],
@@ -1509,6 +1509,7 @@ export class LLMExtractor {
       cinematography: sceneInput.cinematography || '',
       characters: getSceneCharacters(sceneInput),
       interactions: sceneInput.interactions || '',
+      interaction_actions: Array.isArray(sceneInput.interaction_actions) ? sceneInput.interaction_actions : [],
       text_elements: sceneInput.text_elements || '',
       visual_entities: Array.isArray(sceneInput.visual_entities) ? sceneInput.visual_entities : [],
       must_show: Array.isArray(sceneInput.must_show) ? sceneInput.must_show : [],
@@ -1578,6 +1579,9 @@ export class LLMExtractor {
       "你现在负责把轻量场景卡扩展成可生图参数。场景 LLM 只负责选帧；你负责补全环境、镜头、人物外观与负面限制，但不得改写这一帧的核心事件。",
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
       "如果 scene card 里有 core_action，请把它当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
+      "如果 scene card 里有 interaction_actions，你必须先理解每条 interaction 的主动方 source、承受方 target，以及是否 mutual，然后把这个角色职责落实到对应角色的 character_prompts 中。",
+      "参考 NovelAI V4 多角色互动文档：多人互动可在对应角色 prompt 里使用 source#动作、target#动作、mutual#动作 来强调谁在主动、谁在承受、谁是相互动作。若动作天然有方向性，不要把 source 和 target 写反。",
+      "示例：若 interaction_actions 里是 {\"action\":\"undressing\",\"source\":\"钰慧\",\"target\":\"阿宾\"}，则钰慧的 character prompt 应强调她正在主动脱衣，可写 source#undressing 或自然语言 'She is undressing herself in front of him.'；阿宾的 character prompt 应强调他是看到这一动作的对象，可写 target#undressing 或自然语言 'He is watching her undress in front of him.'。不要把两人的动作职责写成一样。",
       "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局描述（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪，优先使用轻微微笑、担忧、羞涩、惊讶、恼怒、悲伤、疲惫、坚定等克制但明确的表情，并用眼神、眉形和轻微嘴角变化表现；不要把所有角色都写成 calm, expressionless, or a neutral natural expression。禁止无端生成 bared teeth, clenched teeth, sharp teeth, fangs, crazy grin, or a distorted mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。用正常空格书写英文句子，禁止粘连单词。",
       "瞬间定格示例：正确是 'A Girl Kneeling By The Door, Looking Up At The Visitor.'；错误是 'A Girl Kneels Down, Then Looks Up At The Visitor.'。你的 prompt 只能表达前者这种已经定格的画面。",
       "NSFW 场景的角色表情必须针对当前情境生成：可使用 restrained pleasure, half-closed eyes, bedroom eyes, deep blush, embarrassment, pained expression, dazed expression, unfocused eyes, teasing expression, satisfied expression, slightly parted lips, or biting lip；根据角色实际状态选择一个主情绪，禁止所有角色复用同一副表情，也禁止无依据的 ahegao、crazy grin 或 distorted face。",
