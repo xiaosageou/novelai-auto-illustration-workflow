@@ -325,7 +325,12 @@ Output exactly one valid JSON object. Do not output thought process, Markdown, c
     {
       "name": "character name (copy exactly from scene card)",
       "prompt": "Natural language description of this character only. Describe appearance (hair color and length, eye color, skin tone), clothing/outfit, current pose and action, facial expression, and emotional state. Use concise sentences. Keep within 60 tokens per character.",
-      "negative_prompt": "A short phrase describing what should NOT appear for this character, especially traits from other characters (e.g., 'dark hair, masculine features, armor')"
+      "negative_prompt": "A short phrase describing what should NOT appear for this character, especially traits from other characters (e.g., 'dark hair, masculine features, armor')",
+      "interaction": {
+        "role": "source | target | mutual",
+        "action": "normalized interaction action such as undressing, crying, kiss, hug, sex, penetration",
+        "target": "the counterpart character name copied exactly from the scene card"
+      }
     }
   ],
   "negative_prompt": "A short, precise negative phrase for scene-specific problems only."
@@ -344,6 +349,7 @@ For NSFW characters, describe physical state directly and objectively:
 - Do NOT add quality booster phrases such as masterpiece or best quality — the pipeline handles these.
 - base_prompt must be a non-empty string.
 - character_prompts should have one entry per visible scene character, in scene-card order. If there are no visible characters, use an empty array.
+- If the scene has 2 or more visible characters, every character_prompts item MUST include an interaction field. Use null when that character has no direct interaction in the frozen frame.
 - negative_prompt must be short and scene-specific.
 - Keep base_prompt under 80 tokens, each character prompt under 60 tokens, and all prompt text under 460 tokens.`;
 

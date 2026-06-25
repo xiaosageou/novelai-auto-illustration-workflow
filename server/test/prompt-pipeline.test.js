@@ -1597,8 +1597,8 @@ test('advanced prompt tells LLM to map scene interactions into source and target
               orientation: 'square',
               base_prompt: 'A bedroom scene with both characters facing each other.',
               character_prompts: [
-                { name: '钰慧', prompt: 'A young woman with source#undressing, loosening her clothes with a shy expression.', negative_prompt: '' },
-                { name: '阿宾', prompt: 'A young man with target#undressing, watching her in tense surprise.', negative_prompt: '' }
+                { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '', interaction: { role: 'source', action: 'undressing', target: '阿宾' } },
+                { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '', interaction: { role: 'target', action: 'undressing', target: '钰慧' } }
               ],
               negative_prompt: ''
             })
@@ -1620,11 +1620,9 @@ test('advanced prompt tells LLM to map scene interactions into source and target
       ]
     }, [], 'test');
 
-    assert.match(systemPrompt, /source#|target#|mutual#/i);
-    assert.match(userPrompt, /source 和 target/i);
-    assert.match(userPrompt, /NovelAI V4/i);
-    assert.match(userPrompt, /source#undressing/i);
-    assert.match(userPrompt, /target#undressing/i);
+    assert.match(systemPrompt, /"interaction"/i);
+    assert.match(userPrompt, /interaction 字段/i);
+    assert.match(userPrompt, /"role":"source\|target\|mutual"/i);
     assert.match(userPrompt, /interaction_actions/i);
     assert.match(userPrompt, /"source":\s*"钰慧"/);
     assert.match(userPrompt, /"target":\s*"阿宾"/);
@@ -1633,7 +1631,7 @@ test('advanced prompt tells LLM to map scene interactions into source and target
   }
 });
 
-test('advanced prompt retries when directional interaction markers are missing from character prompts', async () => {
+test('advanced prompt retries when 2-character scene omits required interaction field', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
@@ -1654,8 +1652,8 @@ test('advanced prompt retries when directional interaction markers are missing f
           orientation: 'square',
           base_prompt: 'A bedroom scene with both characters facing each other.',
           character_prompts: [
-            { name: '钰慧', prompt: 'A young woman with source#undressing, loosening her clothes with a shy expression.', negative_prompt: '' },
-            { name: '阿宾', prompt: 'A young man with target#undressing, watching her in tense surprise.', negative_prompt: '' }
+            { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '', interaction: { role: 'source', action: 'undressing', target: '阿宾' } },
+            { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '', interaction: { role: 'target', action: 'undressing', target: '钰慧' } }
           ],
           negative_prompt: ''
         });
@@ -1683,14 +1681,14 @@ test('advanced prompt retries when directional interaction markers are missing f
     }, [], 'test');
 
     assert.equal(fetchCount, 2);
-    assert.match(result.character_prompts[0].prompt, /source#undressing/i);
-    assert.match(result.character_prompts[1].prompt, /target#undressing/i);
+    assert.deepEqual(result.character_prompts[0].interaction, { role: 'source', action: 'undressing', target: '阿宾' });
+    assert.deepEqual(result.character_prompts[1].interaction, { role: 'target', action: 'undressing', target: '钰慧' });
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('advanced prompt infers directional interaction markers from scene content without interaction_actions', async () => {
+test('advanced prompt retries when inferred interaction field is missing, then accepts structured interaction output', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
@@ -1711,8 +1709,8 @@ test('advanced prompt infers directional interaction markers from scene content 
           orientation: 'square',
           base_prompt: 'A bedroom scene with both characters facing each other.',
           character_prompts: [
-            { name: '钰慧', prompt: 'A young woman with source#undressing, loosening her clothes with a shy expression.', negative_prompt: '' },
-            { name: '阿宾', prompt: 'A young man with target#undressing, watching her in tense surprise.', negative_prompt: '' }
+            { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '', interaction: { role: 'source', action: 'undressing', target: '阿宾' } },
+            { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '', interaction: { role: 'target', action: 'undressing', target: '钰慧' } }
           ],
           negative_prompt: ''
         });
@@ -1738,8 +1736,8 @@ test('advanced prompt infers directional interaction markers from scene content 
     }, [], 'test');
 
     assert.equal(fetchCount, 2);
-    assert.match(result.character_prompts[0].prompt, /source#undressing/i);
-    assert.match(result.character_prompts[1].prompt, /target#undressing/i);
+    assert.deepEqual(result.character_prompts[0].interaction, { role: 'source', action: 'undressing', target: '阿宾' });
+    assert.deepEqual(result.character_prompts[1].interaction, { role: 'target', action: 'undressing', target: '钰慧' });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1762,8 +1760,8 @@ test('advanced prompt does not require interaction markers when scene has no dir
               orientation: 'square',
               base_prompt: 'A courtyard scene with two characters standing apart.',
               character_prompts: [
-                { name: '甲', prompt: 'A young woman standing on the left, looking toward the gate.', negative_prompt: '' },
-                { name: '乙', prompt: 'A young man standing on the right, looking at the falling rain.', negative_prompt: '' }
+                { name: '甲', prompt: 'A young woman standing on the left, looking toward the gate.', negative_prompt: '', interaction: null },
+                { name: '乙', prompt: 'A young man standing on the right, looking at the falling rain.', negative_prompt: '', interaction: null }
               ],
               negative_prompt: ''
             })
@@ -1784,8 +1782,8 @@ test('advanced prompt does not require interaction markers when scene has no dir
     }, [], 'test');
 
     assert.equal(fetchCount, 1);
-    assert.doesNotMatch(result.character_prompts[0].prompt, /(?:source|target|mutual)#/i);
-    assert.doesNotMatch(result.character_prompts[1].prompt, /(?:source|target|mutual)#/i);
+    assert.equal(result.character_prompts[0].interaction, null);
+    assert.equal(result.character_prompts[1].interaction, null);
   } finally {
     globalThis.fetch = originalFetch;
   }

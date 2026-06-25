@@ -163,16 +163,37 @@ function inferSceneInteractionActions(sceneDesc = {}) {
   }];
 }
 
-function validateInteractionRoleMarkers(characterPrompts = [], sceneCharacters = [], interactionActions = []) {
+function normalizeCharacterInteraction(raw = null) {
+  if (!raw || typeof raw !== 'object') return null;
+  const role = String(raw.role || '').trim().toLowerCase();
+  const action = normalizeInteractionMarkerAction(raw.action || '');
+  const target = String(raw.target || '').trim();
+  if (!role || !action || !target) return null;
+  if (!/^(source|target|mutual)$/.test(role)) return null;
+  return { role, action, target };
+}
+
+function validateCharacterInteractions(characterPrompts = [], sceneCharacters = [], interactionActions = [], requireExplicitField = false) {
   const prompts = Array.isArray(characterPrompts) ? characterPrompts : [];
   const interactions = Array.isArray(interactionActions) ? interactionActions : [];
-  if (!interactions.length || !prompts.length) return;
+  const visibleCount = Array.isArray(sceneCharacters) ? sceneCharacters.length : 0;
+  if (!prompts.length) return;
+
+  if (requireExplicitField && visibleCount >= 2) {
+    for (let index = 0; index < prompts.length; index++) {
+      if (!Object.prototype.hasOwnProperty.call(prompts[index] || {}, 'interaction')) {
+        throw new Error(`character_prompts[${index}] 缺少 interaction 字段`);
+      }
+    }
+  }
+
+  if (!interactions.length) return;
 
   const promptByName = new Map(
     prompts.map((item, index) => {
       const explicitName = String(item?.name || '').trim();
       const fallbackName = String(sceneCharacters[index]?.name || '').trim();
-      return [explicitName || fallbackName, String(item?.prompt || '')];
+      return [explicitName || fallbackName, normalizeCharacterInteraction(item?.interaction)];
     }).filter(([name]) => Boolean(name))
   );
 
@@ -183,16 +204,16 @@ function validateInteractionRoleMarkers(characterPrompts = [], sceneCharacters =
     if (!action || !source || !target || source === target) continue;
 
     const isMutual = interaction?.mutual === true && !isDirectionalInteractionAction(action);
-    const sourcePrompt = promptByName.get(source) || '';
-    const targetPrompt = promptByName.get(target) || '';
-    const sourceMarker = isMutual ? `mutual#${action}` : `source#${action}`;
-    const targetMarker = isMutual ? `mutual#${action}` : `target#${action}`;
+    const expectedSourceRole = isMutual ? 'mutual' : 'source';
+    const expectedTargetRole = isMutual ? 'mutual' : 'target';
+    const sourceInteraction = promptByName.get(source);
+    const targetInteraction = promptByName.get(target);
 
-    if (!sourcePrompt || !new RegExp(`\\b${escapeRegExp(sourceMarker)}\\b`, 'i').test(sourcePrompt)) {
-      throw new Error(`角色「${source}」缺少互动标记 ${sourceMarker}`);
+    if (!sourceInteraction || sourceInteraction.role !== expectedSourceRole || sourceInteraction.action !== action || sourceInteraction.target !== target) {
+      throw new Error(`角色「${source}」interaction 字段不符合预期`);
     }
-    if (!targetPrompt || !new RegExp(`\\b${escapeRegExp(targetMarker)}\\b`, 'i').test(targetPrompt)) {
-      throw new Error(`角色「${target}」缺少互动标记 ${targetMarker}`);
+    if (!targetInteraction || targetInteraction.role !== expectedTargetRole || targetInteraction.action !== action || targetInteraction.target !== source) {
+      throw new Error(`角色「${target}」interaction 字段不符合预期`);
     }
   }
 }
@@ -1712,9 +1733,9 @@ export class LLMExtractor {
       "你现在负责把轻量场景卡扩展成可生图参数。场景 LLM 只负责选帧；你负责补全环境、镜头、人物外观与负面限制，但不得改写这一帧的核心事件。",
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
       "如果 scene card 里有 core_action，请把它当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
-      "你必须先根据 visual_description、core_action 和角色站位，自行判断本场景中人物之间是否存在直接互动。若存在互动，必须判断主动方 source、承受方 target，以及是否属于 mutual；若不存在直接互动，则不要强行添加 source#、target#、mutual# 标记。",
-      "参考 NovelAI V4 多角色互动文档：多人互动可在对应角色 prompt 里使用 source#动作、target#动作、mutual#动作 来强调谁在主动、谁在承受、谁是相互动作。若动作天然有方向性，不要把 source 和 target 写反。",
-      "示例：若画面里是钰慧在阿宾面前主动脱衣，则钰慧的 character prompt 应强调她正在主动脱衣，可写 source#undressing 或自然语言 'She is undressing herself in front of him.'；阿宾的 character prompt 应强调他是看到这一动作的对象，可写 target#undressing 或自然语言 'He is watching her undress in front of him.'。不要把两人的动作职责写成一样。",
+      "你必须先根据 visual_description、core_action 和角色站位，自行判断本场景中人物之间是否存在直接互动。",
+      `若本场景可见角色数量 >= 2，则每个 character_prompts 项都必须显式输出 interaction 字段：有直接互动时填写 {\"role\":\"source|target|mutual\",\"action\":\"规范动作名\",\"target\":\"对方角色名\"}；没有直接互动时 interaction 必须为 null。`,
+      "若动作天然有方向性，不要把 source 和 target 写反；两个互动双方的 interaction.target 必须互相指向对方姓名。",
       "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局描述（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪，优先使用轻微微笑、担忧、羞涩、惊讶、恼怒、悲伤、疲惫、坚定等克制但明确的表情，并用眼神、眉形和轻微嘴角变化表现；不要把所有角色都写成 calm, expressionless, or a neutral natural expression。禁止无端生成 bared teeth, clenched teeth, sharp teeth, fangs, crazy grin, or a distorted mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。用正常空格书写英文句子，禁止粘连单词。",
       "瞬间定格示例：正确是 'A Girl Kneeling By The Door, Looking Up At The Visitor.'；错误是 'A Girl Kneels Down, Then Looks Up At The Visitor.'。你的 prompt 只能表达前者这种已经定格的画面。",
       "NSFW 场景的角色表情必须针对当前情境生成：可使用 restrained pleasure, half-closed eyes, bedroom eyes, deep blush, embarrassment, pained expression, dazed expression, unfocused eyes, teasing expression, satisfied expression, slightly parted lips, or biting lip；根据角色实际状态选择一个主情绪，禁止所有角色复用同一副表情，也禁止无依据的 ahegao、crazy grin 或 distorted face。",
@@ -1793,7 +1814,8 @@ export class LLMExtractor {
           return {
             name: (item?.name || '').trim(),
             prompt: (item?.prompt || '').trim(),
-            negative_prompt: String(item?.negative_prompt || '').trim()
+            negative_prompt: String(item?.negative_prompt || '').trim(),
+            interaction: normalizeCharacterInteraction(item?.interaction)
           };
         }).filter(item => item.prompt)
         : [];
@@ -1845,7 +1867,7 @@ export class LLMExtractor {
         "上一次输出为空、截断或 JSON 结构无效。请重新生成，只输出一个完整 JSON 对象。",
         "不要解释，不要 Markdown，不要颜文字。",
         "必须包含 orientation、base_prompt、character_prompts、negative_prompt。",
-        "每个 character_prompts 项必须包含 name、prompt、negative_prompt。",
+        `若场景可见角色数量 >= 2，则每个 character_prompts 项必须包含 name、prompt、negative_prompt、interaction。没有直接互动时 interaction 必须为 null。`,
         `character_prompts 优先包含 ${expectedSceneCharacters.length} 项，按以下顺序且 name 原样复制：${expectedSceneCharacters.map(char => char.name).join("、") || "无角色"}`,
         "禁止只返回旧式 prompt 字段。base_prompt 中不得包含角色外貌、服装、表情或个人姿势。",
         nsfwPerspectiveLine,
@@ -1903,11 +1925,15 @@ export class LLMExtractor {
           }
 
           const normalized = parseAdvancedContent(rawContent);
-          validateInteractionRoleMarkers(
-            normalized.character_prompts,
-            expectedSceneCharacters,
-            inferSceneInteractionActions(sceneDesc)
-          );
+          const inferredInteractions = inferSceneInteractionActions(sceneDesc);
+          if (attempt <= 2) {
+            validateCharacterInteractions(
+              normalized.character_prompts,
+              expectedSceneCharacters,
+              inferredInteractions,
+              true
+            );
+          }
 
           // ── V4.5 自然语言模式：单词粘连检测与修复 ──
           const textsToCheck = [
