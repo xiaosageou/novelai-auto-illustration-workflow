@@ -96,6 +96,7 @@ function App() {
     vibeNormalizeStrengths: true,
     nai_url: "https://image.novelai.net",
     artistStylePrompt: "",
+    system_prompt_advanced_prompt: "",
     system_prompt_advanced_prompt_nl: ""
   });
 
@@ -445,7 +446,7 @@ function App() {
 
     eventSource.addEventListener('log', (e) => {
       const data = JSON.parse(e.data);
-      addLog(data.text, data.type);
+      addLog(data.text, data.type, data);
     });
 
     eventSource.addEventListener('error', (e) => {
@@ -490,12 +491,24 @@ function App() {
     };
   }, [activeProject, selectedChapter]);
 
-  const addLog = (text, type = 'info') => {
+  const addLog = (text, type = 'info', options = {}) => {
     const time = new Date().toLocaleTimeString();
+    const appendLogEntry = (prev) => {
+      if (options.appendToPrevious && options.streamId && prev.length > 0) {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last?.streamId === options.streamId) {
+          next[next.length - 1] = { ...last, text: `${last.text}${text}` };
+          return next.slice(-200);
+        }
+      }
+      return [...prev, { time, text, type, streamId: options.streamId || null }].slice(-200);
+    };
+
     if (isNaiLogMessage(text)) {
-      setNaiLogs(prev => [...prev, { time, text, type }].slice(-200));
+      setNaiLogs(appendLogEntry);
     } else {
-      setLogs(prev => [...prev, { time, text, type }].slice(-200));
+      setLogs(appendLogEntry);
     }
   };
 
@@ -1893,6 +1906,24 @@ function App() {
                           ? sceneCharacters.length
                           : (Array.isArray(scene.character_names) ? scene.character_names.length : 0);
                         const sceneImage = scene.image_path ? encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`) : null;
+                        const finalPrompt = String(scene.final_prompt || scene.prepared_prompt?.finalPositive || '').trim();
+                        const basePrompt = String(scene.base_prompt || scene.prepared_prompt?.basePrompt || '').trim();
+                        const finalNegative = String(scene.final_negative || scene.prepared_prompt?.finalNegative || '').trim();
+                        const characterPrompts = Array.isArray(scene.character_prompts)
+                          ? scene.character_prompts
+                          : (Array.isArray(scene.prepared_prompt?.characterPrompts) ? scene.prepared_prompt.characterPrompts : []);
+                        const negativeCharacterPrompts = Array.isArray(scene.negative_character_prompts)
+                          ? scene.negative_character_prompts
+                          : (Array.isArray(scene.prepared_prompt?.negativeCharacterPrompts) ? scene.prepared_prompt.negativeCharacterPrompts : []);
+                        const promptSections = [
+                          ['Final Danbooru Prompt', finalPrompt],
+                          ['V4 Base Prompt', basePrompt],
+                          ['V4 Character Prompts', characterPrompts.join('\n')],
+                          ['V4 Character Negative Prompts', negativeCharacterPrompts.join('\n')],
+                          ['Final Negative Prompt', finalNegative]
+                        ].filter(([, value]) => String(value || '').trim());
+                        const hasPrompt = promptSections.length > 0;
+                        const isPromptExpanded = expandedPrompt === sceneKey;
 
                         return (
                           <div 
@@ -1980,10 +2011,86 @@ function App() {
                                   <span className="tag-badge scene" style={{ margin: 0 }}>{scene.nsfw_rating || 'sfw'}</span>
                                   <span className="tag-badge scene" style={{ margin: 0 }}>{sceneCharacterCount} 人</span>
                                   {scene.image_path && <span className="tag-badge scene" style={{ margin: 0 }}>有图</span>}
-                                  {(scene.final_prompt || scene.prepared_prompt?.finalPositive) && <span className="tag-badge scene" style={{ margin: 0 }}>Prompt</span>}
+                                  {hasPrompt && (
+                                    <button
+                                      type="button"
+                                      className="tag-badge scene"
+                                      style={{
+                                        margin: 0,
+                                        cursor: 'pointer',
+                                        border: '1px solid rgba(168,85,247,0.35)',
+                                        color: isPromptExpanded ? '#f5d0fe' : 'var(--color-purple-light, #c084fc)'
+                                      }}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setExpandedPrompt(prev => (prev === sceneKey ? null : sceneKey));
+                                      }}
+                                      title="展开实际发送给 NAI 的 Danbooru 分段 Prompt"
+                                    >
+                                      {isPromptExpanded ? '收起 Prompt' : 'Danbooru Prompt'}
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                             </div>
+
+                            {isPromptExpanded && hasPrompt && (
+                              <div
+                                onClick={(e) => e.stopPropagation()}
+                                style={{
+                                  marginTop: '12px',
+                                  padding: '12px',
+                                  borderRadius: '8px',
+                                  border: '1px solid rgba(168,85,247,0.22)',
+                                  background: 'rgba(7,10,24,0.76)',
+                                  display: 'grid',
+                                  gap: '10px'
+                                }}
+                              >
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                                  <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-purple-light, #c084fc)' }}>
+                                    Danbooru Prompt Params
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: '999px' }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const text = promptSections
+                                        .map(([label, value]) => `${label}:\n${value}`)
+                                        .join('\n\n');
+                                      navigator.clipboard.writeText(text);
+                                      addLog(`📋 已复制场景 #${scene.scene_idx} Danbooru Prompt 参数`, 'success');
+                                    }}
+                                  >
+                                    <Copy size={12} /> 复制
+                                  </button>
+                                </div>
+                                {promptSections.map(([label, value]) => (
+                                  <div key={label} style={{ display: 'grid', gap: '4px' }}>
+                                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{label}</div>
+                                    <pre
+                                      style={{
+                                        margin: 0,
+                                        whiteSpace: 'pre-wrap',
+                                        wordBreak: 'break-word',
+                                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                                        fontSize: '0.76rem',
+                                        lineHeight: 1.45,
+                                        color: '#e5e7eb',
+                                        background: 'rgba(0,0,0,0.24)',
+                                        border: '1px solid rgba(255,255,255,0.06)',
+                                        borderRadius: '6px',
+                                        padding: '8px'
+                                      }}
+                                    >
+                                      {value}
+                                    </pre>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
 
                             {/* 单场景重绘操作栏 */}
                             <div 
@@ -2244,7 +2351,7 @@ function App() {
             </div>
             <div className="glass-panel" style={{ flex: 1, overflowY: 'auto', padding: '10px', fontFamily: 'var(--font-title)', fontSize: '0.8rem' }}>
               {logs.map((log, idx) => (
-                <div key={idx} style={{ marginBottom: '6px', lineHeight: '1.4', color: log.type === 'error' ? 'var(--color-pink)' : log.type === 'warning' ? 'var(--color-orange)' : log.type === 'success' ? 'var(--color-green)' : 'var(--text-secondary)' }}>
+                <div key={idx} style={{ marginBottom: '6px', lineHeight: '1.4', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: log.type === 'error' ? 'var(--color-pink)' : log.type === 'warning' ? 'var(--color-orange)' : log.type === 'success' ? 'var(--color-green)' : 'var(--text-secondary)' }}>
                   <span style={{ color: 'var(--text-muted)', marginRight: '6px' }}>[{log.time}]</span>
                   {log.text}
                 </div>
@@ -3137,11 +3244,13 @@ function App() {
                   </div>
 
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>3. 高级生图参数生成 System Prompt（V4.5 自然语言版）</label>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>LLM 使用自然语言句子描述场景和角色。适用于 V4.5 Full / T5 编码器模型。权重上限 1.3。</div>
+                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>3. 高级生图参数生成 System Prompt（Danbooru 标签版）</label>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                      实际运行字段。LLM 输出 base_prompt 与角色 prompt 的 Danbooru tags，后端按 base | character 分段发给 NAI。
+                    </div>
                     <textarea 
-                      value={config.system_prompt_advanced_prompt_nl || ""}
-                      onChange={(e) => setConfig({ ...config, system_prompt_advanced_prompt_nl: e.target.value })}
+                      value={config.system_prompt_advanced_prompt || ""}
+                      onChange={(e) => setConfig({ ...config, system_prompt_advanced_prompt: e.target.value })}
                       style={{ width: '100%', height: '200px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(168,85,247,0.35)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
                     />
                   </div>

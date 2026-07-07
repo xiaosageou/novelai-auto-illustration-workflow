@@ -1,5 +1,5 @@
 import { robustJsonLoads, checkTextCompleteness, extractValidJson } from '../utils/json-repair.js';
-import { conservativeCompletionNaiWeights, cleanCharacterDnaTags, isTransientTag, preserveTextForLlm, detectConcatenatedWords } from '../utils/prompt-cleaner.js';
+import { conservativeCompletionNaiWeights, cleanCharacterDnaTags, isTransientTag, preserveTextForLlm, detectConcatenatedWords, normalizeDanbooruPromptSegment } from '../utils/prompt-cleaner.js';
 import { normalizeSceneCard, buildSceneDescription, getSceneCharacters } from '../utils/scene-structure.js';
 import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL, DEFAULT_REGENERATE_SCENE_PROMPT } from '../utils/default-prompts.js';
 import { getExponentialBackoffDelaySeconds } from '../utils/backoff.js';
@@ -30,7 +30,23 @@ export function ensureAdvancedPromptContract(taskPrompt) {
   const hasCurrentSchema = /["']?base_prompt["']?/i.test(prompt)
     && /["']?character_prompts["']?/i.test(prompt)
     && /["']?negative_prompt["']?/i.test(prompt);
-  if (hasCurrentSchema) return withSystemPrefix(prompt);
+  const hasEnvelopeContract = /\/thinking\/[\s\S]*\/JSON\//i.test(prompt)
+    || /<\s*thinking\s*>[\s\S]*<\s*JSON\s*>/i.test(prompt);
+  if (hasCurrentSchema && hasEnvelopeContract) return withSystemPrefix(prompt);
+  if (hasCurrentSchema) {
+    return withSystemPrefix(`${prompt}
+
+---
+
+## THINKING AND JSON ENVELOPE CONTRACT (HIGHEST PRIORITY)
+Return two sections in this exact order:
+/thinking/
+Concise visible planning checklist: characters/count, scene/camera, character DNA anchors, interactions with source#/target#/mutual# role mapping, NSFW/focus needs, and token cleanup.
+/thinking/
+/JSON/
+One complete JSON object using the schema above. No Markdown, no code fences, no commentary.
+/JSON/`);
+  }
 
   return withSystemPrefix(`${prompt}
 
@@ -40,7 +56,11 @@ export function ensureAdvancedPromptContract(taskPrompt) {
 The output schema described below supersedes every earlier output example or instruction in this system message.
 The legacy schema containing only "prompt" is obsolete and MUST NOT be used.
 
-Return exactly one valid JSON object:
+Return two sections in this exact order. The parser will use only the /JSON/ block:
+/thinking/
+Concise visible planning checklist: characters/count, scene/camera, character DNA anchors, interactions with source#/target#/mutual# role mapping, NSFW/focus needs, and token cleanup.
+/thinking/
+/JSON/
 {
   "orientation": "portrait" | "landscape" | "square" | "default",
   "base_prompt": "global character count, environment, lighting, camera, atmosphere, interactions and global NSFW description only",
@@ -53,6 +73,7 @@ Return exactly one valid JSON object:
   ],
   "negative_prompt": "short scene-specific negative phrase or an empty string"
 }
+/JSON/
 
 Hard requirements:
 - base_prompt must be a non-empty string.
@@ -60,8 +81,26 @@ Hard requirements:
 - Copy each character name exactly. Do not translate or shorten it.
 - Put the total character count only in base_prompt.
 - Do not put character-specific appearance, clothing, expression or individual pose in base_prompt.
+- Prefer close framing tags such as close-up, medium close-up, cowboy shot, upper body, or from waist up. Avoid wide shot, far shot, and long shot unless clearly required by the scene.
+- For actual genital penetration scenes, /thinking/ must explicitly plan one close main frame plus one localized magnified x-ray inset, and /JSON/.base_prompt must include tags such as magnified inset, x-ray inset, cutaway inset, cross-section, or penetration focus.
 - Do not output a top-level "prompt" field.
-- Output JSON only, without Markdown or commentary.`);
+- Output the JSON object only inside /JSON/, without Markdown or commentary.`);
+}
+
+function extractAdvancedJsonEnvelope(content = '') {
+  const raw = String(content || '').trim();
+  const slashJsonMatch = raw.match(/\/JSON\/\s*([\s\S]*?)\s*\/JSON\//i);
+  if (slashJsonMatch?.[1]?.trim()) return slashJsonMatch[1].trim();
+
+  const xmlJsonMatch = raw.match(/<\s*JSON\s*>\s*([\s\S]*?)\s*<\s*\/\s*JSON\s*>/i);
+  if (xmlJsonMatch?.[1]?.trim()) return xmlJsonMatch[1].trim();
+
+  return raw
+    .replace(/\/thinking\/[\s\S]*?\/thinking\//gi, '')
+    .replace(/<\s*thinking\s*>[\s\S]*?<\s*\/\s*thinking\s*>/gi, '')
+    .replace(/<\s*think\s*>[\s\S]*?<\s*\/\s*think\s*>/gi, '')
+    .replace(/\/think\/[\s\S]*?\/think\//gi, '')
+    .trim();
 }
 
 function normalizeInteractionMarkerAction(action = '') {
@@ -372,6 +411,22 @@ function extractLlmResponseTextChunk(responseData) {
   return reasoningContent.includes('{') ? reasoningContent : '';
 }
 
+function extractLlmStreamTextBlock(block) {
+  return String(block || '')
+    .split(/\r?\n/)
+    .filter(line => line.trim().startsWith('data:'))
+    .map(line => line.replace(/^\s*data:\s*/, '').trim())
+    .filter(payload => payload && payload !== '[DONE]')
+    .map(payload => {
+      try {
+        return extractLlmResponseTextChunk(JSON.parse(payload));
+      } catch {
+        return payload;
+      }
+    })
+    .join('');
+}
+
 export function extractLlmResponseText(responseData) {
   if (typeof responseData === 'string') {
     const raw = responseData.trim();
@@ -447,15 +502,15 @@ async function readResponseBodyText(res, { idleTimeoutMs = 120000, onStreamText 
       const blocks = normalized.split('\n\n');
       pendingBody = final ? '' : (blocks.pop() ?? '');
       for (const block of blocks) {
-        const text = extractLlmResponseText(block);
+        const text = extractLlmStreamTextBlock(block);
         if (text.trim()) {
-          onStreamText(text.trim());
+          onStreamText(text);
         }
       }
       if (final && pendingBody.trim()) {
-        const text = extractLlmResponseText(pendingBody);
+        const text = extractLlmStreamTextBlock(pendingBody);
         if (text.trim()) {
-          onStreamText(text.trim());
+          onStreamText(text);
         }
       }
     };
@@ -566,16 +621,23 @@ function createThrottledStreamLogger(onProgressLog, prefix = '[LLM]') {
 
   let buffer = '';
   let timer = null;
+  let hasStarted = false;
+  const streamId = `llm-stream-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   const flush = () => {
     if (timer) {
       clearTimeout(timer);
       timer = null;
     }
-    const text = buffer.trim();
+    const text = buffer;
     buffer = '';
-    if (text) {
-      onProgressLog(`${prefix} 流式输出片段:\n${text}`);
+    if (text.trim()) {
+      if (hasStarted) {
+        onProgressLog(text, 'stream', { streamId, appendToPrevious: true });
+      } else {
+        hasStarted = true;
+        onProgressLog(`${prefix} 流式输出:\n${text}`, 'stream', { streamId });
+      }
     }
   };
 
@@ -585,10 +647,15 @@ function createThrottledStreamLogger(onProgressLog, prefix = '[LLM]') {
       if (!text.trim()) return;
       buffer += text;
       if (buffer.length > 1600) {
-        const overflow = buffer.slice(0, buffer.length - 1200).trim();
+        const overflow = buffer.slice(0, buffer.length - 1200);
         buffer = buffer.slice(-1200);
-        if (overflow) {
-          onProgressLog(`${prefix} 流式输出片段:\n${overflow}`);
+        if (overflow.trim()) {
+          if (hasStarted) {
+            onProgressLog(overflow, 'stream', { streamId, appendToPrevious: true });
+          } else {
+            hasStarted = true;
+            onProgressLog(`${prefix} 流式输出:\n${overflow}`, 'stream', { streamId });
+          }
         }
       }
       if (!timer) {
@@ -671,8 +738,16 @@ class GlobalRateLimiter {
 }
 
 const llmRateLimiterRegistry = new Map();
+let llmRateLimiterDisabledForTests = false;
+
+export function disableLlmRateLimiterForTests() {
+  llmRateLimiterDisabledForTests = true;
+  llmRateLimiterRegistry.clear();
+}
 
 function getRateLimiter({ enabled = true, rpm = 3, key = 'default' } = {}) {
+  if (llmRateLimiterDisabledForTests) return null;
+
   const numericRpm = Number(rpm);
   if (!enabled || !Number.isFinite(numericRpm) || numericRpm <= 0) {
     return null;
@@ -686,7 +761,7 @@ function getRateLimiter({ enabled = true, rpm = 3, key = 'default' } = {}) {
 }
 
 export async function postChatCompletionWith429Retry({ url, headers, payload, idleTimeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null }) {
-  const limiter = getRateLimiter(rateLimit || {});
+  const limiter = rateLimit ? getRateLimiter(rateLimit) : null;
   if (limiter) {
     await limiter.acquire();
   }
@@ -788,8 +863,8 @@ function ensureStructuredScenePrompt(prompt) {
     ? withCoverage
     : `${withCoverage}\n\n${diversityInstruction}`;
   const characterLimitInstruction = `【场景人数硬约束】
-- 每个场景最多只允许 4 个实际可见或直接参与互动的人物。
-- 如果原文是多人场景、群像场景、战场、宴会、围观或路人很多，只保留推动这一帧画面的主要人物写入 character_names 与 characters。
+- 如果原文是多人场景、群像场景、战场、宴会、围观或路人很多，只保留推动这一帧画面的主要人物写入 characters。
+- 场景中最多保留 3 个角色；一旦原文涉及 3 人以上，必须裁剪次要人物，只保留动作主体、动作受体、镜头中心人物。
 - 优先保留：动作主体、动作受体、镜头中心人物、与剧情结果直接相关的人物。
 - 背景路人、围观者、杂兵、远景人群不要写入 characters；确有必要时可放入 environment 或 visual_entities。`;
   const withCharacterLimit = withDiversity.includes("【场景人数硬约束】")
@@ -812,10 +887,12 @@ function ensureStructuredScenePrompt(prompt) {
   "trigger_sentence": "逐字复制正文中的连续原文短片段，8-30字，能Ctrl+F精准命中",
   "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
   "visual_description": "一个瞬间定格的单帧画面，40-80 字，只描述这一帧已经看得见的状态",
-  "character_names": ["本帧实际可见或直接参与互动的主要人物，最多 4 人"],
+  "characters": [
+    { "name": "角色姓名", "gender": "boy 或 girl 或 woman 或 man 或 other", "clothing": "正文明写服装则填具体服装名；正文明写裸体则填 nude；正文未提及则填 未指明" }
+  ],
   "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触"
 }
-- 不要输出 environment、cinematography、characters、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show。这些留给后续 Prompt 生成阶段补全。
+- 不要输出 environment、cinematography、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show。这些留给后续 Prompt 生成阶段补全。
 - visual_description 必须是单帧定格，禁止“然后、随后、接着、慢慢、逐渐、准备、开始”等过程词。
 - 正确示例：'女子跪在昏暗卧室中央，抬头看向床边的男人，衣襟凌乱。'
 - 错误示例：'女子先跪下，然后抬头看向男人，接着整理衣襟。'`;
@@ -879,6 +956,33 @@ function uniquePhrases(phrases = []) {
     seen.add(key);
     return true;
   });
+}
+
+const WIDE_FRAMING_TAG_PATTERN = /\b(?:wide(?:[- ]view| shot)?|far shot|long shot|panorama|panoramic(?: view)?|establishing shot|environment-only|full scene vista|distance view)\b/i;
+const CLOSE_FRAMING_TAG_PATTERN = /\b(?:close-up|close up|medium close-up|medium close up|cowboy shot|upper body|from waist up|waist-up|bust shot|tight framing)\b/i;
+const PENETRATION_INSET_TAG_PATTERN = /\b(?:magnified inset|x-ray inset|xray inset|cutaway inset|cross-section|cross section|penetration focus|main scene plus one inset|external view main frame)\b/i;
+
+function isExplicitPenetrationScene(sceneDesc = {}, nsfwRating = 'sfw') {
+  if (nsfwRating !== 'nsfw_explicit') return false;
+  const actions = Array.isArray(sceneDesc?.interaction_actions) ? sceneDesc.interaction_actions : [];
+  const hasPenetrationAction = actions.some(action => /^(?:penetration|vaginal(?:_penetration)?|anal(?:_penetration)?)$/i.test(String(action?.action || '').trim()));
+  const text = [
+    sceneDesc?.visual_description,
+    sceneDesc?.core_action,
+    sceneDesc?.interactions,
+    sceneDesc?.scene_desc,
+    sceneDesc?.sceneDescription
+  ].map(part => String(part || '')).join(' ');
+  const negatedInsertion = /没有插入|未插入|无插入|非插入|not penetration|without penetration|no penetration/i.test(text);
+  const hasInsertionText = !negatedInsertion && /插入|交合|性交|阴茎插入|肉棒插入|vaginal_penetration|anal_penetration|genital penetration|penetration/i.test(text);
+  return hasPenetrationAction || hasInsertionText;
+}
+
+function getPreferredCloseFramingTag({ characterCount = 0, isPenetrationScene = false, isNsfw = false } = {}) {
+  if (isPenetrationScene) return 'cowboy shot';
+  if (characterCount >= 2) return 'cowboy shot';
+  if (isNsfw) return 'upper body';
+  return 'close-up';
 }
 
 const SELF_DIRECTED_INTERACTION_ACTIONS = new Set([
@@ -1138,9 +1242,9 @@ function buildSceneExtractionUserContent({
   parts.push(
     ``,
     `【轻量场景卡字段（必须）】`,
-    `- 每个场景只输出：scene_idx、trigger_sentence、nsfw_rating、visual_description、character_names、core_action。`,
-    `- 不要输出 environment、cinematography、characters、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show。`,
-    `- character_names 最多 4 人；多人场景只保留这一帧真正推动画面的主要人物。`,
+    `- 每个场景只输出：scene_idx、trigger_sentence、nsfw_rating、visual_description、characters（含 name/gender/clothing）、core_action。`,
+    `- 不要输出 environment、cinematography、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show。`,
+    `- characters 数组最多 3 人；多人场景只保留这一帧真正推动画面的主要人物。若原文超过 3 人，必须裁剪次要人物，只保留动作主体、动作受体、镜头中心人物。每个 character 项必须包含 name、gender、clothing 三个字段。`,
     `- 如果本章同时存在 NSFW 与 SFW 场景，名额要向 NSFW 场景倾斜：多选取 NSFW 场景，适当选取 SFW 场景。`,
     `- SFW 场景只保留少量真正必要的铺垫、反差、情绪停顿或结果镜头，不要让 SFW 数量超过 NSFW。`,
     `- visual_description 必须是一个瞬间定格场景，控制在 40-80 字。`,
@@ -1401,7 +1505,7 @@ export class LLMExtractor {
         if (attempt === 1) {
           return [
             `请针对以下章节正文中指定的「触发高潮句」，重新提炼并生成一份轻量场景卡。只保留这一帧值得画的瞬间定格信息。`,
-            `【人数硬约束】: 场景最多只允许 4 个实际可见或直接参与互动的人物。若原文涉及更多人，只保留推动画面的主要人物，背景路人不要写入 characters。`,
+            `【人数硬约束】: 场景最多只允许 3 个实际可见或直接参与互动的人物。若原文涉及更多人，必须裁剪次要人物，只保留推动画面的主要人物；背景路人不要写入 characters。`,
             `【瞬间定格规则】: visual_description 必须是单帧画面，只描述已经看得见的状态。禁止写“然后、随后、接着、慢慢、逐渐、准备、开始”等过程动作。正确示例：'她跪在门边抬头看向来人。' 错误示例：'她先跪下，然后抬头看向来人。'`,
             `【章节名】: ${cleanedTitle}`,
             `【触发句 (trigger_sentence)】: 「${triggerSentence}」`,
@@ -1414,7 +1518,7 @@ export class LLMExtractor {
 
         return [
           `请只输出一个合法 JSON 对象，不要 Markdown、不要解释、不要代码块。`,
-          `【人数硬约束】: 角色上限为 4 人，超出时只保留主要人物。`,
+          `【人数硬约束】: 角色上限为 3 人，超出时必须裁剪次要人物，只保留主要人物。`,
           `【瞬间定格规则】: 只输出单帧定格状态，禁止“然后、随后、接着”等过程动作。`,
           `【章节名】: ${cleanedTitle}`,
           `【触发句 (trigger_sentence)】: 「${triggerSentence}」`,
@@ -1802,7 +1906,7 @@ export class LLMExtractor {
       throw new Error("请先填写有效的 API Key！");
     }
 
-    onProgressLog?.(`[NL模式] 自然语言 Prompt 生成已启用，不使用外部标签检索或候选词。`);
+    onProgressLog?.(`[Tag模式] Danbooru 标签 Prompt 生成已启用，输出 base | character 分段标签。`);
 
     // 构建角色上下文文本，让 LLM 感知已有角色外观参考。
     let characterContext = "";
@@ -1812,58 +1916,67 @@ export class LLMExtractor {
         const reference = anchor.正面提示词 || "";
         return `• ${name}：${reference}`;
       }).join("\n");
-      const contextLabel = "【本场景涉及角色外貌参考（用于理解角色特征，请在自然语言句子中自然融入这些特征）】";
+      const contextLabel = "【本场景涉及角色外貌参考（转换为角色段 Danbooru tags，不要写成自然语言句子）】";
       characterContext = `\n\n${contextLabel}\n${charLines}`;
     }
 
-    const rawSystemPrompt = this.system_prompt_advanced_prompt_nl || DEFAULT_ADVANCED_PROMPT_V45_NL;
+    const rawSystemPrompt = this.system_prompt_advanced_prompt || DEFAULT_ADVANCED_PROMPT;
     const systemPrompt = ensureAdvancedPromptContract(rawSystemPrompt);
     const scenePayload = this.formatStructuredSceneForLlm(sceneDesc);
 
     // 提取 nsfw_rating 和 plot_traces，显式告知 LLM
     const nsfwRating = (typeof sceneDesc === 'object' ? sceneDesc.nsfw_rating : '') || 'sfw';
     const plotTraces = (typeof sceneDesc === 'object' ? sceneDesc.plot_traces : '') || '';
-    const nsfwLine = `【NSFW 等级】${nsfwRating}（请严格按照 system prompt 中对该等级的描述规则，使用自然语言描述对应的视觉状态，不得遗漏也不得升级）`;
+    const isPenetrationScene = isExplicitPenetrationScene(sceneDesc, nsfwRating);
+    const nsfwLine = `【NSFW 等级】${nsfwRating}（请严格按照 system prompt 中对该等级的标签规则输出，不得遗漏也不得升级）`;
     const nsfwPerspectiveLine = nsfwRating !== 'sfw'
-      ? "【NSFW 镜头机位】base_prompt 中优先用自然语言描述一个符合场景站位的主视角（如 'side view showing both characters'、'shot from slightly above'、'viewed from over the shoulder'）。只有接触点不清楚时再加入一个空间纵深细节（如 'with foreground/background depth' 或 'foreshortening visible'）。保持一套连贯机位，禁止矛盾视角。"
+      ? "【NSFW 镜头机位】base_prompt 优先使用近景镜头 tag，让主体尽量占满画面，例如 close-up、medium close-up、cowboy shot、upper body、from waist up。尽量避免 wide shot、far shot、long shot 等远景，除非剧情必须展示大环境。再补一个符合场景站位的视角 tag（如 side view、from above、over-the-shoulder shot、pov）。只有接触点不清楚时再加入 foreground/background separation 等空间 tag。保持一套连贯机位，禁止矛盾视角。"
       : '';
     const penetrationInsetLine = nsfwRating === 'nsfw_explicit'
-      ? "【插入场景放大图规则（按需）】若真实插入/性交/penetration 的接触点在普通外视角中难以表达，可以采用“主图正常外视角 + 仅一个局部放大 inset”的结构；x-ray 或剖面只能出现在 inset 内。若普通外视角已经足够清楚，或场景并非插入行为（手交、抚摸、接吻、脱衣、非插入式口交/挑逗），不要加入 inset_image、magnified_inset、xray_inset。"
+      ? (isPenetrationScene
+        ? "【插入场景放大图规则（强制）】本场景存在明确性器插入。/thinking/ 中必须明确写出“主图近景 + 单个局部放大 x-ray inset”的构图决定。/JSON/ 的 base_prompt 必须包含 magnified inset、x-ray inset、cutaway inset、cross-section、penetration focus 等局部放大标签；主图本体保持正常外视角，不要把整张主图做成 x-ray。"
+        : "【插入场景放大图规则（非插入场景禁止误用）】若场景并非真实插入行为（手交、抚摸、接吻、脱衣、非插入式口交/挑逗），不要加入 inset_image、magnified_inset、xray_inset。")
       : '';
     const plotTracesLine = plotTraces
-      ? `【剧情痕迹（必须融入对应角色的自然语言描述中）】${plotTraces}  — 请用自然语言句子表达这些细节，例如 'Her hair is disheveled, with tears still drying on her cheeks.'。`
+      ? `【剧情痕迹（必须转换为对应角色段 tags）】${plotTraces} — 例如 messy hair, tears, sweat, blood stains 等；不要写自然语言句子。`
       : '';
 
-    const nlModeEnforcementLine = [
-      "【自然语言模式 — 强制规则】",
-      "1. 输出的 base_prompt 和每个 character_prompts[].prompt 必须是连贯英文句子或短语，每个英文单词之间必须有正常空格（如 'A girl with long hair'，绝不能写成 'Agirlwithlonghair'）。",
-      "2. 权重语法 :: 最多使用 2 次，且数值必须在 1.1 到 1.3 之间。只对极难生成的关键元素使用权重。",
-      "3. 每个概念只描述一次，避免在 base_prompt 和 character_prompts 之间重复同一特征。",
-      "4. negative_prompt 保持简短精准（一句话或几个词），只写本场景特别需要避免的问题。",
-      "5. Token 预算必须前置控制：base_prompt 不要超过 80 token，每个 character_prompts[].prompt 不要超过 60 token，base_prompt + 全部 character_prompts 的总量不要超过 460 token / must stay within 460 tokens。优先删除背景装饰、重复同义描述和次要配饰，不得删除角色身份、核心动作和关键接触点。"
+    const tagModeEnforcementLine = [
+      "【Danbooru 标签模式 — 强制规则】",
+      "1. base_prompt 和每个 character_prompts[].prompt 必须是英文 Danbooru-style tag list，禁止自然语言完整句子。",
+      "2. base_prompt 放 nsfw、精确人数、场景、光照、镜头、全局互动；角色外貌、服装、表情和单人姿势只放 character_prompts。",
+      "3. character_prompts[].prompt 必须以 girl, / boy, / woman, / man, / other, 开头，禁止出现 1girl、1boy、solo、no humans 等人数标签。",
+      "4. 互动必须尽量使用 source#action、target#action、mutual#action 标清主动方和承受方。",
+      "5. Token 预算必须前置控制：总正向 tags 不超过 410 tokens。优先删除氛围形容词、重复概念和次要配饰，不得删除人物数量、角色识别特征和核心互动。",
+      "6. 衣着状态必须忠实于场景卡 characters[].clothing：有具体服装名则用对应 tags（如 white_dress、school_uniform）；是 nude 则用 completely_nude；是 未指明 则从角色 DNA 参考中继承默认服装 tags，不要自行编造服装细节。"
     ].join("\n");
 
     const userMessage = [
-      "请为以下中文小说插画场景生成 NovelAI 生图参数。",
+      "请为以下中文小说插画场景生成 NovelAI Danbooru 标签生图参数。",
+      "输出格式必须严格分两段：先写 /thinking/ 包裹的简明可见分析清单，再写 /JSON/ 包裹的唯一 JSON 对象。后端只解析 /JSON/ 内部内容。",
       "你现在负责把轻量场景卡扩展成可生图参数。场景 LLM 只负责选帧；你负责补全环境、镜头、人物外观与负面限制，但不得改写这一帧的核心事件。",
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
       "如果 scene card 里有 core_action，请把它当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
       "你必须先根据 visual_description、core_action 和角色站位，自行判断本场景中人物之间是否存在直接互动。",
       `若本场景可见角色数量 >= 2，则每个 character_prompts 项都必须显式输出 interaction 字段：有直接互动时填写 {\"role\":\"source|target|mutual\",\"action\":\"规范动作名\",\"target\":\"对方角色名\"}；没有直接互动时 interaction 必须为 null。`,
       "若动作天然有方向性，不要把 source 和 target 写反；两个互动双方的 interaction.target 必须互相指向对方姓名。",
-      "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局描述（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪，优先使用轻微微笑、担忧、羞涩、惊讶、恼怒、悲伤、疲惫、坚定等克制但明确的表情，并用眼神、眉形和轻微嘴角变化表现；不要把所有角色都写成 calm, expressionless, or a neutral natural expression。禁止无端生成 bared teeth, clenched teeth, sharp teeth, fangs, crazy grin, or a distorted mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。用正常空格书写英文句子，禁止粘连单词。",
+      "如果 scene card 里有 interaction_actions，你必须先理解每条 interaction 的主动方 source、承受方 target，以及是否 mutual，然后把这个角色职责落实到对应角色的 character_prompts 中。",
+      "参考 NovelAI V4 多角色互动文档：多人互动必须在对应角色 prompt 里使用 source#动作、target#动作、mutual#动作 来强调谁在主动、谁在承受、谁是相互动作。若动作天然有方向性，不要把 source 和 target 写反。",
+      "示例：若 interaction_actions 里是 {\"action\":\"undressing\",\"source\":\"钰慧\",\"target\":\"阿宾\"}，则钰慧的 character prompt 使用 source#undressing；阿宾的 character prompt 使用 target#undressing。不要把两人的动作职责写成一样。",
+      "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局描述（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪 tag，优先使用 restrained、clear 的表情 tags，禁止把所有角色都写成 calm_expression、expressionless 或 natural_expression。禁止无端生成 bared_teeth, clenched_teeth, sharp_teeth, fangs, crazy_grin, distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。禁止自然语言句子，并用正常空格分隔 tags，禁止粘连单词。",
+      "镜头默认优先近景，让角色和接触点更大更清楚。除非场景卡明确要求展示大环境或远距离关系，否则不要使用 wide shot、far shot、long shot、panorama。",
       "瞬间定格示例：正确是 'A Girl Kneeling By The Door, Looking Up At The Visitor.'；错误是 'A Girl Kneels Down, Then Looks Up At The Visitor.'。你的 prompt 只能表达前者这种已经定格的画面。",
-      "NSFW 场景的角色表情必须针对当前情境生成：可使用 restrained pleasure, half-closed eyes, bedroom eyes, deep blush, embarrassment, pained expression, dazed expression, unfocused eyes, teasing expression, satisfied expression, slightly parted lips, or biting lip；根据角色实际状态选择一个主情绪，禁止所有角色复用同一副表情，也禁止无依据的 ahegao、crazy grin 或 distorted face。",
+      "NSFW 场景的角色表情必须针对当前情境生成 Danbooru tags；根据角色实际状态选择一个主情绪，禁止所有角色复用同一副表情，也禁止无依据的 ahegao、crazy grin 或 distorted face。",
       "背景不是硬性要求。根据原文与构图需要选择详细环境、简洁背景或纯色背景；近景、动作特写和角色主导画面可以使用 simple background, plain background, white background, black background, gradient background, or backgroundless。不要为了凑背景短语挤占主体动作与角色细节。",
       "精确接触动作必须写清：谁持有什么物体、对准谁、接触哪个身体部位、用什么镜头清楚显示接触点。不要只写笼统的 confrontation、attacking 或 touching。",
       getSceneCharacters(sceneDesc).length >= 3
-        ? "三人及以上复杂互动必须用自然语言构建清晰动作关系：每个直接身体接触都要说明主动方、承受方、接触部位和空间位置。为每个角色分配互不冲突的 left/center/right 与 foreground/midground/background 位置。"
+        ? "三人及以上复杂互动必须用 tags 构建清晰动作关系：每个直接身体接触都要通过 source#/target#/mutual# 标明主动方、承受方和动作。为每个角色分配互不冲突的 left/center/right 与 foreground/midground/background 位置 tag。"
         : '',
       nsfwLine,
       nsfwPerspectiveLine,
       penetrationInsetLine,
       plotTracesLine,
-      nlModeEnforcementLine,
+      tagModeEnforcementLine,
       "",
       "【结构化/兼容场景描述】",
       scenePayload,
@@ -1886,10 +1999,7 @@ export class LLMExtractor {
     const expectedSceneCharacters = getSceneCharacters(sceneDesc);
 
     const parseAdvancedContent = (content) => {
-      let rawContent = String(content || '').trim();
-      rawContent = rawContent.replace(/<\s*thinking\s*>[\s\S]*?<\s*\/\s*thinking\s*>/gi, "").trim();
-      rawContent = rawContent.replace(/<\s*think\s*>[\s\S]*?<\s*\/\s*think\s*>/gi, "").trim();
-      rawContent = rawContent.replace(/\/think\/[\s\S]*?\/think\//gi, "").trim();
+      let rawContent = extractAdvancedJsonEnvelope(content);
       if (rawContent.includes('/think/')) {
         const lastIdx = rawContent.lastIndexOf('/think/');
         rawContent = rawContent.substring(lastIdx + 7).trim();
@@ -1919,7 +2029,7 @@ export class LLMExtractor {
 
       const VALID_ORIENTATIONS = new Set(["portrait", "landscape", "square", "default"]);
       const orientation = VALID_ORIENTATIONS.has(parsed?.orientation) ? parsed.orientation : "default";
-      const base_prompt = (parsed?.base_prompt || "").trim();
+      const base_prompt = normalizeDanbooruPromptSegment(parsed?.base_prompt || "");
       if (!base_prompt) {
         throw new Error("缺少非空 base_prompt；旧式 prompt 单字段不再接受");
       }
@@ -1929,12 +2039,19 @@ export class LLMExtractor {
       ]);
       const character_prompts = Array.isArray(parsed?.character_prompts)
         ? parsed.character_prompts.map((item, index) => {
-          if (typeof item === 'string') return { name: '', prompt: item.trim() };
+          if (typeof item === 'string') {
+            return {
+              name: '',
+              prompt: normalizeDanbooruPromptSegment(item, { character: true }),
+              negative_prompt: '',
+              interaction: null
+            };
+          }
           const resolvedName = String(item?.name || expectedSceneCharacters[index]?.name || '').trim();
           return {
             name: resolvedName,
-            prompt: (item?.prompt || '').trim(),
-            negative_prompt: String(item?.negative_prompt || '').trim(),
+            prompt: normalizeDanbooruPromptSegment(item?.prompt || '', { character: true }),
+            negative_prompt: normalizeDanbooruPromptSegment(item?.negative_prompt || '', { character: true }),
             interaction: readCharacterInteractionField({ ...item, name: resolvedName }, sceneInteractions)
           };
         }).filter(item => item.prompt)
@@ -1963,20 +2080,35 @@ export class LLMExtractor {
         .filter(Boolean)
         .filter(tag => !characterSpecificTags.has(tag.toLowerCase()))
         .join(', ');
-      const hasNsfwViewpoint = /\b(?:pov|point of view|side view|three[- ]quarter|from above|from below|shot from|viewed from|over[- ]the[- ]shoulder|front view|rear view|close view)\b/i.test(cleanedBasePrompt);
-      const hasNsfwSpatialPerspective = /\b(?:foreground|background|depth|foreshorten|overlap|clear spatial|spatial depth)\b/i.test(cleanedBasePrompt);
+      const shouldBiasCloseFraming = nsfwRating !== 'sfw'
+        || (Array.isArray(sceneDesc?.interaction_actions) && sceneDesc.interaction_actions.length > 0)
+        || WIDE_FRAMING_TAG_PATTERN.test(cleanedBasePrompt);
+      const baseTags = cleanedBasePrompt
+        .split(/[,，]/)
+        .map(tag => tag.trim())
+        .filter(Boolean)
+        .filter(tag => !(shouldBiasCloseFraming && WIDE_FRAMING_TAG_PATTERN.test(tag)));
+      const hasPreferredCloseFraming = baseTags.some(tag => CLOSE_FRAMING_TAG_PATTERN.test(tag));
+      if (shouldBiasCloseFraming && !hasPreferredCloseFraming) {
+        baseTags.push(getPreferredCloseFramingTag({
+          characterCount: expectedSceneCharacters.length,
+          isPenetrationScene,
+          isNsfw: nsfwRating !== 'sfw'
+        }));
+      }
+      const hasPenetrationInsetPlan = baseTags.some(tag => PENETRATION_INSET_TAG_PATTERN.test(tag));
+      if (isPenetrationScene && !hasPenetrationInsetPlan) {
+        baseTags.push('main scene plus one inset', 'magnified inset', 'x-ray inset', 'cross-section', 'penetration focus');
+      }
+      const cleanedBaseTags = uniquePhrases(baseTags);
       const resolvedBasePrompt = nsfwRating !== 'sfw'
-        ? uniquePhrases([
-            ...cleanedBasePrompt.split(/[,，]/),
-            ...(!hasNsfwViewpoint ? ['A clear single camera angle shows the interaction.'] : []),
-            ...(!hasNsfwSpatialPerspective ? ['The bodies remain spatially readable with foreground and background separation.'] : [])
-          ]).join(', ')
-        : cleanedBasePrompt;
+        ? cleanedBaseTags.join(', ')
+        : cleanedBaseTags.join(', ');
       const prompt = uniquePhrases([
         ...resolvedBasePrompt.split(/[,，]/),
         ...character_prompts.flatMap(item => item.prompt.split(/[,，]/))
       ]).join(', ');
-      const negative_prompt = (parsed?.negative_prompt || "").trim();
+      const negative_prompt = normalizeDanbooruPromptSegment(parsed?.negative_prompt || "");
       if (!prompt && !resolvedBasePrompt) throw new Error("LLM 返回的 prompt 为空");
       return { orientation, prompt, base_prompt: resolvedBasePrompt, character_prompts, negative_prompt };
     };
@@ -1984,8 +2116,8 @@ export class LLMExtractor {
 
     try {
       const retryUserMessage = [
-        "上一次输出为空、截断或 JSON 结构无效。请重新生成，只输出一个完整 JSON 对象。",
-        "不要解释，不要 Markdown，不要颜文字。",
+        "上一次输出为空、截断或 JSON 结构无效。请重新生成，必须先输出 /thinking/ 包裹的简明分析，再输出 /JSON/ 包裹的完整 JSON 对象。",
+        "不要 Markdown，不要颜文字。/JSON/ 外不要放 JSON 片段。",
         "必须包含 orientation、base_prompt、character_prompts、negative_prompt。",
         `若场景可见角色数量 >= 2，则每个 character_prompts 项必须包含 name、prompt、negative_prompt、interaction。没有直接互动时 interaction 必须为 null。`,
         `character_prompts 优先包含 ${expectedSceneCharacters.length} 项，按以下顺序且 name 原样复制：${expectedSceneCharacters.map(char => char.name).join("、") || "无角色"}`,

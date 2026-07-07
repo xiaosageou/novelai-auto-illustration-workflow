@@ -248,7 +248,7 @@ export class NovelAIClient {
 
     let finalNegative = negativePrompt;
     if (!finalNegative) {
-      const defaultNeg = "lowres, bad anatomy, bad hands, text, watermark, signature, blurry, extra fingers, mosaic";
+      const defaultNeg = "artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, logo, too many watermarks, negative space, blank page, gigantic breasts";
       finalNegative = isNsfwRequested ? defaultNeg : `nsfw, ${defaultNeg}`;
     } else if (isNsfwRequested) {
       // 强力清洗传入的自定义负向词，物理移除 nsfw 单词以释放艺术限制

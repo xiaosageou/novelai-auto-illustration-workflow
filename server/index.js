@@ -63,6 +63,24 @@ const DEFAULT_CONFIG = {
   system_prompt_advanced_prompt: DEFAULT_ADVANCED_PROMPT
 };
 
+function normalizeConfig(config = {}) {
+  const normalized = { ...DEFAULT_CONFIG, ...config };
+  const promptDefaults = {
+    system_prompt_extract_scenes: DEFAULT_EXTRACT_SCENES_PROMPT,
+    system_prompt_character_dna: DEFAULT_CHARACTER_DNA_PROMPT,
+    system_prompt_advanced_prompt_nl: DEFAULT_ADVANCED_PROMPT_V45_NL,
+    system_prompt_advanced_prompt: DEFAULT_ADVANCED_PROMPT
+  };
+
+  for (const [field, fallback] of Object.entries(promptDefaults)) {
+    if (!String(normalized[field] || '').trim()) {
+      normalized[field] = fallback;
+    }
+  }
+
+  return normalized;
+}
+
 function runningInDocker() {
   return existsSync('/.dockerenv');
 }
@@ -191,8 +209,8 @@ async function getPipeline(projectName) {
   pipeline.uiCooldownCallback = () => {
     broadcastSSE('cooldown_start', globalCooldownManager.getState());
   };
-  pipeline.uiLogCallback = (text, type) => {
-    broadcastSSE('log', { text, type });
+  pipeline.uiLogCallback = (text, type, options = {}) => {
+    broadcastSSE('log', { text, type, ...options });
   };
   pipeline.priorityJobRunner = async () => {
     const queue = getRedrawQueue(projectName);
@@ -450,7 +468,7 @@ function enqueueChapterGeneration(projectName, pipeline, chapterKey, effectiveKe
 
 app.get('/api/config', async (req, res) => {
   try {
-    const config = { ...DEFAULT_CONFIG, ...(await readJson(CONFIG_PATH, {})) };
+    const config = normalizeConfig(await readJson(CONFIG_PATH, {}));
     res.json(config);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -459,7 +477,7 @@ app.get('/api/config', async (req, res) => {
 
 app.post('/api/config', async (req, res) => {
   try {
-    const newConfig = req.body;
+    const newConfig = normalizeConfig(req.body);
     await writeJsonAtomic(CONFIG_PATH, newConfig);
     
     // 动态应用网络代理配置

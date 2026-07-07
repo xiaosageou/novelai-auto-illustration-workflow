@@ -193,6 +193,36 @@ export function removeNonEnglishPromptTokens(text) {
   return deduplicatePromptTokens(tokens).join(", ");
 }
 
+export function normalizeDanbooruPromptSegment(text, { character = false } = {}) {
+  if (!text) return "";
+
+  const cjkPattern = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+  const countTagPattern = /^(?:solo|no humans|\d+\s*(?:girls?|boys?|men|women|others?)|\d+(?:girls?|boys?|men|women|others?))$/i;
+  const sentenceTokenPattern = /^(?:she|he|they|her|his|their|the\s+\w+)\b.*\b(?:is|are|was|were|being|has|have|does|do)\b/i;
+
+  const cleaned = cleanNaiDirtyBrackets(
+    removeStructuralTags(
+      convertNaiBrackets(
+        cleanImagePromptOutput(String(text))
+          .replace(/[。；;]/g, ",")
+          .replace(/\s*\|\s*/g, ", ")
+      )
+    )
+  );
+
+  const tokens = cleaned
+    .split(/[,，]/)
+    .map(token => token.trim())
+    .filter(Boolean)
+    .filter(token => !cjkPattern.test(token))
+    .filter(token => !(character && countTagPattern.test(token)))
+    .filter(token => !sentenceTokenPattern.test(token))
+    .map(token => token.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  return deduplicatePromptTokens(tokens).join(", ");
+}
+
 /**
  * 合并多个正向提示词片段并去重
  */

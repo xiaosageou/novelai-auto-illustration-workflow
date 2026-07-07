@@ -115,7 +115,7 @@ export class PipelineManager {
     this.switchProject(this.projectName);
   }
 
-  writeLog(text, type = 'info') {
+  writeLog(text, type = 'info', options = {}) {
     if (type === 'error') {
       console.error(text);
     } else if (type === 'warning') {
@@ -125,7 +125,7 @@ export class PipelineManager {
     }
     if (this.uiLogCallback) {
       try {
-        this.uiLogCallback(text, type);
+        this.uiLogCallback(text, type, options);
       } catch (e) {
         console.error("UI Log Callback error:", e);
       }
@@ -604,7 +604,7 @@ export class PipelineManager {
             text: chap.content,
             model: sceneModel,
             sceneExtractor: this.sceneExtractor,
-            onProgressLog: (logMsg) => this.writeLog(logMsg),
+            onProgressLog: (logMsg, type, options) => this.writeLog(logMsg, type, options),
             requestedSceneCount
           });
           this.writeLog(`[Pipeline] 成功提炼本章共 ${scenes.length} 幅插画场景。`);
@@ -729,7 +729,11 @@ export class PipelineManager {
       scene,
       matchedAnchors,
       llmModel,
-      (logMsg) => this.writeLog(`  [场景 ${scene.scene_idx}] ${logMsg}`)
+      (logMsg, type, options = {}) => this.writeLog(
+        options.appendToPrevious ? logMsg : `  [场景 ${scene.scene_idx}] ${logMsg}`,
+        type,
+        options
+      )
     );
     this.writeLog(`  [场景 ${scene.scene_idx}] 高级参数生成完成 → orientation=${advancedParams.orientation}`);
 
@@ -807,8 +811,8 @@ export class PipelineManager {
       sceneMustShow: scene.must_show || [],
       sceneMustNotShow: scene.must_not_show || [],
       artistStylePrompt: this.config.artistStylePrompt || "",
-      useCharacterSegments: false,
-      useNaturalLanguage: true
+      useCharacterSegments: true,
+      useNaturalLanguage: false
     });
 
     // 将完整 Prompt 参数持久化到场景卡片
@@ -1108,7 +1112,7 @@ export class PipelineManager {
           text: chap.content,
           model: sceneModel,
           sceneExtractor: this.sceneExtractor,
-          onProgressLog: (logMsg) => this.writeLog(logMsg),
+          onProgressLog: (logMsg, type, options) => this.writeLog(logMsg, type, options),
           requestedSceneCount
         });
         this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」成功提炼 ${scenes.length} 幅插画场景。`);
@@ -1464,7 +1468,11 @@ export class PipelineManager {
           scene.trigger_sentence,
           sceneModel,
           '',
-          (logMsg) => this.writeLog(`  [场景 ${scene.scene_idx}] ${logMsg}`)
+          (logMsg, type, options = {}) => this.writeLog(
+            options.appendToPrevious ? logMsg : `  [场景 ${scene.scene_idx}] ${logMsg}`,
+            type,
+            options
+          )
         );
 
         // 把新卡片属性融合到原有 scene 中，重设 status 和清除老图
@@ -1718,7 +1726,11 @@ export class PipelineManager {
         chap.content,
         selectedParagraphs,
         sceneModel,
-        (logMsg) => this.writeLog(`  [章节 ${chap.chapter}] ${logMsg}`)
+        (logMsg, type, options = {}) => this.writeLog(
+          options.appendToPrevious ? logMsg : `  [章节 ${chap.chapter}] ${logMsg}`,
+          type,
+          options
+        )
       );
 
       for (let index = 0; index < selectedParagraphs.length; index++) {

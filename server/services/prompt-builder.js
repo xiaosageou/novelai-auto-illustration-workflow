@@ -3,7 +3,8 @@ import {
   conservativeCompletionNaiWeights, 
   normalizeArtistTag,
   deduplicatePromptTokens,
-  removeNonEnglishPromptTokens
+  removeNonEnglishPromptTokens,
+  normalizeDanbooruPromptSegment
 } from '../utils/prompt-cleaner.js';
 
 /**
@@ -51,7 +52,7 @@ const 默认中国人物负向提示词 = 'western face, blonde hair, blue eyes'
 const 部位特写单图正向提示词 = 'single image, one frame, one subject only, extreme close-up macro crop, target fills the frame, plain blurred background, cohesive macro composition';
 const NSFW部位特写画质增强提示词 = 'adult character only, target anatomy only, macro anatomical close-up, ultra tight crop, wet skin texture, glistening moisture, natural skin folds, soft rim light, specular highlights, subsurface scattering, single private anatomy focus, no minors';
 const 部位特写反拼贴负面提示词 = 'multiple views, split screen, panel layout, comic panel, comic page, manga panel, collage, contact sheet, character sheet, duplicate anatomy, mirrored anatomy, multiple organs, extra organs, extra nipples';
-const 默认NovelAI负面提示词 = 'lowres, bad anatomy, bad hands, text, watermark, signature, blurry, extra fingers, mosaic';
+const 默认NovelAI负面提示词 = 'artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, logo, too many watermarks, negative space, blank page, gigantic breasts';
 const 默认表情稳定负面提示词 = 'bared teeth, clenched teeth, crazy grin, distorted mouth, grimace';
 const 插入局部放大正向提示词 = 'single inset image, magnified inset, penetration focus, x-ray inset, cutaway inset, external view main frame, main scene plus one inset, genital penetration visible in inset only';
 const 插入局部放大豁免负面词 = new Set([
@@ -577,7 +578,7 @@ function 构建均衡多人构图(prompt = '', sceneCharacters = []) {
 
   return {
     prompt: cleanedPrompt,
-    positive: 'single unified composition, connected pose, same focal plane',
+    positive: 'same focal plane',
     negative: 'vertical divider, central dividing line, hard split, two-tone split background, separate backgrounds, side-by-side character cards, paired portraits, versus screen, before and after, comparison layout, isolated characters, characters standing apart, tiny secondary character, distant secondary character, simplified background character, low-detail secondary character, chibi secondary character, super deformed secondary character, blurred secondary character'
   };
 }
@@ -611,7 +612,7 @@ function 构建多人身高约束(sceneCharacters = [], characterAnchors = []) {
   }
 
   return {
-    basePrompt: 'consistent character scale, same ground plane, natural proportions, slight height difference, eye-level camera',
+    basePrompt: 'natural proportions, slight height difference, eye-level camera',
     byName
   };
 }
@@ -632,7 +633,7 @@ function 角色场景状态(char = {}) {
   const appearance = String(char?.appearance || '');
   const pose = String(char?.pose || '');
   return {
-    hasExplicitClothing: clothing.trim().length > 0,
+    hasExplicitClothing: clothing.trim().length > 0 && !/未指明|unspecified|unknown/i.test(clothing),
     nude: /全裸|赤裸|裸体|一丝不挂|completely[_ ]nude|\bnude\b|\bnaked\b/i.test(clothing),
     whiteClothing: /白衣|白色|素色|white/i.test(clothing),
     blackClothing: /黑衣|黑色|black/i.test(clothing),
@@ -1031,7 +1032,8 @@ export function buildFinalImagePrompt(prompt, {
     finalCharPrompt = 清理体液与汗水冲突(finalCharPrompt);
     const genderTag = 角色性别标签(char?.gender);
     if (genderTag === 'girl' || genderTag === 'boy') {
-      finalCharPrompt = mergePositivePromptParts(genderTag, 移除角色局部数量标签(finalCharPrompt));
+      const segmentGenderTag = useCharacterSegments && !useNaturalLanguage ? genderTag : `1${genderTag}`;
+      finalCharPrompt = mergePositivePromptParts(segmentGenderTag, 移除角色局部数量标签(finalCharPrompt));
     }
     finalCharPrompt = 净化角色表情提示词(
       finalCharPrompt,
@@ -1067,7 +1069,10 @@ export function buildFinalImagePrompt(prompt, {
       .filter(Boolean);
   } else {
     fallbackCharacterPrompts = (characterPrompts.length > 0 ? characterPrompts : charDnaTagsArray)
-      .map(removeNonEnglishPromptTokens)
+      .map(prompt => useCharacterSegments
+        ? normalizeDanbooruPromptSegment(prompt, { character: true })
+        : removeNonEnglishPromptTokens(prompt)
+      )
       .filter(Boolean);
   }
   const characterCountPrompt = 构建人物数量标签(sceneCharacterList);
@@ -1088,9 +1093,9 @@ export function buildFinalImagePrompt(prompt, {
     cleanPrompt,
     actionEmphasisPrompt,
     environmentEnhancementPrompt,
-    needsScaleGuard ? (useNaturalLanguage ? 'consistent character scale, same ground plane.' : heightConstraints.basePrompt) : '',
+    needsScaleGuard ? (useNaturalLanguage ? 'natural proportions, slight height difference, eye-level camera.' : heightConstraints.basePrompt) : '',
     spatialGuidance.basePrompt,
-    needsMultiCompositionGuard ? (useNaturalLanguage ? 'single unified composition, connected pose.' : balancedMultiCharacter.positive) : '',
+    needsMultiCompositionGuard ? (useNaturalLanguage ? 'same focal plane.' : balancedMultiCharacter.positive) : '',
     needsPenetrationInset ? (useNaturalLanguage ? 'single magnified inset showing cross-section penetration focus.' : 插入局部放大正向提示词) : '',
     postPositive,
     normalizedArtistStylePrompt
@@ -1100,7 +1105,7 @@ export function buildFinalImagePrompt(prompt, {
     // V4.5 自然语言模式：不过滤 non-English，只进行权重守卫
     basePrompt = clampNaturalLanguageWeights(normalizeArtistTag(basePrompt));
   } else {
-    basePrompt = removeNonEnglishPromptTokens(normalizeArtistTag(basePrompt));
+    basePrompt = normalizeDanbooruPromptSegment(normalizeArtistTag(basePrompt));
   }
   let budgetedPrompts;
   if (useNaturalLanguage) {
@@ -1128,7 +1133,13 @@ export function buildFinalImagePrompt(prompt, {
     // V4.5 自然语言模式：不过滤 non-English，对整个最终字符串执行权重守卫
     finalPositive = clampNaturalLanguageWeights(normalizeArtistTag(finalPositive));
   } else {
-    finalPositive = removeNonEnglishPromptTokens(normalizeArtistTag(finalPositive));
+    finalPositive = useCharacterSegments
+      ? finalPositive
+          .split('|')
+          .map((segment, index) => normalizeDanbooruPromptSegment(normalizeArtistTag(segment), { character: index > 0 }))
+          .filter(Boolean)
+          .join(' | ')
+      : removeNonEnglishPromptTokens(normalizeArtistTag(finalPositive));
   }
 
   // 6. 组合负面提示词：基础画质/文字压制 + 构图约束 + 全局/场景额外负面词

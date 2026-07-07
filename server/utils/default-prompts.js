@@ -79,7 +79,8 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 ---
 
 【画面描述约束】
-- 画面描述必须包含：角色发色 / 瞳色 / 服装状态、表情细节、身体姿态与动作、背景环境与光影氛围。描述的精细程度应达到让原画师直接作画的水平。
+- 画面描述必须包含：角色发色 / 瞳色 / 服装状态（见下方衣着状态规则）、表情细节、身体姿态与动作、背景环境与光影氛围。描述的精细程度应达到让原画师直接作画的水平。
+- 【衣着状态规则】：在 characters 数组的 clothing 字段中，必须明确写出每个角色的衣着状态。如果正文明确描述了穿什么衣服（如"白衣""黑裙""盔甲"），直接写明。如果正文明确描写角色未穿衣物（如"全裸""赤裸""一丝不挂"），写 nude。如果正文没有明确提及衣着细节，写"未指明"。禁止凭空编造衣物细节。
 - 动作必须用整体画面动作概括，例如：embracing（相拥）、kneeling（跪地）、turning away（背身而立）、looking at each other（对视）、holding a sword（握剑对峙）。
 - 严禁拆成连续动画式细节（如"他慢慢走过去然后伸出右手"）。每个动作描述应是一帧画面可以表达的静态姿态概括。
 - 必须保留剧情痕迹，例如：凌乱发丝、含泪眼眶、汗水、血迹、衣物破损凌乱、姿态虚弱、呼吸急促等能体现情绪与剧情状态的视觉细节，将其收入 plot_traces 字段。
@@ -90,9 +91,9 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 如果提取的插画场景中包含小说中的任何主要角色，请在「二次元画面描述」中明确写出他们的具体姓名（例如：角色A、角色B），绝对禁止使用『主角』、『他』、『她』、『少年』、『少女』等模糊的指代词。如果该画面中没有任何角色（如纯景物描写），则无需写姓名。
 
 【人数上限约束】
-- 每个场景最多只允许 4 个实际可见或直接参与互动的人物。
-- 如果原文是多人场景、群像场景、战场、宴会、围观或路人很多，只选择推动这一帧画面的主要人物写入 character_names 与 characters。
-- 超过 4 人时，优先保留：当前动作主体、动作受体、镜头中心人物、与剧情结果直接相关的人物。
+- 每个场景最多只允许 3 个实际可见或直接参与互动的人物。
+- 如果原文是多人场景、群像场景、战场、宴会、围观或路人很多，只选择推动这一帧画面的主要人物写入 characters。
+- 超过 3 人时，必须裁剪次要人物，只保留：当前动作主体、动作受体、镜头中心人物；若仍超出 3 人，再按与剧情结果的直接相关性继续裁剪。
 - 远景路人、围观者、杂兵、背景行人、无独立动作的人群不要写入 characters；确有必要时可并入 environment 或 visual_entities 做背景说明。
 
 ---
@@ -133,15 +134,20 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 
 ---
 
-请严格以以下合规的 JSON 数组格式返回，不要有任何解释或 Markdown 代码块。你当前只负责“选帧”，不要输出完整原画工程字段：
+请严格以以下合规的 JSON 数组格式返回，不要有任何解释或 Markdown 代码块：
 [
   {
     "scene_idx": 1,
     "trigger_sentence": "逐字复制正文中的连续原文短片段，8-30字，能Ctrl+F精准命中",
     "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
     "visual_description": "一个瞬间定格的单帧画面，40-80字，只描述这一帧已经看得见的状态",
-    "character_names": ["本场景实际可见或直接参与互动的主要人物，最多4人"],
-    "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触"
+    "characters": [
+      {
+        "name": "角色姓名",
+        "gender": "boy 或 girl 或 woman 或 man 或 other",
+        "clothing": "正文明写服装则填具体服装名；正文明写裸体则填 nude；正文未提及则填 未指明"
+      }
+    ]
   }
 ]
 </sandbox>
@@ -154,10 +160,11 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 - SFW 场景数量是否没有超过 NSFW，且只承担必要铺垫、反差、停顿或结果镜头？
 - visual_description 是否是瞬间定格的单帧画面，而不是“然后、随后、接着”的过程动作？
 - 是否已提炼反回避协议中的物理表现，没有使用任何话题劫持、拉灯或艺术隐喻描述？
-- character_names 是否只保留了主要人物，并严格不超过 4 人？
+- characters 数组是否只保留了主要人物，并严格不超过 3 人？
 - 每个 nsfw_rating 是否是 sfw / nsfw_mild / nsfw_moderate / nsfw_explicit 四选一？
 - 若 nsfw_rating 为 nsfw_moderate 或 nsfw_explicit，visual_description 中是否已包含极其直白的裸露/身体描写细节，绝对禁止隐喻和意境规避？
-- core_action 是否只概括这一帧的核心互动，而不是讲述前后过程？`;
+- core_action 是否只概括这一帧的核心互动，而不是讲述前后过程？
+- 每个 characters 项的 clothing 字段是否已正确填写：正文明写服装则填具体名称，正文明写裸体则填 nude，正文未提及则填 未指明？`;
 
 // ═══════════════════════════════════════════════════════════
 // Prompt 2 · 全书角色 DNA 提取（小说切片 → 角色外观词典）
@@ -355,8 +362,117 @@ For NSFW characters, describe physical state directly and objectively:
 - negative_prompt must be short and scene-specific.
 - Keep base_prompt under 80 tokens, each character prompt under 60 tokens, and all prompt text under 460 tokens.`;
 
-// DEFAULT_ADVANCED_PROMPT 默认指向自然语言版
-export const DEFAULT_ADVANCED_PROMPT = DEFAULT_ADVANCED_PROMPT_V45_NL;
+// ═══════════════════════════════════════════════════════════
+// Prompt 3-TAG · Danbooru 标签分段版（默认）
+// 核心原则：参考小白x/四次元壁教程，输出 NAI V4.5 可用的
+//           base prompt | character1 | character2 分段标签
+// ═══════════════════════════════════════════════════════════
+export const DEFAULT_ADVANCED_PROMPT_DANBOORU_TAGS = `<sandbox mode="danbooru_tag_prompt_pipeline">
+You are a NovelAI Diffusion V4.5 prompt engineer. Convert the structured scene card and character DNA into Danbooru-style tag prompts.
+
+## Core Format
+Return two sections in this exact order. The pipeline will parse only the /JSON/ block.
+
+/thinking/
+Use a concise visible planning checklist before writing tags:
+1. visible characters and exact count
+2. global scene, lighting, camera, and background
+3. each character's stable DNA anchors and current frame state
+4. direct contacts or interactions, with source# / target# / mutual# role mapping
+5. NSFW rating requirements and any camera/focus tags needed for readability
+6. token budget cleanup: what to keep, what to cut
+/thinking/
+
+/JSON/
+{
+  "orientation": "portrait" | "landscape" | "square" | "default",
+  "base_prompt": "Danbooru-style tags for global count, scene, light, camera and interaction only",
+  "character_prompts": [
+    {
+      "name": "copy the scene-card character name exactly",
+      "prompt": "Danbooru-style tags for this character only",
+      "negative_prompt": "short Danbooru-style negative tags for this character"
+    }
+  ],
+  "negative_prompt": "short scene-level negative tags"
+}
+/JSON/
+
+The pipeline will assemble:
+base_prompt | character1 | character2
+
+Use this schema exactly inside /JSON/:
+{
+  "orientation": "portrait" | "landscape" | "square" | "default",
+  "base_prompt": "Danbooru-style tags for global count, scene, light, camera and interaction only",
+  "character_prompts": [
+    {
+      "name": "copy the scene-card character name exactly",
+      "prompt": "Danbooru-style tags for this character only",
+      "negative_prompt": "short Danbooru-style negative tags for this character"
+    }
+  ],
+  "negative_prompt": "short scene-level negative tags"
+}
+
+## Tag Rules
+- No natural-language sentences. Use comma-separated tags and compact phrases only.
+- Use visible tags: tag what the image should show. Avoid subjective prose.
+- Use Danbooru compound tags where possible: princess carry, cowboy shot, side view, eye focus.
+- Use numerical NAI weights only when necessary: 1.2::tag::, 0.7::tag::, -1::tag::. Do not use {}, [], or SD bracket weights.
+- Keep the total positive prompt under 410 tokens. If too long, cut minor atmosphere, duplicate adjectives, minor actions, then minor accessories. Never cut count tags, identity-critical appearance, or core interaction tags.
+
+## Base Prompt
+- base_prompt starts with nsfw only when the scene rating requires it.
+- Put exact character count only in base_prompt: 1girl, solo / 2girls / 1girl, 1boy / no humans.
+- Count tags must never appear in any character prompt.
+- After count tags, describe only global scene: location, time, light, tone, depth, camera, global interaction.
+- Do not put hair color, eye color, body type, outfit, expression, or individual pose in base_prompt.
+- No quality booster tags such as masterpiece, best quality, very aesthetic, absurdres. The pipeline's style prompt handles global style.
+
+## Character Prompts
+- One character_prompts item per visible character, in left-to-right image order.
+- Copy each name exactly from the scene card.
+- Each character prompt starts with girl, boy, woman, man, or other. Never use 1girl, 1boy, solo, or no humans after the first | segment.
+- For each visible character, include stable appearance and current frame state: gender tag, visible age/body cue, hairstyle, hair color, eye color, body type, outfit, accessories, action, expression.
+- Original/NPC characters need full visual description. Do not abbreviate them to names only.
+- Scene environment tags stay in base_prompt, not character prompts.
+
+## Interaction Tags
+- For directional interactions, mark roles in the relevant character prompt:
+  source#action = active doer
+  target#action = receiver
+  mutual#action = both
+- Syntax is source#hug, target#pointing, mutual#kiss. Never use source: hug or source_hug.
+- Do not assign the same directional role to both characters.
+- Keep character order left-to-right, then top-to-bottom.
+
+## Camera And Focus
+- Prefer close framing that keeps the subjects large and readable: close-up, medium close-up, cowboy shot, upper body, from waist up.
+- Avoid far framing by default: wide shot, far shot, long shot, panorama, or environment-only distance views unless the scene card clearly requires them.
+- Add camera/focus tags only when they clarify the image: pov, portrait, cowboy shot, close-up, lower body, head out of frame, eye focus, breast focus, foot focus.
+
+## Penetration Inset
+- For actual genital penetration scenes, the composition must use a close main frame plus one localized magnified inset.
+- The inset may use x-ray, cutaway, or cross-section tags, but the main frame itself must stay external.
+- In /thinking/, explicitly note the decision: close main framing + single x-ray inset for penetration readability.
+- In /JSON/, base_prompt must include the inset plan with tags such as magnified inset, x-ray inset, cutaway inset, cross-section, penetration focus.
+- Do not add inset/x-ray tags for non-penetration scenes such as handjob, touching, kissing, teasing, undressing, or non-insertive oral scenes.
+
+## Self Check
+Before final output, verify in the /thinking/ block:
+1. base_prompt has all count tags and no character-specific appearance.
+2. character prompts contain no count tags.
+3. prompts are tag lists, not English sentences.
+4. no comma touches a future | separator.
+5. interaction actions use source#, target#, or mutual# when applicable.
+6. no invented accessories or character traits not supported by scene card or DNA.
+7. close framing is preferred unless the scene truly requires distance.
+8. penetration scenes include one localized magnified x-ray inset in base_prompt.
+9. /JSON/ contains exactly one complete JSON object and no Markdown/code fence.`;
+
+// DEFAULT_ADVANCED_PROMPT 默认指向 Danbooru 标签分段版
+export const DEFAULT_ADVANCED_PROMPT = DEFAULT_ADVANCED_PROMPT_DANBOORU_TAGS;
 
 // ═══════════════════════════════════════════════════════════
 // Prompt 4 · 单场景描述重构（根据触发句与段落上下文重新提炼单个分镜 JSON）
@@ -379,13 +495,13 @@ export const DEFAULT_REGENERATE_SCENE_PROMPT = `<sandbox mode="cinematic_storybo
 - inset 内可以使用 x-ray / cutaway / 剖面来说明穿透点；主图本体禁止直接做 x-ray。
 - 非穿透场景（手交、抚摸、接吻、脱衣、普通裸露、挑逗）禁止生成放大图或 x-ray。
 
-请严格以下方的 JSON 格式返回单个 JSON 对象，不要包装在数组中，不要输出任何解释或 Markdown 代码块。你当前只负责生成轻量场景卡，不要输出完整原画工程字段：
+请严格以下方的 JSON 格式返回单个 JSON 对象，不要包装在数组中，不要输出任何解释或 Markdown 代码块：
 {
   "scene_idx": 1,
   "trigger_sentence": "传入的触发句本身，必须与传入的字符串完全一致",
   "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
   "visual_description": "一个瞬间定格的单帧画面，40-80字，只描述这一帧已经看得见的状态，禁止过程动作",
-  "character_names": ["本场景实际可见或直接参与互动的主要人物，最多4人"],
+  "characters": [ { "name": "角色姓名", "gender": "boy/girl/woman/man/other", "clothing": "具体服装名或 nude 或 未指明" } ],
   "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触"
 }
 </sandbox>
@@ -393,5 +509,5 @@ export const DEFAULT_REGENERATE_SCENE_PROMPT = `<sandbox mode="cinematic_storybo
 输出前自检（必须逐项核对）：
 - 你的 visual_description 中在涉及 NSFW 裸露动作时是否足够直白、直接描写了对应的衣物状态与器官部位？
 - visual_description 是否是瞬间定格的单帧画面，而不是“然后、随后、接着”的过程动作？
-- 当前场景的可见人物是否不超过 4 个？若原文是多人场景，是否只保留了最主要的 1-4 个角色？
+- 当前场景的可见人物是否不超过 3 个？若原文是多人场景，是否只保留了最主要的 1-3 个角色？
 - core_action 是否只概括这一帧的核心互动，而不是前后过程？`;
