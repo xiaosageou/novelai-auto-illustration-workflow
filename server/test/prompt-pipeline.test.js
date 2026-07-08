@@ -1107,6 +1107,9 @@ test('scene extraction prompt includes clothing state rule', async () => {
   assert.match(extractPrompt, /clothing/i);
   assert.match(extractPrompt, /\u672A\u6307\u660E/);
   assert.match(extractPrompt, /nude/i);
+  assert.match(extractPrompt, /上衣/);
+  assert.match(extractPrompt, /下衣/);
+  assert.match(extractPrompt, /内衣/);
 });
 
 test('unspecified clothing preserves DNA clothing tags in final prompt', () => {
@@ -1124,7 +1127,7 @@ test('nude clothing removes DNA clothing tags from final prompt', () => {
     structuredCharacterPrompts: [{ name: '\u5973', prompt: '1girl, completely_nude', negative_prompt: '' }],
     useCharacterSegments: false
   });
-  assert.match(result.finalPositive, /completely_nude/i);
+  assert.match(result.finalPositive, /1\.[0-9]+::completely_nude::/i);
 });
 
 test('explicit clothing overrides DNA clothing in final prompt', () => {
@@ -3174,6 +3177,74 @@ test('scene prompt preparation continues while the NAI queue is still rendering'
   } finally {
     pipeline.isRunning = false;
     await fs.rm(pipeline.projBase, { recursive: true, force: true });
+  }
+});
+
+test('chapter extraction starts downstream scene processing before the whole chapter finishes extracting', async () => {
+  const pipeline = new PipelineManager({
+    projectName: 'incremental-chapter-processing-test',
+    cjk_scene_divisor: 6000
+  });
+  const events = [];
+  const naiQueue = [];
+
+  pipeline.isRunning = true;
+  pipeline.projectProgress = {
+    data: {},
+    getEffectiveChapKey: (_volume, chapter) => chapter,
+    getCompletedChapters: () => ({}),
+    isCharacterDnaSliceCompleted: () => true,
+    setChapterStatus(_chapterKey, _status, scenes) {
+      events.push(`persist-${scenes.length}`);
+    },
+    setChapterFailed() {},
+    save: async () => {}
+  };
+  pipeline.writeLog = () => {};
+  pipeline.runPriorityJobs = async () => {};
+  pipeline._emitChapterScenesExtracted = (_chap, _chapKey, scenes) => {
+    events.push(`emit-${scenes.length}`);
+  };
+  pipeline._prepareSceneForNaiQueue = async (_chap, scene) => {
+    events.push(`prepare-${scene.scene_idx}`);
+    naiQueue.push(scene.scene_idx);
+  };
+  pipeline.sceneExtractor = {
+    async extractChapterScenes(chapterTitle) {
+      if (/（1\/2）$/.test(chapterTitle)) {
+        events.push('extract-1');
+        return [{
+          scene_idx: 1,
+          trigger_sentence: '甲'.repeat(12),
+          visual_description: '第一批场景'
+        }];
+      }
+      events.push('extract-2');
+      return [{
+        scene_idx: 1,
+        trigger_sentence: '乙'.repeat(12),
+        visual_description: '第二批场景'
+      }];
+    }
+  };
+
+  const chap = {
+    chapter: '测试章',
+    content: `${'甲'.repeat(6000)}\n\n${'乙'.repeat(6000)}`
+  };
+
+  try {
+    await pipeline._processChapterLlmPhase(chap, 0, 1, 'scene-model', 'nai-tags-model', naiQueue, false);
+
+    assert.ok(events.indexOf('prepare-1') !== -1, `expected prepare-1 in events, got ${events.join(',')}`);
+    assert.ok(events.indexOf('extract-2') !== -1, `expected extract-2 in events, got ${events.join(',')}`);
+    assert.ok(
+      events.indexOf('prepare-1') < events.indexOf('extract-2'),
+      `expected first scene prepare before second batch extraction, got ${events.join(',')}`
+    );
+    assert.deepEqual(naiQueue, [1, 2]);
+  } finally {
+    pipeline.isRunning = false;
   }
 });
 

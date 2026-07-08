@@ -589,38 +589,27 @@ export class PipelineManager {
           scenes = currentProgress.scenes.map(s => ({ ...s, ...normalizeSceneCard(s), status: s.status || 'PENDING' }));
           this.writeLog(`[Pipeline] 检测到该章节已有提炼好的 ${scenes.length} 个分镜场景，直接恢复断点场景...`);
         } else {
-          const countMetrics = getSceneCountMetrics(
-            chap.content,
-            this.config.cjk_scene_divisor || 600,
-            this.config.english_scene_divisor || 350
-          );
-          const requestedSceneCount = countMetrics.sceneCount;
-          const countDescription = countMetrics.language === 'english'
-            ? `英文总词数 ${countMetrics.count}，按 ceil(词数 / ${countMetrics.divisor})`
-            : `有效字符数 ${countMetrics.count}，按 ceil(字数 / ${countMetrics.divisor})`;
-          this.writeLog(`[Pipeline] 章节「${chap.chapter}」${countDescription} 计算为 ${requestedSceneCount} 个分镜场景。`);
-          scenes = await extractChapterScenesInBatches({
-            chapterTitle: chap.chapter,
-            text: chap.content,
-            model: sceneModel,
-            sceneExtractor: this.sceneExtractor,
-            onProgressLog: (logMsg, type, options) => this.writeLog(logMsg, type, options),
-            requestedSceneCount,
-            sceneCountOptions: {
-              cjkDivisor: this.config.cjk_scene_divisor,
-              englishDivisor: this.config.english_scene_divisor
-            }
-          });
-          this.writeLog(`[Pipeline] 成功提炼本章共 ${scenes.length} 幅插画场景。`);
-          const initialScenes = scenes.map(s => {
-            const normalizedScene = normalizeSceneCard(s);
-            const originalTrigger = findOriginalTriggerSentence(chap.content, normalizedScene.trigger_sentence);
-            return { ...normalizedScene, trigger_sentence: originalTrigger, status: 'PENDING' };
-          });
-          this.projectProgress.setChapterStatus(chapKey, 'generating', initialScenes);
-          await this.projectProgress.save();
-          this._emitChapterScenesExtracted(chap, chapKey, initialScenes);
-          scenes = initialScenes;
+          const naiQueue = [];
+          let llmDone = false;
+          const preparePromises = [];
+          const naiConsumerPromise = this._runNaiConsumerLinear(naiQueue, () => llmDone, naiModel);
+          try {
+            scenes = await this._extractChapterScenesIncrementally(chap, chapKey, sceneModel, '[Pipeline]', async (newScenes, allScenes) => {
+              for (const scene of newScenes) {
+                const preparePromise = (async () => {
+                  await this.runPriorityJobs();
+                  if (!this.isRunning) return;
+                  await this._prepareSceneForNaiQueue(chap, scene, allScenes, chapKey, naiTagsModel, naiQueue);
+                })();
+                preparePromises.push(preparePromise);
+              }
+            });
+            await Promise.all(preparePromises);
+          } finally {
+            llmDone = true;
+            await naiConsumerPromise;
+          }
+          continue;
         }
 
         await this._prepareScenesAndRunNaiQueue(chap, scenes, scenes, chapKey, naiTagsModel, naiModel);
@@ -715,6 +704,63 @@ export class PipelineManager {
       scenes,
       fullProgress: this.projectProgress.data
     });
+  }
+
+  _normalizeExtractedSceneBatch(chap, rawScenes = [], existingScenes = []) {
+    const baseIndex = existingScenes.length;
+    return (Array.isArray(rawScenes) ? rawScenes : []).map((scene, index) => {
+      const normalizedScene = normalizeSceneCard(scene);
+      const originalTrigger = findOriginalTriggerSentence(chap.content, normalizedScene.trigger_sentence);
+      return {
+        ...normalizedScene,
+        scene_idx: baseIndex + index + 1,
+        trigger_sentence: originalTrigger,
+        status: normalizedScene.status || 'PENDING'
+      };
+    });
+  }
+
+  async _persistChapterScenes(chap, chapKey, scenes) {
+    this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
+    await this.projectProgress.save();
+    this._emitChapterScenesExtracted(chap, chapKey, scenes);
+  }
+
+  async _extractChapterScenesIncrementally(chap, chapKey, sceneModel, logPrefix, onBatchReady = null) {
+    const countMetrics = getSceneCountMetrics(
+      chap.content,
+      this.config.cjk_scene_divisor || 600,
+      this.config.english_scene_divisor || 350
+    );
+    const requestedSceneCount = countMetrics.sceneCount;
+    const countDescription = countMetrics.language === 'english'
+      ? `英文总词数 ${countMetrics.count}，按 ceil(词数 / ${countMetrics.divisor})`
+      : `有效字符数 ${countMetrics.count}，按 ceil(字数 / ${countMetrics.divisor})`;
+    this.writeLog(`${logPrefix} 章节「${chap.chapter}」${countDescription} 计算为 ${requestedSceneCount} 个分镜场景。`);
+
+    const scenes = [];
+    await extractChapterScenesInBatches({
+      chapterTitle: chap.chapter,
+      text: chap.content,
+      model: sceneModel,
+      sceneExtractor: this.sceneExtractor,
+      onProgressLog: (logMsg, type, options) => this.writeLog(logMsg, type, options),
+      onBatchExtracted: async (batchScenes) => {
+        const normalizedBatch = this._normalizeExtractedSceneBatch(chap, batchScenes, scenes);
+        if (normalizedBatch.length === 0) return;
+        scenes.push(...normalizedBatch);
+        await this._persistChapterScenes(chap, chapKey, scenes);
+        await onBatchReady?.(normalizedBatch, scenes);
+      },
+      requestedSceneCount,
+      sceneCountOptions: {
+        cjkDivisor: this.config.cjk_scene_divisor,
+        englishDivisor: this.config.english_scene_divisor
+      }
+    });
+
+    this.writeLog(`${logPrefix} 章节「${chap.chapter}」成功提炼 ${scenes.length} 幅插画场景。`);
+    return scenes;
   }
 
   // ====== 双线并行流水线 — 新增方法 ======
@@ -1101,38 +1147,20 @@ export class PipelineManager {
         scenes = currentProgress.scenes.map(s => ({ ...s, ...normalizeSceneCard(s), status: s.status || 'PENDING' }));
         this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」恢复已有 ${scenes.length} 个分镜场景...`);
       } else {
-        const countMetrics = getSceneCountMetrics(
-          chap.content,
-          this.config.cjk_scene_divisor || 600,
-          this.config.english_scene_divisor || 350
-        );
-        const requestedSceneCount = countMetrics.sceneCount;
-        const countDescription = countMetrics.language === 'english'
-          ? `英文总词数 ${countMetrics.count}，按 ceil(词数 / ${countMetrics.divisor})`
-          : `有效字符数 ${countMetrics.count}，按 ceil(字数 / ${countMetrics.divisor})`;
-        this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」${countDescription} 计算为 ${requestedSceneCount} 个分镜场景。`);
-        scenes = await extractChapterScenesInBatches({
-          chapterTitle: chap.chapter,
-          text: chap.content,
-          model: sceneModel,
-          sceneExtractor: this.sceneExtractor,
-          onProgressLog: (logMsg, type, options) => this.writeLog(logMsg, type, options),
-          requestedSceneCount,
-          sceneCountOptions: {
-            cjkDivisor: this.config.cjk_scene_divisor,
-            englishDivisor: this.config.english_scene_divisor
+        const preparePromises = [];
+        scenes = await this._extractChapterScenesIncrementally(chap, chapKey, sceneModel, '[Pipeline LLM]', async (newScenes, allScenes) => {
+          for (const scene of newScenes) {
+            const preparePromise = (async () => {
+              if (!this.isRunning) return;
+              await this.runPriorityJobs();
+              if (!this.isRunning) return;
+              await this._prepareSceneForNaiQueue(chap, scene, allScenes, chapKey, naiTagsModel, naiQueue);
+            })();
+            preparePromises.push(preparePromise);
           }
         });
-        this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」成功提炼 ${scenes.length} 幅插画场景。`);
-        const initialScenes = scenes.map(s => {
-          const normalizedScene = normalizeSceneCard(s);
-          const originalTrigger = findOriginalTriggerSentence(chap.content, normalizedScene.trigger_sentence);
-          return { ...normalizedScene, trigger_sentence: originalTrigger, status: 'PENDING' };
-        });
-        this.projectProgress.setChapterStatus(chapKey, 'generating', initialScenes);
-        await this.projectProgress.save();
-        this._emitChapterScenesExtracted(chap, chapKey, initialScenes);
-        scenes = initialScenes;
+        await Promise.all(preparePromises);
+        return null;
       }
 
       // ── 逐场景 LLM 处理，完成后推入 NAI 队列 ─────────────────────────────
