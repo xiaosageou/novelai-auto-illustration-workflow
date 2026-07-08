@@ -128,6 +128,7 @@ export async function extractChapterScenesInBatches({
   sceneExtractor,
   onProgressLog = null,
   requestedSceneCount = null,
+  sceneCountOptions = {},
   splitThreshold = 10000
 }) {
   const chapterText = normalizeTextBlock(text);
@@ -141,7 +142,7 @@ export async function extractChapterScenesInBatches({
   const batches = splitChapterTextIntoBatches(chapterText, splitThreshold);
 
   if (batches.length <= 1 || !sceneCount || sceneCount <= 1) {
-    return sceneExtractor.extractChapterScenes(chapterTitle, chapterText, model, onProgressLog, requestedSceneCount);
+    return sceneExtractor.extractChapterScenes(chapterTitle, chapterText, model, onProgressLog, requestedSceneCount, sceneCountOptions);
   }
 
   const batchSceneCounts = allocateSceneCounts(sceneCount, batches);
@@ -157,7 +158,8 @@ export async function extractChapterScenesInBatches({
       batchText,
       model,
       onProgressLog,
-      batchSceneCount
+      batchSceneCount,
+      sceneCountOptions
     );
     mergedScenes.push(...batchScenes);
   }

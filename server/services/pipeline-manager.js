@@ -605,7 +605,11 @@ export class PipelineManager {
             model: sceneModel,
             sceneExtractor: this.sceneExtractor,
             onProgressLog: (logMsg, type, options) => this.writeLog(logMsg, type, options),
-            requestedSceneCount
+            requestedSceneCount,
+            sceneCountOptions: {
+              cjkDivisor: this.config.cjk_scene_divisor,
+              englishDivisor: this.config.english_scene_divisor
+            }
           });
           this.writeLog(`[Pipeline] 成功提炼本章共 ${scenes.length} 幅插画场景。`);
           const initialScenes = scenes.map(s => {
@@ -1113,7 +1117,11 @@ export class PipelineManager {
           model: sceneModel,
           sceneExtractor: this.sceneExtractor,
           onProgressLog: (logMsg, type, options) => this.writeLog(logMsg, type, options),
-          requestedSceneCount
+          requestedSceneCount,
+          sceneCountOptions: {
+            cjkDivisor: this.config.cjk_scene_divisor,
+            englishDivisor: this.config.english_scene_divisor
+          }
         });
         this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」成功提炼 ${scenes.length} 幅插画场景。`);
         const initialScenes = scenes.map(s => {
@@ -1730,7 +1738,11 @@ export class PipelineManager {
           options.appendToPrevious ? logMsg : `  [章节 ${chap.chapter}] ${logMsg}`,
           type,
           options
-        )
+        ),
+        {
+          cjkDivisor: this.config.cjk_scene_divisor,
+          englishDivisor: this.config.english_scene_divisor
+        }
       );
 
       for (let index = 0; index < selectedParagraphs.length; index++) {

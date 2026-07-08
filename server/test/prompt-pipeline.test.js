@@ -77,7 +77,9 @@ test('scene count uses characters for CJK and words for English chapters', () =>
   assert.equal(calculateSceneCount('字'.repeat(600)), 1);
   assert.equal(calculateSceneCount('字'.repeat(601)), 2);
   assert.equal(calculateSceneCount('字'.repeat(1800)), 3);
+  assert.equal(calculateSceneCount('字'.repeat(1800), 900), 2);
   assert.equal(calculateSceneCount(Array(350).fill('word').join(' ')), 1);
+  assert.equal(calculateSceneCount(Array(700).fill('word').join(' '), 600, 200), 4);
   assert.equal(calculateSceneCount(Array(351).fill('word').join(' ')), 2);
   assert.deepEqual(getSceneCountMetrics(Array(700).fill('word').join(' ')), {
     language: 'english',
@@ -85,6 +87,20 @@ test('scene count uses characters for CJK and words for English chapters', () =>
     count: 700,
     divisor: 350,
     sceneCount: 2
+  });
+  assert.deepEqual(getSceneCountMetrics('字'.repeat(1800), 900), {
+    language: 'cjk',
+    unit: 'characters',
+    count: 1800,
+    divisor: 900,
+    sceneCount: 2
+  });
+  assert.deepEqual(getSceneCountMetrics(Array(700).fill('word').join(' '), 600, 200), {
+    language: 'english',
+    unit: 'words',
+    count: 700,
+    divisor: 200,
+    sceneCount: 4
   });
   assert.equal(getSceneCountMetrics(`中文正文${'字'.repeat(20)} English Name`).language, 'cjk');
 });

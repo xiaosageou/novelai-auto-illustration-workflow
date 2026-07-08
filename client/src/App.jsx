@@ -3131,7 +3131,7 @@ function App() {
                         onChange={(e) => setConfig({ ...config, cjk_scene_divisor: Number(e.target.value) })}
                         style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                       />
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>每 600 字(默认)生成一个分镜</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>当前按每 {config.cjk_scene_divisor ?? 600} 字生成一个分镜，默认 600</div>
                     </div>
                     <div>
                       <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>英文分镜词数除数</label>
@@ -3143,7 +3143,7 @@ function App() {
                         onChange={(e) => setConfig({ ...config, english_scene_divisor: Number(e.target.value) })}
                         style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                       />
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>每 350 词(默认)生成一个分镜</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>当前按每 {config.english_scene_divisor ?? 350} 词生成一个分镜，默认 350</div>
                     </div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>

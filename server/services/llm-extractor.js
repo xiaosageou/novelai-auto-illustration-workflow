@@ -1155,6 +1155,13 @@ export function calculateSceneCount(text = '', cjkDivisor = 600, englishDivisor 
   return getSceneCountMetrics(text, cjkDivisor, englishDivisor).sceneCount;
 }
 
+function formatSceneCountRule(metrics) {
+  if (metrics.language === 'english') {
+    return `ceil(英文总词数 / ${metrics.divisor})`;
+  }
+  return `ceil(章节有效字符数 / ${metrics.divisor})`;
+}
+
 function compileScenePromptDeterministically(sceneInput = {}) {
   const sceneCharacters = getSceneCharacters(sceneInput);
   const sceneText = [
@@ -1213,9 +1220,7 @@ function buildSceneExtractionUserContent({
   const cleanedTitle = preserveTextForLlm(chapterTitle);
   const cleanedText = preserveTextForLlm(text);
   const metrics = countMetrics || getSceneCountMetrics(text);
-  const countRule = metrics.language === 'english'
-    ? 'ceil(英文总词数 / 350)'
-    : 'ceil(章节有效字符数 / 600)';
+  const countRule = formatSceneCountRule(metrics);
   const countLabel = metrics.language === 'english'
     ? '本章英文总词数'
     : '本章有效字符数';
@@ -1363,17 +1368,19 @@ export class LLMExtractor {
   /**
    * 单章小说文本提炼：中文按有效字符数，英文按单词数动态计算分镜数量。
    */
-  async extractChapterScenes(chapterTitle, text, model = "deepseek-chat", onProgressLog = null, requestedSceneCount = null) {
+  async extractChapterScenes(chapterTitle, text, model = "deepseek-chat", onProgressLog = null, requestedSceneCount = null, sceneCountOptions = {}) {
     if (!this.apiKey) {
       throw new Error("请先配置有效的 LLM API Key！");
     }
 
     const systemPrompt = ensureStructuredScenePrompt(this.system_prompt_extract_scenes || DEFAULT_EXTRACT_SCENES_PROMPT);
+    const cjkDivisor = Number(sceneCountOptions?.cjkDivisor) || 600;
+    const englishDivisor = Number(sceneCountOptions?.englishDivisor) || 350;
 
     const sceneCount = Number.isInteger(requestedSceneCount) && requestedSceneCount > 0
       ? requestedSceneCount
-      : calculateSceneCount(text);
-    const countMetrics = getSceneCountMetrics(text);
+      : calculateSceneCount(text, cjkDivisor, englishDivisor);
+    const countMetrics = getSceneCountMetrics(text, cjkDivisor, englishDivisor);
     const userContent = buildSceneExtractionUserContent({
       chapterTitle,
       text,
@@ -1609,7 +1616,7 @@ export class LLMExtractor {
   /**
    * 正文选段批量重构：一次 LLM 会话生成多处选段对应的场景卡
    */
-  async regenerateSelectedParagraphScenes(chapterTitle, chapterContent, selections = [], model = "deepseek-chat", onProgressLog = null) {
+  async regenerateSelectedParagraphScenes(chapterTitle, chapterContent, selections = [], model = "deepseek-chat", onProgressLog = null, sceneCountOptions = {}) {
     if (!this.apiKey) {
       throw new Error("请先配置有效的 LLM API Key！");
     }
@@ -1629,6 +1636,8 @@ export class LLMExtractor {
 
     const systemPrompt = ensureStructuredScenePrompt(this.system_prompt_extract_scenes || DEFAULT_EXTRACT_SCENES_PROMPT);
     const url = `${this.baseUrl}/chat/completions`;
+    const cjkDivisor = Number(sceneCountOptions?.cjkDivisor) || 600;
+    const englishDivisor = Number(sceneCountOptions?.englishDivisor) || 350;
 
     const selectionBlock = normalizedSelections.map(selection => [
       `【选段 ${selection.selection_index}】`,
@@ -1642,7 +1651,7 @@ export class LLMExtractor {
       chapterTitle,
       text: chapterContent,
       sceneCount: normalizedSelections.length,
-      countMetrics: getSceneCountMetrics(chapterContent),
+      countMetrics: getSceneCountMetrics(chapterContent, cjkDivisor, englishDivisor),
       selectionBlock,
       selectionGuidance: [
         `- 下列正文选段是必须生成的场景锚点，不允许自行挑选其他段落替代。`,
