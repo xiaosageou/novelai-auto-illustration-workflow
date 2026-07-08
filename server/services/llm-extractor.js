@@ -931,15 +931,17 @@ export function extractBoundedScenesJson(rawContent = '') {
     }
   }
 
-  if (!text.startsWith(SCENES_JSON_START)) {
+  const startIdx = text.indexOf(SCENES_JSON_START);
+  if (startIdx === -1) {
     throw new Error(`缺少场景输出起始符 ${SCENES_JSON_START}`);
   }
-  if (!text.endsWith(SCENES_JSON_END)) {
+  const endIdx = text.lastIndexOf(SCENES_JSON_END);
+  if (endIdx === -1 || endIdx < startIdx) {
     throw new Error(`缺少场景输出终止符 ${SCENES_JSON_END}，判定输出截断`);
   }
 
   const jsonText = text
-    .slice(SCENES_JSON_START.length, text.length - SCENES_JSON_END.length)
+    .slice(startIdx + SCENES_JSON_START.length, endIdx)
     .trim();
   if (!jsonText) {
     throw new Error('场景输出起止符之间没有 JSON 内容');

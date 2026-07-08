@@ -144,6 +144,10 @@ test('scene output boundary parser rejects a missing end marker as truncation', 
     extractBoundedScenesJson(`${SCENES_JSON_START}\n[{"scene_idx":1}]\n${SCENES_JSON_END}`),
     '[{"scene_idx":1}]'
   );
+  assert.equal(
+    extractBoundedScenesJson(`好的，以下是结果：\n${SCENES_JSON_START}\n[{"scene_idx":2}]\n${SCENES_JSON_END}`),
+    '[{"scene_idx":2}]'
+  );
   assert.throws(
     () => extractBoundedScenesJson(`${SCENES_JSON_START}\n[{"scene_idx":1}]`),
     /缺少场景输出终止符.*判定输出截断/
