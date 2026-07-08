@@ -12,6 +12,7 @@ import { enqueueUniqueJob, removeQueuedJobs } from './utils/job-queue.js';
 import { readJson, writeJsonAtomic } from './utils/db.js';
 import { parseFile } from './utils/file-parser.js';
 import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL } from './utils/default-prompts.js';
+import { normalizeAdvancedPromptForConfig } from './utils/advanced-prompt-contract.js';
 
 const BASE_DIR = process.cwd();
 const CONFIG_PATH = path.join(BASE_DIR, 'illustrator_config.json');
@@ -78,6 +79,8 @@ function normalizeConfig(config = {}) {
       normalized[field] = fallback;
     }
   }
+
+  normalized.system_prompt_advanced_prompt = normalizeAdvancedPromptForConfig(normalized.system_prompt_advanced_prompt);
 
   return normalized;
 }

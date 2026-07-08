@@ -28,6 +28,7 @@ import {
 } from '../services/prompt-builder.js';
 import { buildCharacterSpatialGuidance } from '../services/prompt-builder.js';
 import { normalizeSceneCard } from '../utils/scene-structure.js';
+import { normalizeAdvancedPromptForConfig } from '../utils/advanced-prompt-contract.js';
 import { resolveTaskLlmConfig } from '../services/pipeline-manager.js';
 import { PipelineManager } from '../services/pipeline-manager.js';
 
@@ -815,6 +816,25 @@ test('legacy custom advanced prompt receives the current structured output contr
   assert.match(normalized, /\/JSON\//i);
   assert.match(normalized, /close-up|cowboy shot|upper body/i);
   assert.match(normalized, /x-ray inset|magnified inset/i);
+  assert.match(normalized, /legacy schema containing only "prompt" is obsolete/i);
+});
+
+test('config-facing advanced prompt normalization upgrades legacy prompt text', () => {
+  const legacyPrompt = `You are a professional NovelAI image generation parameter expert.
+{
+  "orientation": "portrait",
+  "prompt": "comma-separated tags",
+  "negative_prompt": ""
+}`;
+
+  const normalized = normalizeAdvancedPromptForConfig(legacyPrompt);
+
+  assert.doesNotMatch(normalized, /【当前流水线任务】/);
+  assert.match(normalized, /CURRENT OUTPUT CONTRACT \(HIGHEST PRIORITY\)/);
+  assert.match(normalized, /\/thinking\//i);
+  assert.match(normalized, /\/JSON\//i);
+  assert.match(normalized, /"base_prompt"/);
+  assert.match(normalized, /"character_prompts"/);
   assert.match(normalized, /legacy schema containing only "prompt" is obsolete/i);
 });
 
@@ -1806,9 +1826,13 @@ test('advanced prompt tells LLM to map scene interactions into source and target
     assert.match(systemPrompt, /source#action/i);
     assert.match(systemPrompt, /target#action/i);
     assert.match(systemPrompt, /mutual#action/i);
+    assert.match(systemPrompt, /relevant character prompt/i);
+    assert.match(systemPrompt, /must not appear in base_prompt/i);
     assert.match(userPrompt, /interaction 字段/i);
     assert.match(userPrompt, /"role":"source\|target\|mutual"/i);
     assert.match(userPrompt, /interaction_actions/i);
+    assert.match(userPrompt, /对应角色 prompt 里使用 source#动作、target#动作、mutual#动作/i);
+    assert.match(userPrompt, /不要把 source#\/target#\/mutual# 这类方向标签放进 base_prompt/i);
     assert.match(userPrompt, /"source":\s*"钰慧"/);
     assert.match(userPrompt, /"target":\s*"阿宾"/);
   } finally {
@@ -3051,7 +3075,7 @@ test('V4.5 prompt budget preserves artist style prompt under the shared limit', 
       { name: '甲', prompt: `girl, pale_skin, long_hair, white_dress, ${filler}` },
       { name: '乙', prompt: `boy, black_hair, school_uniform, ${filler}` }
     ],
-    artistStylePrompt: '1.3::artist:youngjoo kjy ::, artist:nardack, artist:rella, cinematic lighting',
+    artistStylePrompt: '1.3::artist:youngjoo kjy ::, artist:nardack, artist:rella, cinematic lighting, no text',
     useNaturalLanguage: false,
     useCharacterSegments: false
   });
@@ -3059,6 +3083,51 @@ test('V4.5 prompt budget preserves artist style prompt under the shared limit', 
   assert.match(result.basePrompt, /artist:youngjoo kjy/);
   assert.match(result.basePrompt, /artist:nardack/);
   assert.match(result.basePrompt, /artist:rella/);
+  assert.match(result.basePrompt, /\bno text\b/i);
+});
+
+test('advanced prompt uses configured system prompt as runtime base text', async () => {
+  const extractor = new LLMExtractor({
+    apiKey: 'test',
+    baseUrl: 'https://example.invalid',
+    system_prompt_advanced_prompt: 'CUSTOM_FRONTEND_PROMPT_MARKER, no text'
+  });
+
+  const originalFetch = globalThis.fetch;
+  let capturedSystemMessage = '';
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    capturedSystemMessage = request.messages.find(message => message.role === 'system')?.content || '';
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              orientation: 'square',
+              base_prompt: '1girl, indoors',
+              character_prompts: [{ name: '甲', prompt: 'girl, black_hair', negative_prompt: '' }],
+              negative_prompt: ''
+            })
+          }
+        }]
+      })
+    };
+  };
+
+  try {
+    await extractor.generateScenePromptAdvanced({
+      visual_description: '少女站在室内',
+      characters: [{ name: '甲', gender: 'woman' }]
+    }, [], 'test');
+
+    assert.match(capturedSystemMessage, /CUSTOM_FRONTEND_PROMPT_MARKER/);
+    assert.match(capturedSystemMessage, /\bno text\b/i);
+    assert.match(capturedSystemMessage, /CURRENT OUTPUT CONTRACT \(HIGHEST PRIORITY\)/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('V4.5 token estimator stays close to NovelAI web count for mixed natural language prompts', () => {

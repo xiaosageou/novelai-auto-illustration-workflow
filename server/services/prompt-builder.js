@@ -519,6 +519,7 @@ export function estimateV45Tokens(text = '') {
 function promptTokenPriority(token = '') {
   if (/^(?:girl|boy|other|1girl|1boy|1other|[1-6](?:girls|boys|others))$/i.test(token)) return 95;
   if (/(?:^|::)\s*artist:|^artist:|official art|year20\d\d/i.test(token)) return 92;
+  if (/^(?:no text|textless|no watermark|watermark)$/i.test(token)) return 91;
   if (/exactly_|only_|facing |interaction directed|characters facing/i.test(token)) return 90;
   if (/hair|eyes|dress|robe|shirt|skirt|armor|uniform|skin|breasts|muscular|petite/i.test(token)) return 75;
   if (/^(?:source|target|mutual)#/i.test(token)) return 72;

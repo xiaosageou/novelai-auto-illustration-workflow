@@ -3261,7 +3261,7 @@ function App() {
                   <div>
                     <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>3. 高级生图参数生成 System Prompt（Danbooru 标签版）</label>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
-                      实际运行字段。LLM 输出 base_prompt 与角色 prompt 的 Danbooru tags，后端按 base | character 分段发给 NAI。
+                      这是后端实际使用的底稿字段。保存后会写入 `illustrator_config.json` 并热更新运行中的 pipeline；后端会在此基础上补运行时 contract 与校验规则，再按 base | character 分段发给 NAI。
                     </div>
                     <textarea 
                       value={config.system_prompt_advanced_prompt || ""}

@@ -419,6 +419,11 @@ Use this schema exactly inside /JSON/:
 - No natural-language sentences. Use comma-separated tags and compact phrases only.
 - Use visible tags: tag what the image should show. Avoid subjective prose.
 - Use Danbooru compound tags where possible: princess carry, cowboy shot, side view, eye focus.
+- Treat a Danbooru-style tag as a short visual label, usually lowercase words joined by underscores or a compact multi-word tag: white_dress, long_hair, looking_at_viewer, from_behind, cowboy shot.
+- If an idea is hard to express with one canonical tag, split it into several visual tags instead of writing a sentence. Example: "hugging from behind" -> from_behind, hug, arms_around_waist.
+- Candidate tags from retrieval are guidance, not a hard allowlist. If needed, write additional Danbooru-style tags yourself, but keep them short, visual, and tag-shaped.
+- Bad: "a girl is hugging him from behind in a shy way". Good: from_behind, hug, arms_around_waist, shy.
+- Bad: explanatory phrases, full English sentences, or prose joined by commas. Good: concrete visible tags only.
 - Use numerical NAI weights only when necessary: 1.2::tag::, 0.7::tag::, -1::tag::. Do not use {}, [], or SD bracket weights.
 - Keep the total positive prompt under 410 tokens. If too long, cut minor atmosphere, duplicate adjectives, minor actions, then minor accessories. Never cut count tags, identity-critical appearance, or core interaction tags.
 
@@ -443,6 +448,7 @@ Use this schema exactly inside /JSON/:
   source#action = active doer
   target#action = receiver
   mutual#action = both
+- source# / target# / mutual# tags must appear only inside the relevant character prompt. They must not appear in base_prompt.
 - Syntax is source#hug, target#pointing, mutual#kiss. Never use source: hug or source_hug.
 - Do not assign the same directional role to both characters.
 - Keep character order left-to-right, then top-to-bottom.

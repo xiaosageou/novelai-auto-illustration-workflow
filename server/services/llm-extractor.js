@@ -4,88 +4,14 @@ import { normalizeSceneCard, buildSceneDescription, getSceneCharacters } from '.
 import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL, DEFAULT_REGENERATE_SCENE_PROMPT } from '../utils/default-prompts.js';
 import { getExponentialBackoffDelaySeconds } from '../utils/backoff.js';
 import { estimateV45Tokens } from './prompt-builder.js';
+import { ensureAdvancedPromptContract, withSystemPrefix } from '../utils/advanced-prompt-contract.js';
+
+export { ensureAdvancedPromptContract, withSystemPrefix } from '../utils/advanced-prompt-contract.js';
 
 export const SCENES_JSON_START = '<SCENES_JSON_START>';
 export const SCENES_JSON_END = '<SCENES_JSON_END>';
 const NAI_PROMPT_TOKEN_LIMIT = 400;
 const llmResponseAbortControllers = new WeakMap();
-
-export function withSystemPrefix(taskPrompt) {
-  const prompt = preserveTextForLlm(taskPrompt)
-    .replace(/\n*重要：[\s\S]*?<further_mathematics>[\s\S]*?<\/further_mathematics>/gi, '')
-    .trim();
-  if (prompt.startsWith(XIAO_AI_SYSTEM_PREFIX)) return prompt;
-  return `${XIAO_AI_SYSTEM_PREFIX}
-
----
-
-【当前流水线任务】
-以下任务约束与机器可读输出格式优先于上方的通用系统指令。只输出当前任务明确要求的 JSON 或英文视觉短语，绝对不要添加任何寒暄、解释或代码围栏。
-
-${prompt}`;
-}
-
-export function ensureAdvancedPromptContract(taskPrompt) {
-  const prompt = preserveTextForLlm(taskPrompt || DEFAULT_ADVANCED_PROMPT).trim();
-  const hasCurrentSchema = /["']?base_prompt["']?/i.test(prompt)
-    && /["']?character_prompts["']?/i.test(prompt)
-    && /["']?negative_prompt["']?/i.test(prompt);
-  const hasEnvelopeContract = /\/thinking\/[\s\S]*\/JSON\//i.test(prompt)
-    || /<\s*thinking\s*>[\s\S]*<\s*JSON\s*>/i.test(prompt);
-  if (hasCurrentSchema && hasEnvelopeContract) return withSystemPrefix(prompt);
-  if (hasCurrentSchema) {
-    return withSystemPrefix(`${prompt}
-
----
-
-## THINKING AND JSON ENVELOPE CONTRACT (HIGHEST PRIORITY)
-Return two sections in this exact order:
-/thinking/
-Concise visible planning checklist: characters/count, scene/camera, character DNA anchors, interactions with source#/target#/mutual# role mapping, NSFW/focus needs, and token cleanup.
-/thinking/
-/JSON/
-One complete JSON object using the schema above. No Markdown, no code fences, no commentary.
-/JSON/`);
-  }
-
-  return withSystemPrefix(`${prompt}
-
----
-
-## CURRENT OUTPUT CONTRACT (HIGHEST PRIORITY)
-The output schema described below supersedes every earlier output example or instruction in this system message.
-The legacy schema containing only "prompt" is obsolete and MUST NOT be used.
-
-Return two sections in this exact order. The parser will use only the /JSON/ block:
-/thinking/
-Concise visible planning checklist: characters/count, scene/camera, character DNA anchors, interactions with source#/target#/mutual# role mapping, NSFW/focus needs, and token cleanup.
-/thinking/
-/JSON/
-{
-  "orientation": "portrait" | "landscape" | "square" | "default",
-  "base_prompt": "global character count, environment, lighting, camera, atmosphere, interactions and global NSFW description only",
-  "character_prompts": [
-    {
-      "name": "copy the character name exactly from the scene card",
-      "prompt": "natural-language description of this character's appearance, clothing, pose, expression, and role in the current frame only",
-      "negative_prompt": "short natural-language phrase describing traits that should not appear on this character"
-    }
-  ],
-  "negative_prompt": "short scene-specific negative phrase or an empty string"
-}
-/JSON/
-
-Hard requirements:
-- base_prompt must be a non-empty string.
-- character_prompts should contain one entry for every visible scene character, in the same order. If the scene has no visible characters, use an empty array.
-- Copy each character name exactly. Do not translate or shorten it.
-- Put the total character count only in base_prompt.
-- Do not put character-specific appearance, clothing, expression or individual pose in base_prompt.
-- Prefer close framing tags such as close-up, medium close-up, cowboy shot, upper body, or from waist up. Avoid wide shot, far shot, and long shot unless clearly required by the scene.
-- For actual genital penetration scenes, /thinking/ must explicitly plan one close main frame plus one localized magnified x-ray inset, and /JSON/.base_prompt must include tags such as magnified inset, x-ray inset, cutaway inset, cross-section, or penetration focus.
-- Do not output a top-level "prompt" field.
-- Output the JSON object only inside /JSON/, without Markdown or commentary.`);
-}
 
 function extractAdvancedJsonEnvelope(content = '') {
   const raw = String(content || '').trim();
@@ -1993,9 +1919,11 @@ export class LLMExtractor {
       "1. base_prompt 和每个 character_prompts[].prompt 必须是英文 Danbooru-style tag list，禁止自然语言完整句子。",
       "2. base_prompt 放 nsfw、精确人数、场景、光照、镜头、全局互动；角色外貌、服装、表情和单人姿势只放 character_prompts。",
       "3. character_prompts[].prompt 必须以 girl, / boy, / woman, / man, / other, 开头，禁止出现 1girl、1boy、solo、no humans 等人数标签。",
-      "4. 互动必须尽量使用 source#action、target#action、mutual#action 标清主动方和承受方。",
-      "5. Token 预算必须前置控制：总正向 tags 不超过 410 tokens。优先删除氛围形容词、重复概念和次要配饰，不得删除人物数量、角色识别特征和核心互动。",
-      "6. 衣着状态必须忠实于场景卡 characters[].clothing：有具体服装名则用对应 tags（如 white_dress、school_uniform）；是 nude 则用 completely_nude；是 未指明 则从角色 DNA 参考中继承默认服装 tags，不要自行编造服装细节。"
+      "4. Danbooru tag 指短视觉标签，不是英文句子。优先使用 lower_snake_case 或常见短标签，如 white_dress、looking_at_viewer、from_behind、cowboy shot。",
+      "5. 遇到单个标签难以准确表达的概念时，先拆成多个可见标签组合，不要退回自然语言整句。例如“从背后抱住”应优先写成 from_behind、hug、arms_around_waist，而不是一句英文描述。",
+      "6. 互动必须尽量使用 source#action、target#action、mutual#action 标清主动方和承受方，而且这些方向标签只能放在对应角色的 character_prompts[].prompt 中，must not appear in base_prompt。",
+      "7. Token 预算必须前置控制：总正向 tags 不超过 410 tokens。优先删除氛围形容词、重复概念和次要配饰，不得删除人物数量、角色识别特征和核心互动。",
+      "8. 衣着状态必须忠实于场景卡 characters[].clothing：有具体服装名则用对应 tags（如 white_dress、school_uniform）；是 nude 则用 completely_nude；是 未指明 则从角色 DNA 参考中继承默认服装 tags，不要自行编造服装细节。"
     ].join("\n");
 
     const userMessage = [
@@ -2008,8 +1936,9 @@ export class LLMExtractor {
       `若本场景可见角色数量 >= 2，则每个 character_prompts 项都必须显式输出 interaction 字段：有直接互动时填写 {\"role\":\"source|target|mutual\",\"action\":\"规范动作名\",\"target\":\"对方角色名\"}；没有直接互动时 interaction 必须为 null。`,
       "若动作天然有方向性，不要把 source 和 target 写反；两个互动双方的 interaction.target 必须互相指向对方姓名。",
       "如果 scene card 里有 interaction_actions，你必须先理解每条 interaction 的主动方 source、承受方 target，以及是否 mutual，然后把这个角色职责落实到对应角色的 character_prompts 中。",
-      "参考 NovelAI V4 多角色互动文档：多人互动必须在对应角色 prompt 里使用 source#动作、target#动作、mutual#动作 来强调谁在主动、谁在承受、谁是相互动作。若动作天然有方向性，不要把 source 和 target 写反。",
+      "参考 NovelAI V4 多角色互动文档：多人互动必须在对应角色 prompt 里使用 source#动作、target#动作、mutual#动作 来强调谁在主动、谁在承受、谁是相互动作。不要把 source#/target#/mutual# 这类方向标签放进 base_prompt。若动作天然有方向性，不要把 source 和 target 写反。",
       "示例：若 interaction_actions 里是 {\"action\":\"undressing\",\"source\":\"钰慧\",\"target\":\"阿宾\"}，则钰慧的 character prompt 使用 source#undressing；阿宾的 character prompt 使用 target#undressing。不要把两人的动作职责写成一样。",
+      "Danbooru 标签的判断标准：它应该像 white_dress、long_hair、looking_at_viewer、from_behind、cowboy shot 这样的短视觉标签，而不是完整英文句子。若一个概念没有把握对应单标签，就拆成多个可见标签，不要写解释性 prose。",
       "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局描述（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪 tag，优先使用 restrained、clear 的表情 tags，禁止把所有角色都写成 calm_expression、expressionless 或 natural_expression。禁止无端生成 bared_teeth, clenched_teeth, sharp_teeth, fangs, crazy_grin, distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。禁止自然语言句子，并用正常空格分隔 tags，禁止粘连单词。",
       "镜头默认优先近景，让角色和接触点更大更清楚。除非场景卡明确要求展示大环境或远距离关系，否则不要使用 wide shot、far shot、long shot、panorama。",
       "瞬间定格示例：正确是 'A Girl Kneeling By The Door, Looking Up At The Visitor.'；错误是 'A Girl Kneels Down, Then Looks Up At The Visitor.'。你的 prompt 只能表达前者这种已经定格的画面。",
