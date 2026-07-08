@@ -283,11 +283,39 @@ function normalizeCharacterInteractionListWithSceneTargets(raw = null, character
   return items.length > 0 ? items : null;
 }
 
+function inferCharacterInteractionsFromScene(characterName = '', sceneInteractions = []) {
+  const name = String(characterName || '').trim();
+  if (!name) return null;
+
+  const items = sceneInteractions
+    .flatMap((interaction) => {
+      const action = normalizeInteractionMarkerAction(interaction?.action || '');
+      const source = String(interaction?.source || '').trim();
+      const target = String(interaction?.target || '').trim();
+      const isMutual = interaction?.mutual === true && !isDirectionalInteractionAction(action);
+      if (!action || !source || !target || source === target) return [];
+      if (source === name) {
+        return [{ role: isMutual ? 'mutual' : 'source', action, target }];
+      }
+      if (target === name) {
+        return [{ role: isMutual ? 'mutual' : 'target', action, target: source }];
+      }
+      return [];
+    });
+
+  return items.length > 0 ? items : null;
+}
+
 function readCharacterInteractionField(item = null, sceneInteractions = []) {
   if (!item || typeof item !== 'object') return null;
   const characterName = String(item?.name || '').trim();
   if (Object.prototype.hasOwnProperty.call(item, 'interaction')) {
-    return normalizeCharacterInteractionListWithSceneTargets(item.interaction, characterName, sceneInteractions);
+    const normalized = normalizeCharacterInteractionListWithSceneTargets(item.interaction, characterName, sceneInteractions);
+    if (normalized) return normalized;
+    if (typeof item.interaction === 'string' && item.interaction.trim()) {
+      return inferCharacterInteractionsFromScene(characterName, sceneInteractions);
+    }
+    return normalized;
   }
   if (Object.prototype.hasOwnProperty.call(item, 'interaction_actions')) {
     return normalizeCharacterInteractionListWithSceneTargets(item.interaction_actions, characterName, sceneInteractions);

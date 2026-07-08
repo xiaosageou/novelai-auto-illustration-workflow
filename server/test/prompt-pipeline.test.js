@@ -2138,6 +2138,75 @@ test('advanced prompt accepts legacy character interaction_actions field as inte
   }
 });
 
+test('advanced prompt infers structured interactions from natural-language interaction strings', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    status: 200,
+    json: async () => ({
+      choices: [{
+        finish_reason: 'stop',
+        message: {
+          content: JSON.stringify({
+            orientation: 'landscape',
+            base_prompt: 'office, three people, tense interaction',
+            character_prompts: [
+              {
+                name: '甲',
+                prompt: 'man, suit, leaning_forward',
+                negative_prompt: '',
+                interaction: 'guiding 乙 forward'
+              },
+              {
+                name: '乙',
+                prompt: 'woman, blouse, caught_off_guard',
+                negative_prompt: '',
+                interaction: 'being guided by 甲 and patted by 丙'
+              },
+              {
+                name: '丙',
+                prompt: 'man, jacket, reaching_out',
+                negative_prompt: '',
+                interaction: 'patting 乙 on the shoulder'
+              }
+            ],
+            negative_prompt: 'text'
+          })
+        }
+      }]
+    })
+  });
+
+  try {
+    const result = await extractor.generateScenePromptAdvanced({
+      visual_description: '甲把乙往前带，丙从旁拍乙的肩膀',
+      characters: [
+        { name: '甲', gender: 'man' },
+        { name: '乙', gender: 'woman' },
+        { name: '丙', gender: 'man' }
+      ],
+      interaction_actions: [
+        { action: 'guiding', source: '甲', target: '乙', mutual: false },
+        { action: 'patting', source: '丙', target: '乙', mutual: false }
+      ]
+    }, [], 'test');
+
+    assert.deepEqual(result.character_prompts[0].interaction, [
+      { role: 'source', action: 'guiding', target: '乙' }
+    ]);
+    assert.deepEqual(result.character_prompts[1].interaction, [
+      { role: 'target', action: 'guiding', target: '甲' },
+      { role: 'target', action: 'patting', target: '丙' }
+    ]);
+    assert.deepEqual(result.character_prompts[2].interaction, [
+      { role: 'source', action: 'patting', target: '乙' }
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('advanced prompt does not require interaction markers when scene has no direct interaction', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
