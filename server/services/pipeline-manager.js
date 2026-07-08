@@ -65,6 +65,7 @@ export function resolveTaskLlmConfig(config = {}, task = 'scene') {
       baseUrl: activePreset.url || "",
       apiKey: activePreset.key || "",
       model: config[`${prefix}_model`] || activePreset.model || config.llm_model || "deepseek-chat",
+      streamEnabled: config.llm_stream_enabled !== false,
       rateLimitEnabled: activePreset.rateLimitEnabled !== false,
       rateLimitRpm: Number(activePreset.rateLimitRpm) || 3,
       rateLimitKey: `preset:${activePreset.id}`
@@ -75,6 +76,7 @@ export function resolveTaskLlmConfig(config = {}, task = 'scene') {
     baseUrl: config[`${prefix}_url`] || config.llm_url || "",
     apiKey: config[`${prefix}_key`] || config.llm_key || "",
     model: config[`${prefix}_model`] || config.llm_model || "deepseek-chat",
+    streamEnabled: config.llm_stream_enabled !== false,
     rateLimitEnabled: config.llm_rate_limit_enabled !== false,
     rateLimitRpm: Number(config.llm_rate_limit_rpm) || 3,
     rateLimitKey: task === 'scene'
@@ -157,6 +159,7 @@ export class PipelineManager {
       system_prompt_character_dna: this.config.system_prompt_character_dna || "",
       system_prompt_advanced_prompt: this.config.system_prompt_advanced_prompt || "",
       system_prompt_advanced_prompt_nl: this.config.system_prompt_advanced_prompt_nl || "",
+      streamEnabled: connection.streamEnabled,
       rateLimitEnabled: connection.rateLimitEnabled,
       rateLimitRpm: connection.rateLimitRpm,
       rateLimitKey: connection.rateLimitKey,

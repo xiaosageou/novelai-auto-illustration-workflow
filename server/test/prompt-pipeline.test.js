@@ -48,6 +48,7 @@ test('task LLM configuration supports independent endpoints with legacy fallback
     baseUrl: 'https://dna.example/v1',
     apiKey: 'dna-key',
     model: 'dna-model',
+    streamEnabled: true,
     rateLimitEnabled: true,
     rateLimitRpm: 3,
     rateLimitKey: 'direct:character-dna'
@@ -56,6 +57,7 @@ test('task LLM configuration supports independent endpoints with legacy fallback
     baseUrl: 'https://default.example/v1',
     apiKey: 'default-key',
     model: 'default-model',
+    streamEnabled: true,
     rateLimitEnabled: true,
     rateLimitRpm: 3,
     rateLimitKey: 'direct:scene'
@@ -64,6 +66,7 @@ test('task LLM configuration supports independent endpoints with legacy fallback
     baseUrl: 'https://default.example/v1',
     apiKey: 'default-key',
     model: 'tags-model',
+    streamEnabled: true,
     rateLimitEnabled: true,
     rateLimitRpm: 3,
     rateLimitKey: 'direct:nai-tags'
@@ -888,11 +891,11 @@ test('current scene state overrides conflicting DNA clothing, hair, and poses', 
           肤色标签: ['pale_skin']
         }
       },
-      { name: '男', 正面提示词: 'daoist_robe, black_robe' }
+      { name: '男', 正面提示词: 'daoist_robe, black_robe, jeans' }
     ],
     structuredCharacterPrompts: [
       { name: '女', prompt: '1girl, on_back, black_and_white_robe, completely_nude' },
-      { name: '男', prompt: '1man, daoist_robe, kneeling, crazed_expression, grin' }
+      { name: '男', prompt: '1man, daoist_robe, jeans, completely_nude, kneeling, crazed_expression, grin' }
     ],
     artistStylePrompt: '4::masterpiece, best quality::, 1.5::artist:nardack::',
     useCharacterSegments: false
@@ -900,10 +903,13 @@ test('current scene state overrides conflicting DNA clothing, hair, and poses', 
 
   assert.match(result.characterPrompts[0], /completely_nude/);
   assert.doesNotMatch(result.characterPrompts[0], /on_back|hair_bun|hair_ornament|robe/);
+  assert.doesNotMatch(result.characterPrompts[0], /\bjeans\b/);
   assert.doesNotMatch(result.characterPrompts[1], /daoist_robe|black_robe/);
+  assert.doesNotMatch(result.characterPrompts[1], /\bjeans\b/);
   assert.match(result.characterPrompts[1], /^(?:1)?boy,/);
   assert.match(result.characterPrompts[1], /crazed_expression/);
   assert.match(result.characterPrompts[1], /\bgrin\b/);
+  assert.match(result.characterPrompts[1], /completely_nude/);
   assert.doesNotMatch(result.characterPrompts[1], /closed mouth|natural expression/);
   assert.equal((result.finalPositive.match(/\b1girl\b/g) || []).length, 1);
   assert.equal((result.finalPositive.match(/\b1boy\b/g) || []).length, 1);
@@ -2751,6 +2757,39 @@ test('LLM requests preserve original wording without sensitive-term replacement'
   assert.doesNotMatch(capturedBody, /生理通道|生理后庭|生理交合|生理高潮|生理流体/);
 });
 
+test('postChatCompletionWith429Retry preserves explicit stream false', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody = null;
+
+  globalThis.fetch = async (_url, options) => {
+    capturedBody = JSON.parse(options.body);
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: 'ok' } }]
+      })
+    };
+  };
+
+  try {
+    await postChatCompletionWith429Retry({
+      url: 'https://example.invalid/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      payload: {
+        model: 'test',
+        messages: [{ role: 'user', content: 'hello' }],
+        stream: false
+      },
+      max429Retries: 0,
+      initialDelaySeconds: 10
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(capturedBody.stream, false);
+});
+
 test('LLM streaming response fails only after idle timeout', async () => {
   let pendingReject = null;
   const response = {
@@ -3177,6 +3216,33 @@ test('scene prompt preparation continues while the NAI queue is still rendering'
   } finally {
     pipeline.isRunning = false;
     await fs.rm(pipeline.projBase, { recursive: true, force: true });
+  }
+});
+
+test('scene extraction can disable streaming and parse regular JSON responses', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid', streamEnabled: false });
+  const originalFetch = globalThis.fetch;
+  let capturedPayload;
+  globalThis.fetch = async (_url, options) => {
+    capturedPayload = JSON.parse(options.body);
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: wrapScenes([
+          { scene_idx: 1, trigger_sentence: '第一幕', visual_description: '场景一' },
+          { scene_idx: 2, trigger_sentence: '第二幕', visual_description: '场景二' }
+        ]) } }]
+      })
+    };
+  };
+
+  try {
+    const scenes = await extractor.extractChapterScenes('测试章', '字'.repeat(601), 'test-model');
+    assert.equal(capturedPayload.stream, false);
+    assert.equal(scenes.length, 2);
+    assert.equal(scenes[0].trigger_sentence, '第一幕');
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

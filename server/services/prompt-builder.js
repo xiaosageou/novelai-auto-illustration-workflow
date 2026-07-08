@@ -648,7 +648,7 @@ function 角色场景状态(char = {}) {
 function 应删除的Dna标签(token, state) {
   const value = String(token || '').trim().toLowerCase();
   if (!value) return true;
-  const clothingTag = /(robe|dress|skirt|shirt|sweater|jacket|coat|cloak|cape|uniform|outfit|clothes|clothing|hanfu|ruqun|dougi|armor|pants|shorts|underwear|bra|panties|stockings|boots|shoe|sandal|sleeve|collar)/i;
+  const clothingTag = /(robe|dress|skirt|shirt|sweater|jacket|coat|cloak|cape|uniform|outfit|clothes|clothing|hanfu|ruqun|dougi|armor|pants|jeans|shorts|underwear|bra|panties|stockings|boots|shoe|sandal|sleeve|collar)/i;
   const hairStyleTag = /(hair_bun|updo|ponytail|twin_tails|braid|braided_hair|hair_up|hair_ornament|kanzashi)/i;
   if (state.nude && clothingTag.test(value)) return true;
   if (state.hasExplicitClothing && clothingTag.test(value)) return true;
@@ -659,7 +659,7 @@ function 应删除的Dna标签(token, state) {
 function 应删除的场景冲突标签(token, state) {
   const value = String(token || '').trim().toLowerCase();
   if (!value) return true;
-  if (state.nude && /(clothed|clothes|clothing|robe|dress|shirt|skirt|pants|underwear|bra|panties|partially_undressed)/i.test(value)) return true;
+  if (state.nude && /(clothed|clothes|clothing|robe|dress|shirt|skirt|pants|jeans|underwear|bra|panties|partially_undressed)/i.test(value)) return true;
   if (state.whiteClothing && /black_(robe|dress|shirt|clothes|outfit)/i.test(value)) return true;
   if (state.blackClothing && /white_(robe|dress|shirt|clothes|outfit)/i.test(value)) return true;
   if (state.looseHair && /(hair_bun|updo|ponytail|hair_up|hair_ornament|kanzashi)/i.test(value)) return true;
@@ -672,9 +672,20 @@ function 应删除的场景冲突标签(token, state) {
 
 function 应用角色场景状态覆盖(prompt = '', char = {}) {
   const state = 角色场景状态(char);
-  return 按逗号拆分提示词(prompt)
+  let tokens = 按逗号拆分提示词(prompt)
     .filter(token => !应删除的场景冲突标签(token, state))
-    .join(', ');
+  if (state.nude) {
+    tokens = tokens.map(token => {
+      if (/^completely[_ ]nude$/i.test(String(token || '').trim())) {
+        return '1.35::completely_nude::';
+      }
+      return token;
+    });
+    if (!tokens.some(token => /completely[_ ]nude/i.test(String(token || '')))) {
+      tokens.push('1.35::completely_nude::');
+    }
+  }
+  return tokens.join(', ');
 }
 
 /**

@@ -60,6 +60,7 @@ function App() {
     llm_key: "",
     llm_model: "deepseek-chat",
     llm_preset_id: "",
+    llm_stream_enabled: true,
     llm_rate_limit_enabled: true,
     llm_rate_limit_rpm: 3,
     llm_api_presets: [],
@@ -518,6 +519,7 @@ function App() {
       const data = await res.json();
       setConfig({
         ...data,
+        llm_stream_enabled: data.llm_stream_enabled !== false,
         llm_rate_limit_enabled: data.llm_rate_limit_enabled !== false,
         llm_rate_limit_rpm: Number(data.llm_rate_limit_rpm) || 3,
         llm_api_presets: (data.llm_api_presets || []).map(normalizePreset)
@@ -3002,6 +3004,19 @@ function App() {
                         {modelError.default}
                       </div>
                     )}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: '10px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.85rem', border: '1px solid var(--border-light)', borderRadius: '8px', padding: '10px 12px' }}>
+                      <input
+                        type="checkbox"
+                        checked={config.llm_stream_enabled !== false}
+                        onChange={(e) => setConfig({ ...config, llm_stream_enabled: e.target.checked })}
+                      />
+                      LLM 使用流式输出
+                    </label>
+                    <div style={{ display: 'flex', alignItems: 'center', fontSize: '0.78rem', color: 'var(--text-muted)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px', padding: '10px 12px', background: 'rgba(255,255,255,0.015)' }}>
+                      关闭后改用普通 JSON 响应，请求日志不再逐字流出。
+                    </div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: '10px' }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.85rem', border: '1px solid var(--border-light)', borderRadius: '8px', padding: '10px 12px' }}>

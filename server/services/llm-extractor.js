@@ -768,10 +768,11 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
 
   for (let attempt = 0; ; attempt++) {
     const controller = new AbortController();
+    const streamEnabled = payload?.stream !== false;
     const res = await fetch(url, {
       method: "POST",
       headers,
-      body: JSON.stringify({ ...payload, stream: true }),
+      body: JSON.stringify({ ...payload, stream: streamEnabled }),
       signal: controller.signal
     });
     llmResponseAbortControllers.set(res, controller);
@@ -1252,6 +1253,7 @@ function buildSceneExtractionUserContent({
     `- 每个场景只输出：scene_idx、trigger_sentence、nsfw_rating、visual_description、characters（含 name/gender/clothing）、core_action。`,
     `- 不要输出 environment、cinematography、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show。`,
     `- characters 数组最多 3 人；多人场景只保留这一帧真正推动画面的主要人物。若原文超过 3 人，必须裁剪次要人物，只保留动作主体、动作受体、镜头中心人物。每个 character 项必须包含 name、gender、clothing 三个字段。`,
+    `- characters[].clothing 必须尽量写清上衣和下衣；如果这一帧没有外衣或只剩内层衣物，必须进一步写明内衣状态；正文没写才允许填 未指明。`,
     `- 如果本章同时存在 NSFW 与 SFW 场景，名额要向 NSFW 场景倾斜：多选取 NSFW 场景，适当选取 SFW 场景。`,
     `- SFW 场景只保留少量真正必要的铺垫、反差、情绪停顿或结果镜头，不要让 SFW 数量超过 NSFW。`,
     `- visual_description 必须是一个瞬间定格场景，控制在 40-80 字。`,
@@ -1283,7 +1285,7 @@ function buildSceneExtractionUserContent({
 }
 
 export class LLMExtractor {
-  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "" } = {}) {
+  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", streamEnabled = true, rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "" } = {}) {
     this.baseUrl = baseUrl.trim().replace(/\/+$/, "");
     this.apiKey = apiKey.trim();
     this.system_prompt_extract_scenes = system_prompt_extract_scenes;
@@ -1291,6 +1293,7 @@ export class LLMExtractor {
     this.system_prompt_advanced_prompt = system_prompt_advanced_prompt;
     this.system_prompt_advanced_prompt_nl = system_prompt_advanced_prompt_nl;
     this.system_prompt_regenerate_scene = system_prompt_regenerate_scene;
+    this.streamEnabled = streamEnabled !== false;
     this.rateLimitEnabled = rateLimitEnabled !== false;
     this.rateLimitRpm = Number(rateLimitRpm) || 3;
     this.rateLimitKey = String(rateLimitKey || "default");
@@ -1328,6 +1331,13 @@ export class LLMExtractor {
       headers["Authorization"] = `Bearer ${this.apiKey}`;
     }
     return headers;
+  }
+
+  withStreamPreference(payload = {}) {
+    return {
+      ...payload,
+      stream: this.streamEnabled !== false
+    };
   }
 
   /**
@@ -1412,7 +1422,7 @@ export class LLMExtractor {
         const res = await postChatCompletionWith429Retry({
           url,
           headers: this.getHeaders(),
-          payload,
+          payload: this.withStreamPreference(payload),
           idleTimeoutMs: 180000,
           max429Retries: 5,
           initialDelaySeconds: 10,
@@ -1546,8 +1556,7 @@ export class LLMExtractor {
             { role: "user", content: buildUserContent(attempt) }
           ],
           temperature: attempt === 1 ? 0.3 : 0.1,
-          max_tokens: 32768,
-          stream: true
+          max_tokens: 32768
         };
 
         try {
@@ -1555,7 +1564,7 @@ export class LLMExtractor {
           const res = await postChatCompletionWith429Retry({
             url,
             headers: this.getHeaders(),
-            payload,
+            payload: this.withStreamPreference(payload),
             idleTimeoutMs: 120000,
             max429Retries: 5,
             initialDelaySeconds: 10,
@@ -1673,8 +1682,7 @@ export class LLMExtractor {
           { role: "user", content: buildUserContent(attempt) }
         ],
         temperature: attempt === 1 ? 0.3 : 0.1,
-        max_tokens: Math.max(6000, normalizedSelections.length * 2500),
-        stream: true
+        max_tokens: Math.max(6000, normalizedSelections.length * 2500)
       };
 
       try {
@@ -1682,7 +1690,7 @@ export class LLMExtractor {
         const res = await postChatCompletionWith429Retry({
           url,
           headers: this.getHeaders(),
-          payload,
+          payload: this.withStreamPreference(payload),
           idleTimeoutMs: 180000,
           max429Retries: 5,
           initialDelaySeconds: 10,
@@ -1795,7 +1803,7 @@ export class LLMExtractor {
       const res = await postChatCompletionWith429Retry({
         url,
         headers: this.getHeaders(),
-        payload,
+        payload: this.withStreamPreference(payload),
         idleTimeoutMs: 180000,
         max429Retries: 5,
         initialDelaySeconds: 10,
@@ -2002,8 +2010,7 @@ export class LLMExtractor {
         { role: "user", content: userMessage }
       ],
       temperature: 0.3,
-      max_tokens: 32768,
-      stream: true
+      max_tokens: 32768
     };
 
     onProgressLog?.(`[LLM] 正在调用大模型进行参数合成...`);
@@ -2143,7 +2150,7 @@ export class LLMExtractor {
 
       for (let attempt = 1; attempt <= 3; attempt++) {
         const attemptPayload = attempt === 1
-          ? payload
+          ? this.withStreamPreference(payload)
           : {
               model,
               messages: [
@@ -2151,8 +2158,7 @@ export class LLMExtractor {
                 { role: "user", content: retryUserMessage }
               ],
               temperature: 0.1,
-              max_tokens: 32768,
-              stream: true
+              max_tokens: 32768
         };
 
         try {
@@ -2160,7 +2166,7 @@ export class LLMExtractor {
           const res = await postChatCompletionWith429Retry({
             url,
             headers: this.getHeaders(),
-            payload: attemptPayload,
+            payload: this.withStreamPreference(attemptPayload),
             idleTimeoutMs: 120000,
             max429Retries: 5,
             initialDelaySeconds: 10,
@@ -2233,22 +2239,21 @@ export class LLMExtractor {
                   ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.trimKey}` }
                   : this.getHeaders();
                 const trimModel = this.trimModel || 'mimo-v2.5';
-                const fixRes = await postChatCompletionWith429Retry({
-                  url: trimEndpoint,
-                  headers: trimHeaders,
-                  payload: {
-                    model: trimModel,
-                    messages: [
+	                const fixRes = await postChatCompletionWith429Retry({
+	                  url: trimEndpoint,
+	                  headers: trimHeaders,
+	                  payload: this.withStreamPreference({
+	                    model: trimModel,
+	                    messages: [
                       {
                         role: "system",
                         content: `You are a text spacing repair tool. The input contains English phrases that are concatenated without spaces, separated by "${DELIM}". Insert correct spaces into each phrase. Output the repaired phrases separated by "${DELIM}" ONLY — no newlines, no numbering, no explanation. Preserve original phrase order and count.`
                       },
                       { role: "user", content: uniqueWords.join(DELIM) }
-                    ],
-                    temperature: 0,
-                    max_tokens: 8192,
-                    stream: true
-                  },
+	                    ],
+	                    temperature: 0,
+	                    max_tokens: 8192
+	                  }),
                   idleTimeoutMs: 30000,
                   max429Retries: 2,
                   initialDelaySeconds: 5,
@@ -2309,12 +2314,12 @@ export class LLMExtractor {
                 ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.trimKey}` }
                 : this.getHeaders();
               const trimModel = this.trimModel || 'mimo-v2.5';
-              const trimRes = await postChatCompletionWith429Retry({
-                url: trimEndpoint,
-                headers: trimHeaders,
-                payload: {
-                  model: trimModel,
-                  messages: [
+	              const trimRes = await postChatCompletionWith429Retry({
+	                url: trimEndpoint,
+	                headers: trimHeaders,
+	                payload: this.withStreamPreference({
+	                  model: trimModel,
+	                  messages: [
                     {
                       role: "system",
                       content: [
@@ -2336,11 +2341,10 @@ export class LLMExtractor {
                       role: "user",
                       content: `【预算目标】请把以下 NovelAI prompt sections 精简到 ${NAI_PROMPT_TOKEN_LIMIT} token 以内，且一定 under 460 tokens。\n${sections.join(DELIM)}`
                     }
-                  ],
-                  temperature: 0,
-                  max_tokens: 8192,
-                  stream: true
-                },
+	                  ],
+	                  temperature: 0,
+	                  max_tokens: 8192
+	                }),
                 idleTimeoutMs: 60000,
                 max429Retries: 2,
                 initialDelaySeconds: 5,
@@ -2467,7 +2471,7 @@ export class LLMExtractor {
       const res = await postChatCompletionWith429Retry({
         url,
         headers: this.getHeaders(),
-        payload,
+        payload: this.withStreamPreference(payload),
         idleTimeoutMs: 120000,
         max429Retries: 5,
         initialDelaySeconds: 10,

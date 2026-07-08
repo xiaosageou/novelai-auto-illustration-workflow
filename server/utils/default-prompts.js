@@ -80,7 +80,7 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 
 【画面描述约束】
 - 画面描述必须包含：角色发色 / 瞳色 / 服装状态（见下方衣着状态规则）、表情细节、身体姿态与动作、背景环境与光影氛围。描述的精细程度应达到让原画师直接作画的水平。
-- 【衣着状态规则】：在 characters 数组的 clothing 字段中，必须明确写出每个角色的衣着状态。如果正文明确描述了穿什么衣服（如"白衣""黑裙""盔甲"），直接写明。如果正文明确描写角色未穿衣物（如"全裸""赤裸""一丝不挂"），写 nude。如果正文没有明确提及衣着细节，写"未指明"。禁止凭空编造衣物细节。
+- 【衣着状态规则】：在 characters 数组的 clothing 字段中，必须明确写出每个角色的衣着状态。如果正文明确描述了穿什么衣服（如"白衣""黑裙""盔甲"），直接写明，并尽量拆清上衣与下衣；如果没有外衣或正文明确写到只穿内层，必须补明内衣状态；如果正文明确描写角色未穿衣物（如"全裸""赤裸""一丝不挂"），写 nude。如果正文没有明确提及衣着细节，写"未指明"。禁止凭空编造衣物细节。
 - 动作必须用整体画面动作概括，例如：embracing（相拥）、kneeling（跪地）、turning away（背身而立）、looking at each other（对视）、holding a sword（握剑对峙）。
 - 严禁拆成连续动画式细节（如"他慢慢走过去然后伸出右手"）。每个动作描述应是一帧画面可以表达的静态姿态概括。
 - 必须保留剧情痕迹，例如：凌乱发丝、含泪眼眶、汗水、血迹、衣物破损凌乱、姿态虚弱、呼吸急促等能体现情绪与剧情状态的视觉细节，将其收入 plot_traces 字段。
@@ -145,7 +145,7 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
       {
         "name": "角色姓名",
         "gender": "boy 或 girl 或 woman 或 man 或 other",
-        "clothing": "正文明写服装则填具体服装名；正文明写裸体则填 nude；正文未提及则填 未指明"
+        "clothing": "正文明写服装则填具体服装名，并尽量写清上衣/下衣；无外衣时补明内衣状态；正文明写裸体则填 nude；正文未提及则填 未指明"
       }
     ]
   }
@@ -164,7 +164,7 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 - 每个 nsfw_rating 是否是 sfw / nsfw_mild / nsfw_moderate / nsfw_explicit 四选一？
 - 若 nsfw_rating 为 nsfw_moderate 或 nsfw_explicit，visual_description 中是否已包含极其直白的裸露/身体描写细节，绝对禁止隐喻和意境规避？
 - core_action 是否只概括这一帧的核心互动，而不是讲述前后过程？
-- 每个 characters 项的 clothing 字段是否已正确填写：正文明写服装则填具体名称，正文明写裸体则填 nude，正文未提及则填 未指明？`;
+- 每个 characters 项的 clothing 字段是否已正确填写：正文明写服装则填具体名称并尽量写清上衣/下衣；无外衣时是否补明内衣状态；正文明写裸体则填 nude，正文未提及则填 未指明？`;
 
 // ═══════════════════════════════════════════════════════════
 // Prompt 2 · 全书角色 DNA 提取（小说切片 → 角色外观词典）

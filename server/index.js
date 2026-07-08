@@ -21,6 +21,7 @@ const DEFAULT_CONFIG = {
   llm_key: "",
   llm_model: "deepseek-chat",
   llm_preset_id: "",
+  llm_stream_enabled: true,
   llm_rate_limit_enabled: true,
   llm_rate_limit_rpm: 3,
   llm_api_presets: [],
