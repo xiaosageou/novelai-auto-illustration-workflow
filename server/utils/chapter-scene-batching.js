@@ -70,6 +70,18 @@ function findNearestSentenceBoundary(text, preferredIndex) {
   ].filter(Boolean);
 }
 
+function splitTextForSceneCount(text) {
+  const normalized = normalizeTextBlock(text);
+  if (!normalized) return [];
+
+  const paragraphBatches = splitByParagraphs(normalized);
+  if (paragraphBatches.length === 2) {
+    return paragraphBatches;
+  }
+
+  return findNearestSentenceBoundary(normalized, Math.floor(normalized.length / 2));
+}
+
 function buildBatchPlan(text, sceneCount, { splitThreshold = 10000, maxScenesPerRequest = 10 } = {}) {
   const normalized = normalizeTextBlock(text);
   if (!normalized) return [];
@@ -82,7 +94,9 @@ function buildBatchPlan(text, sceneCount, { splitThreshold = 10000, maxScenesPer
     return [{ text: normalized, sceneCount: numericSceneCount }];
   }
 
-  const splitBatches = splitChapterTextIntoBatches(normalized, splitThreshold);
+  const splitBatches = shouldSplitByLength
+    ? splitChapterTextIntoBatches(normalized, splitThreshold)
+    : splitTextForSceneCount(normalized);
   if (splitBatches.length <= 1) {
     return [{ text: normalized, sceneCount: numericSceneCount }];
   }
