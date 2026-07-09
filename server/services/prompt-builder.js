@@ -770,7 +770,6 @@ export function 构建角色锚点注入提示词(anchor, options) {
       '外貌标签',
       '身材标签',
       '胸部标签',
-      'NSFW标签',
       '发型标签',
       '发色标签',
       '眼睛标签',
@@ -779,6 +778,9 @@ export function 构建角色锚点注入提示词(anchor, options) {
       '服装基底标签',
       '特殊特征标签'
     ];
+    if (state.nude) {
+      keys.splice(3, 0, 'NSFW标签');
+    }
     const tokens = keys
       .flatMap(key => Array.isArray(features[key]) ? features[key] : [])
       .map(item => String(item || '').trim())

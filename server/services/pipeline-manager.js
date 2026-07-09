@@ -58,9 +58,13 @@ export function resolveTaskLlmConfig(config = {}, task = 'scene') {
   const presets = normalizePresetList(config.llm_api_presets);
   const defaultPreset = presets.find(preset => preset.id === config.llm_preset_id);
   const taskPreset = presets.find(preset => preset.id === config[`${prefix}_preset_id`]);
+  const hasDirectOverride = Boolean(
+    String(config[`${prefix}_url`] || '').trim()
+    || String(config[`${prefix}_key`] || '').trim()
+  );
   const activePreset = taskPreset || defaultPreset || null;
 
-  if (activePreset) {
+  if (activePreset && !hasDirectOverride) {
     return {
       baseUrl: activePreset.url || "",
       apiKey: activePreset.key || "",

@@ -46,6 +46,28 @@ function escapeRegExp(text = '') {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function isNudeClothing(clothing = '') {
+  return /全裸|赤裸|裸体|一丝不挂|completely[_ ]nude|\bnude\b|\bnaked\b/i.test(String(clothing || ''));
+}
+
+function filterAnchorReferenceForScene(anchor = {}, sceneCharacter = {}) {
+  const reference = String(anchor?.正面提示词 || '').trim();
+  if (!reference) return reference;
+  if (isNudeClothing(sceneCharacter?.clothing || '')) return reference;
+
+  const nsfwTraits = Array.isArray(anchor?.结构化特征?.NSFW标签)
+    ? anchor.结构化特征.NSFW标签.map(item => String(item || '').trim()).filter(Boolean)
+    : [];
+  if (nsfwTraits.length === 0) return reference;
+
+  return reference
+    .split(',')
+    .map(token => token.trim())
+    .filter(Boolean)
+    .filter(token => !nsfwTraits.some(trait => token.toLowerCase() === trait.toLowerCase()))
+    .join(', ');
+}
+
 function inferSceneInteractionActions(sceneDesc = {}) {
   if (!sceneDesc || typeof sceneDesc !== 'object') return [];
 
@@ -1884,13 +1906,15 @@ export class LLMExtractor {
     // 构建角色上下文文本，让 LLM 感知已有角色外观参考。
     let characterContext = "";
     if (characterAnchors && characterAnchors.length > 0) {
+      const sceneCharacters = getSceneCharacters(sceneDesc);
       const charLines = characterAnchors.map(anchor => {
         const name = anchor.name || "未知角色";
-        const reference = anchor.正面提示词 || "";
+        const sceneCharacter = sceneCharacters.find(char => String(char?.name || '').trim() === String(name).trim()) || null;
+        const reference = filterAnchorReferenceForScene(anchor, sceneCharacter);
         return `• ${name}：${reference}`;
-      }).join("\n");
+      }).filter(line => !/：\s*$/.test(line)).join("\n");
       const contextLabel = "【本场景涉及角色外貌参考（转换为角色段 Danbooru tags，不要写成自然语言句子）】";
-      characterContext = `\n\n${contextLabel}\n${charLines}`;
+      characterContext = charLines ? `\n\n${contextLabel}\n${charLines}` : "";
     }
 
     const rawSystemPrompt = this.system_prompt_advanced_prompt || DEFAULT_ADVANCED_PROMPT;

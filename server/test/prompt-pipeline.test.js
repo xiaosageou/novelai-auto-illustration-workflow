@@ -74,6 +74,37 @@ test('task LLM configuration supports independent endpoints with legacy fallback
   });
 });
 
+test('task-specific direct endpoint overrides default preset to avoid cross-provider mismatch', () => {
+  const config = {
+    llm_preset_id: 'default-preset',
+    llm_model: 'default-model',
+    llm_api_presets: [
+      {
+        id: 'default-preset',
+        name: 'Default',
+        url: 'https://provider-a.example/v1',
+        key: 'provider-a-key',
+        model: 'provider-a-model',
+        rateLimitEnabled: true,
+        rateLimitRpm: 3
+      }
+    ],
+    llm_scene_url: 'https://provider-b.example/v1',
+    llm_scene_key: 'provider-b-key',
+    llm_scene_model: 'provider-b-model'
+  };
+
+  assert.deepEqual(resolveTaskLlmConfig(config, 'scene'), {
+    baseUrl: 'https://provider-b.example/v1',
+    apiKey: 'provider-b-key',
+    model: 'provider-b-model',
+    streamEnabled: true,
+    rateLimitEnabled: true,
+    rateLimitRpm: 3,
+    rateLimitKey: 'direct:scene'
+  });
+});
+
 test('scene count uses characters for CJK and words for English chapters', () => {
   assert.equal(countChapterCharacters('一 二\n三\t四'), 4);
   assert.equal(countEnglishWords("It's a well-written chapter."), 4);
@@ -985,11 +1016,11 @@ test('character dna cleanup keeps stable nsfw traits and drops transient ones', 
   }
 });
 
-test('normal scene prompt inherits stable nsfw dna traits', () => {
+test('nude scene prompt inherits stable nsfw dna traits', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, bedroom, nsfw', {
     sceneCharacters: [
-      { name: '甲', gender: 'woman' },
-      { name: '乙', gender: 'man' }
+      { name: '甲', gender: 'woman', clothing: 'nude' },
+      { name: '乙', gender: 'man', clothing: 'nude' }
     ],
     characterAnchors: [
       {
@@ -1032,6 +1063,55 @@ test('normal scene prompt inherits stable nsfw dna traits', () => {
 
   assert.match(result.finalPositive, /large breasts/i);
   assert.match(result.finalPositive, /large penis/i);
+});
+
+test('non-nude scene prompt excludes nsfw dna traits', () => {
+  const result = buildFinalImagePrompt('1girl, 1boy, bedroom, nsfw', {
+    sceneCharacters: [
+      { name: '甲', gender: 'woman', clothing: 'black_dress' },
+      { name: '乙', gender: 'man', clothing: 'jeans' }
+    ],
+    characterAnchors: [
+      {
+        name: '甲',
+        正面提示词: 'woman, long hair, pale skin',
+        结构化特征: {
+          外貌标签: ['beautiful'],
+          身材标签: ['slim'],
+          胸部标签: ['medium breasts'],
+          NSFW标签: ['large breasts'],
+          发型标签: ['long hair'],
+          发色标签: ['black hair'],
+          眼睛标签: ['red eyes'],
+          肤色标签: ['pale skin'],
+          年龄感标签: ['young woman'],
+          服装基底标签: [],
+          特殊特征标签: []
+        }
+      },
+      {
+        name: '乙',
+        正面提示词: 'man, short hair',
+        结构化特征: {
+          外貌标签: ['handsome'],
+          身材标签: ['athletic build'],
+          胸部标签: [],
+          NSFW标签: ['large penis'],
+          发型标签: ['short hair'],
+          发色标签: ['black hair'],
+          眼睛标签: ['dark eyes'],
+          肤色标签: ['fair skin'],
+          年龄感标签: ['young man'],
+          服装基底标签: [],
+          特殊特征标签: []
+        }
+      }
+    ],
+    useCharacterSegments: false
+  });
+
+  assert.doesNotMatch(result.finalPositive, /large breasts/i);
+  assert.doesNotMatch(result.finalPositive, /large penis/i);
 });
 
 test('portrait composition excludes nsfw dna traits', () => {
@@ -1203,6 +1283,51 @@ test('advanced prompt user message includes clothing enforcement', async () => {
     assert.match(capturedUserMessage, /penis/i);
     assert.match(capturedUserMessage, /erection/i);
     assert.match(capturedUserMessage, /\u9664\u975E\u573A\u666F\u5361\u660E\u786E\u8868\u793A/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('advanced prompt suppresses non-nude nsfw dna references in character context', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+  const originalFetch = globalThis.fetch;
+  let capturedUserMessage = '';
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    capturedUserMessage = request.messages.find(message => message.role === 'user')?.content || '';
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              orientation: 'portrait',
+              base_prompt: '1boy, bedroom',
+              character_prompts: [{ name: '乙', prompt: 'boy, jeans, standing', negative_prompt: '' }],
+              negative_prompt: ''
+            })
+          }
+        }]
+      })
+    };
+  };
+
+  try {
+    await extractor.generateScenePromptAdvanced({
+      visual_description: '男人站在卧室中',
+      characters: [{ name: '乙', gender: 'man', clothing: 'jeans' }]
+    }, [{
+      name: '乙',
+      正面提示词: 'man, short hair, large penis, tattoo',
+      结构化特征: {
+        NSFW标签: ['large penis'],
+        特殊特征标签: ['tattoo']
+      }
+    }], 'test');
+    assert.match(capturedUserMessage, /乙：/);
+    assert.doesNotMatch(capturedUserMessage, /large penis/i);
+    assert.match(capturedUserMessage, /tattoo/i);
   } finally {
     globalThis.fetch = originalFetch;
   }
