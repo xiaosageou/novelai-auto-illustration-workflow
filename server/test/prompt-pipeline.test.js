@@ -1114,6 +1114,55 @@ test('non-nude scene prompt excludes nsfw dna traits', () => {
   assert.doesNotMatch(result.finalPositive, /large penis/i);
 });
 
+test('unspecified clothing scene prompt excludes nsfw dna traits', () => {
+  const result = buildFinalImagePrompt('1girl, 1boy, bedroom, nsfw', {
+    sceneCharacters: [
+      { name: '甲', gender: 'woman', clothing: '未指明' },
+      { name: '乙', gender: 'man', clothing: '未指明' }
+    ],
+    characterAnchors: [
+      {
+        name: '甲',
+        正面提示词: 'woman, long hair, pale skin',
+        结构化特征: {
+          外貌标签: ['beautiful'],
+          身材标签: ['slim'],
+          胸部标签: ['medium breasts'],
+          NSFW标签: ['large breasts'],
+          发型标签: ['long hair'],
+          发色标签: ['black hair'],
+          眼睛标签: ['red eyes'],
+          肤色标签: ['pale skin'],
+          年龄感标签: ['young woman'],
+          服装基底标签: [],
+          特殊特征标签: []
+        }
+      },
+      {
+        name: '乙',
+        正面提示词: 'man, short hair',
+        结构化特征: {
+          外貌标签: ['handsome'],
+          身材标签: ['athletic build'],
+          胸部标签: [],
+          NSFW标签: ['big_penis'],
+          发型标签: ['short hair'],
+          发色标签: ['black hair'],
+          眼睛标签: ['dark eyes'],
+          肤色标签: ['fair skin'],
+          年龄感标签: ['young man'],
+          服装基底标签: [],
+          特殊特征标签: []
+        }
+      }
+    ],
+    useCharacterSegments: false
+  });
+
+  assert.doesNotMatch(result.finalPositive, /large breasts/i);
+  assert.doesNotMatch(result.finalPositive, /big_penis/i);
+});
+
 test('portrait composition excludes nsfw dna traits', () => {
   const result = buildFinalImagePrompt('1girl, portrait, upper body', {
     composition: '头像',
@@ -1328,6 +1377,53 @@ test('advanced prompt suppresses non-nude nsfw dna references in character conte
     assert.match(capturedUserMessage, /乙：/);
     assert.doesNotMatch(capturedUserMessage, /large penis/i);
     assert.match(capturedUserMessage, /tattoo/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('advanced prompt suppresses unspecified-clothing nsfw dna references in character context', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+  const originalFetch = globalThis.fetch;
+  let capturedUserMessage = '';
+  globalThis.fetch = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    capturedUserMessage = request.messages.find(message => message.role === 'user')?.content || '';
+    return {
+      status: 200,
+      json: async () => ({
+        choices: [{
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              orientation: 'portrait',
+              base_prompt: '1boy, bedroom',
+              character_prompts: [{ name: '乙', prompt: 'boy, casual_wear, sitting', negative_prompt: '' }],
+              negative_prompt: ''
+            })
+          }
+        }]
+      })
+    };
+  };
+
+  try {
+    await extractor.generateScenePromptAdvanced({
+      visual_description: '男人坐在房间里',
+      characters: [{ name: '乙', gender: 'man', clothing: '未指明' }]
+    }, [{
+      name: '乙',
+      正面提示词: 'man, short hair, big_penis, tattoo',
+      结构化特征: {
+        NSFW标签: ['big_penis'],
+        特殊特征标签: ['tattoo']
+      }
+    }], 'test');
+    const contextSection = capturedUserMessage.split('【本场景涉及角色外貌参考（转换为角色段 Danbooru tags，不要写成自然语言句子）】')[1] || '';
+    assert.match(contextSection, /乙：/);
+    assert.doesNotMatch(contextSection, /big_penis/i);
+    assert.match(contextSection, /tattoo/i);
+    assert.match(capturedUserMessage, /未指明/i);
   } finally {
     globalThis.fetch = originalFetch;
   }

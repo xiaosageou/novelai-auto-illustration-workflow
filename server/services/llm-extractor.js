@@ -50,6 +50,10 @@ function isNudeClothing(clothing = '') {
   return /全裸|赤裸|裸体|一丝不挂|completely[_ ]nude|\bnude\b|\bnaked\b/i.test(String(clothing || ''));
 }
 
+function isUnspecifiedClothing(clothing = '') {
+  return /未指明|unspecified|unknown/i.test(String(clothing || ''));
+}
+
 function filterAnchorReferenceForScene(anchor = {}, sceneCharacter = {}) {
   const reference = String(anchor?.正面提示词 || '').trim();
   if (!reference) return reference;
@@ -1948,7 +1952,7 @@ export class LLMExtractor {
       "6. 互动必须尽量使用 source#action、target#action、mutual#action 标清主动方和承受方，而且这些方向标签只能放在对应角色的 character_prompts[].prompt 中，must not appear in base_prompt。",
       "7. Token 预算必须前置控制：总正向 tags 不超过 410 tokens。优先删除氛围形容词、重复概念和次要配饰，不得删除人物数量、角色识别特征和核心互动。",
       "8. 衣着状态必须忠实于场景卡 characters[].clothing：有具体服装名则用对应 tags（如 white_dress、school_uniform）；是 nude 则用 completely_nude；是 未指明 则从角色 DNA 参考中继承默认服装 tags，不要自行编造服装细节。",
-      "9. 除非场景卡明确表示已经露出、强调 crotch bulge、或明确写出 penis/erection 状态，否则角色只要仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，就不要擅自加入 penis、erection、erect_penis、large_penis、penis_outline 等生殖器状态 tags。"
+      "9. 除非场景卡明确表示已经露出、强调 crotch bulge、或明确写出 penis/erection 状态，否则角色只要仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，或者 clothing 仍是 未指明 / unspecified / unknown，就不要擅自加入 penis、erection、erect_penis、large_penis、penis_outline、big_penis 等生殖器状态 tags，也不要从 DNA 参考继承这类私密体征。"
     ].join("\n");
 
     const userMessage = [
@@ -1964,7 +1968,7 @@ export class LLMExtractor {
       "参考 NovelAI V4 多角色互动文档：多人互动必须在对应角色 prompt 里使用 source#动作、target#动作、mutual#动作 来强调谁在主动、谁在承受、谁是相互动作。不要把 source#/target#/mutual# 这类方向标签放进 base_prompt。若动作天然有方向性，不要把 source 和 target 写反。",
       "示例：若 interaction_actions 里是 {\"action\":\"undressing\",\"source\":\"钰慧\",\"target\":\"阿宾\"}，则钰慧的 character prompt 使用 source#undressing；阿宾的 character prompt 使用 target#undressing。不要把两人的动作职责写成一样。",
       "Danbooru 标签的判断标准：它应该像 white_dress、long_hair、looking_at_viewer、from_behind、cowboy shot 这样的短视觉标签，而不是完整英文句子。若一个概念没有把握对应单标签，就拆成多个可见标签，不要写解释性 prose。",
-      "除非场景卡明确表示已经露出或明确点出 penis/erection 状态，否则只要角色仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，就不要写 penis、erection、erect_penis、large_penis、penis_outline 等标签。",
+      "除非场景卡明确表示已经露出或明确点出 penis/erection 状态，否则只要角色仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，或者 clothing 仍是 未指明 / unspecified / unknown，就不要写 penis、erection、erect_penis、large_penis、penis_outline、big_penis 等标签，也不要从 DNA 参考继承这类私密体征。",
       "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局描述（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪 tag，优先使用 restrained、clear 的表情 tags，禁止把所有角色都写成 calm_expression、expressionless 或 natural_expression。禁止无端生成 bared_teeth, clenched_teeth, sharp_teeth, fangs, crazy_grin, distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。禁止自然语言句子，并用正常空格分隔 tags，禁止粘连单词。",
       "镜头默认优先近景，让角色和接触点更大更清楚。除非场景卡明确要求展示大环境或远距离关系，否则不要使用 wide shot、far shot、long shot、panorama。",
       "瞬间定格示例：正确是 'A Girl Kneeling By The Door, Looking Up At The Visitor.'；错误是 'A Girl Kneels Down, Then Looks Up At The Visitor.'。你的 prompt 只能表达前者这种已经定格的画面。",
