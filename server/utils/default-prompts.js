@@ -357,8 +357,7 @@ For NSFW characters, describe physical state directly and objectively:
 - base_prompt must be a non-empty string.
 - character_prompts should have one entry per visible scene character, in scene-card order. If there are no visible characters, use an empty array.
 - In multi-character mode, subject count tags belong in base_prompt, while each character prompt should use girl / boy / other without a number.
-- If the scene has 2 or more visible characters, every character_prompts item MUST include an interaction field. Use null when that character has no direct interaction in the frozen frame.
-- Inside character_prompts, use ONLY the field name "interaction". Do NOT output "interaction_actions" there. That older field name belongs only to the scene card input and will be treated as legacy compatibility.
+- Do not output per-character interaction or interaction_actions fields. Express role direction only inside each relevant character prompt with source#action, target#action, or mutual#action tags.
 - negative_prompt must be short and scene-specific.
 - Keep base_prompt under 80 tokens, each character prompt under 60 tokens, and all prompt text under 460 tokens.`;
 

@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import { ProjectProgress } from '../utils/db.js';
-import { getSceneCountMetrics, LLMExtractor } from './llm-extractor.js';
+import { getSceneCountMetrics, inferSceneInteractionActions, LLMExtractor } from './llm-extractor.js';
 import { NovelAIClient } from './nai-client.js';
 import { buildFinalImagePrompt } from './prompt-builder.js';
 import { loadVibeBundleForModel } from '../utils/vibe-bundle.js';
@@ -832,25 +832,11 @@ export class PipelineManager {
     }
 
     // D. 提示词装配与净化
-    // 将 LLM 返回的 per-character interaction 转换为场景级 interaction_actions，
-    // 确保 构建互动动作标签 能生成 source#/target# 标签注入到角色 prompt 中。
-    const llmInteractionActions = [];
-    for (const cp of (advancedParams.character_prompts || [])) {
-      const name = String(cp?.name || '').trim();
-      const interactions = normalizeCharacterPromptInteractionList(cp?.interaction);
-      for (const item of interactions) {
-        if (item.role === 'source') {
-          llmInteractionActions.push({ action: item.action, source: name, target: item.target, mutual: false });
-        } else if (item.role === 'target') {
-          llmInteractionActions.push({ action: item.action, source: item.target, target: name, mutual: false });
-        } else if (item.role === 'mutual') {
-          llmInteractionActions.push({ action: item.action, source: name, target: item.target, mutual: true });
-        }
-      }
-    }
+    // 互动方向统一来自场景卡自身的 interaction_actions，若缺失则仅从场景文本做本地推断，
+    // 不再依赖 LLM 返回的 per-character interaction 结构。
     const mergedInteractionActions = (scene.interaction_actions || []).length > 0
       ? scene.interaction_actions
-      : llmInteractionActions;
+      : inferSceneInteractionActions(scene);
 
     const promptResult = buildFinalImagePrompt(advancedParams.base_prompt || advancedParams.prompt, {
       composition,

@@ -72,7 +72,20 @@ function filterAnchorReferenceForScene(anchor = {}, sceneCharacter = {}) {
     .join(', ');
 }
 
-function inferSceneInteractionActions(sceneDesc = {}) {
+function stripGenitalStateTagsForClothing(prompt = '', sceneCharacter = {}) {
+  const clothing = sceneCharacter?.clothing || '';
+  if (isNudeClothing(clothing)) return String(prompt || '').trim();
+
+  const genitalStatePattern = /^(?:penis|erection|erect_penis|large_penis|big_penis|small_penis|thick_penis|long_penis|penis_outline|bulge|visible_penis|penis_print)$/i;
+  return String(prompt || '')
+    .split(/[,，]/)
+    .map(token => token.trim())
+    .filter(Boolean)
+    .filter(token => !genitalStatePattern.test(token))
+    .join(', ');
+}
+
+export function inferSceneInteractionActions(sceneDesc = {}) {
   if (!sceneDesc || typeof sceneDesc !== 'object') return [];
 
   const explicitInteractions = Array.isArray(sceneDesc.interaction_actions)
@@ -258,21 +271,65 @@ function inferCharacterInteractionsFromScene(characterName = '', sceneInteractio
   return items.length > 0 ? items : null;
 }
 
+function inferCharacterInteractionsFromDirectionTags(raw = null, characterName = '', sceneInteractions = []) {
+  const name = String(characterName || '').trim();
+  if (!name) return null;
+
+  const texts = [];
+  const collectTexts = (value) => {
+    if (typeof value === 'string') {
+      if (value.trim()) texts.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) collectTexts(item);
+    }
+  };
+  collectTexts(raw);
+
+  if (!texts.length) return null;
+
+  const items = [];
+  const seen = new Set();
+  const markerPattern = /\b(source|target|mutual)#([a-z0-9][a-z0-9_-]*)\b/ig;
+  for (const text of texts) {
+    let match;
+    while ((match = markerPattern.exec(text)) !== null) {
+      const role = String(match[1] || '').toLowerCase();
+      const action = normalizeInteractionMarkerAction(match[2] || '');
+      if (!action) continue;
+      const target = inferCharacterInteractionTarget({ role, action }, name, sceneInteractions);
+      if (!target) continue;
+      const key = `${role}\u0000${action}\u0000${target}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({ role, action, target });
+    }
+  }
+
+  return items.length > 0 ? items : null;
+}
+
 function readCharacterInteractionField(item = null, sceneInteractions = []) {
   if (!item || typeof item !== 'object') return null;
   const characterName = String(item?.name || '').trim();
   if (Object.prototype.hasOwnProperty.call(item, 'interaction')) {
     const normalized = normalizeCharacterInteractionListWithSceneTargets(item.interaction, characterName, sceneInteractions);
     if (normalized) return normalized;
+    const inferredFromInteractionTags = inferCharacterInteractionsFromDirectionTags(item.interaction, characterName, sceneInteractions);
+    if (inferredFromInteractionTags) return inferredFromInteractionTags;
     if (typeof item.interaction === 'string' && item.interaction.trim()) {
       return inferCharacterInteractionsFromScene(characterName, sceneInteractions);
     }
-    return normalized;
+    const inferredFromPromptTags = inferCharacterInteractionsFromDirectionTags(item.prompt, characterName, sceneInteractions);
+    return inferredFromPromptTags || normalized;
   }
   if (Object.prototype.hasOwnProperty.call(item, 'interaction_actions')) {
-    return normalizeCharacterInteractionListWithSceneTargets(item.interaction_actions, characterName, sceneInteractions);
+    const normalized = normalizeCharacterInteractionListWithSceneTargets(item.interaction_actions, characterName, sceneInteractions);
+    if (normalized) return normalized;
+    return inferCharacterInteractionsFromDirectionTags(item.prompt, characterName, sceneInteractions);
   }
-  return null;
+  return inferCharacterInteractionsFromDirectionTags(item.prompt, characterName, sceneInteractions);
 }
 
 function validateCharacterInteractions(characterPrompts = [], sceneCharacters = [], interactionActions = [], requireExplicitField = false, onWarn = null) {
@@ -1962,11 +2019,10 @@ export class LLMExtractor {
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
       "如果 scene card 里有 core_action，请把它当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
       "你必须先根据 visual_description、core_action 和角色站位，自行判断本场景中人物之间是否存在直接互动。",
-      `若本场景可见角色数量 >= 2，则每个 character_prompts 项都必须显式输出 interaction 字段：有直接互动时填写 {\"role\":\"source|target|mutual\",\"action\":\"规范动作名\",\"target\":\"对方角色名\"}；没有直接互动时 interaction 必须为 null。`,
-      "若动作天然有方向性，不要把 source 和 target 写反；两个互动双方的 interaction.target 必须互相指向对方姓名。",
       "如果 scene card 里有 interaction_actions，你必须先理解每条 interaction 的主动方 source、承受方 target，以及是否 mutual，然后把这个角色职责落实到对应角色的 character_prompts 中。",
       "参考 NovelAI V4 多角色互动文档：多人互动必须在对应角色 prompt 里使用 source#动作、target#动作、mutual#动作 来强调谁在主动、谁在承受、谁是相互动作。不要把 source#/target#/mutual# 这类方向标签放进 base_prompt。若动作天然有方向性，不要把 source 和 target 写反。",
       "示例：若 interaction_actions 里是 {\"action\":\"undressing\",\"source\":\"钰慧\",\"target\":\"阿宾\"}，则钰慧的 character prompt 使用 source#undressing；阿宾的 character prompt 使用 target#undressing。不要把两人的动作职责写成一样。",
+      "不要输出 interaction 或 interaction_actions 这样的角色级结构化字段；互动关系只需要落实到对应角色 prompt 的 source#动作、target#动作、mutual#动作 标签中。",
       "Danbooru 标签的判断标准：它应该像 white_dress、long_hair、looking_at_viewer、from_behind、cowboy shot 这样的短视觉标签，而不是完整英文句子。若一个概念没有把握对应单标签，就拆成多个可见标签，不要写解释性 prose。",
       "除非场景卡明确表示已经露出或明确点出 penis/erection 状态，否则只要角色仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，或者 clothing 仍是 未指明 / unspecified / unknown，就不要写 penis、erection、erect_penis、large_penis、penis_outline、big_penis 等标签，也不要从 DNA 参考继承这类私密体征。",
       "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局描述（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪 tag，优先使用 restrained、clear 的表情 tags，禁止把所有角色都写成 calm_expression、expressionless 或 natural_expression。禁止无端生成 bared_teeth, clenched_teeth, sharp_teeth, fangs, crazy_grin, distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。禁止自然语言句子，并用正常空格分隔 tags，禁止粘连单词。",
@@ -2038,16 +2094,16 @@ export class LLMExtractor {
       if (!base_prompt) {
         throw new Error("缺少非空 base_prompt；旧式 prompt 单字段不再接受");
       }
-      const sceneInteractions = uniqueSceneInteractions([
-        ...inferSceneInteractionActions(sceneDesc),
-        ...normalizeSceneInteractionList(parsed?.interaction_requirements)
-      ]);
       const character_prompts = Array.isArray(parsed?.character_prompts)
         ? parsed.character_prompts.map((item, index) => {
+          const sceneCharacter = expectedSceneCharacters[index] || null;
           if (typeof item === 'string') {
             return {
               name: '',
-              prompt: normalizeDanbooruPromptSegment(item, { character: true }),
+              prompt: stripGenitalStateTagsForClothing(
+                normalizeDanbooruPromptSegment(item, { character: true }),
+                sceneCharacter
+              ),
               negative_prompt: '',
               interaction: null
             };
@@ -2055,9 +2111,12 @@ export class LLMExtractor {
           const resolvedName = String(item?.name || expectedSceneCharacters[index]?.name || '').trim();
           return {
             name: resolvedName,
-            prompt: normalizeDanbooruPromptSegment(item?.prompt || '', { character: true }),
+            prompt: stripGenitalStateTagsForClothing(
+              normalizeDanbooruPromptSegment(item?.prompt || '', { character: true }),
+              sceneCharacter
+            ),
             negative_prompt: normalizeDanbooruPromptSegment(item?.negative_prompt || '', { character: true }),
-            interaction: readCharacterInteractionField({ ...item, name: resolvedName }, sceneInteractions)
+            interaction: null
           };
         }).filter(item => item.prompt)
         : [];
@@ -2124,7 +2183,7 @@ export class LLMExtractor {
         "上一次输出为空、截断或 JSON 结构无效。请重新生成，必须先输出 /thinking/ 包裹的简明分析，再输出 /JSON/ 包裹的完整 JSON 对象。",
         "不要 Markdown，不要颜文字。/JSON/ 外不要放 JSON 片段。",
         "必须包含 orientation、base_prompt、character_prompts、negative_prompt。",
-        `若场景可见角色数量 >= 2，则每个 character_prompts 项必须包含 name、prompt、negative_prompt、interaction。没有直接互动时 interaction 必须为 null。`,
+        `若场景可见角色数量 >= 2，则每个 character_prompts 项必须包含 name、prompt、negative_prompt。不要输出 interaction 或 interaction_actions 字段。`,
         `character_prompts 优先包含 ${expectedSceneCharacters.length} 项，按以下顺序且 name 原样复制：${expectedSceneCharacters.map(char => char.name).join("、") || "无角色"}`,
         "禁止只返回旧式 prompt 字段。base_prompt 中不得包含角色外貌、服装、表情或个人姿势。",
         nsfwPerspectiveLine,
@@ -2181,23 +2240,6 @@ export class LLMExtractor {
           }
 
           const normalized = parseAdvancedContent(rawContent);
-          const inferredInteractions = uniqueSceneInteractions([
-            ...inferSceneInteractionActions(sceneDesc),
-            ...normalizeSceneInteractionList(extractValidJson(rawContent)?.parsed?.interaction_requirements)
-          ]);
-          if (attempt <= 2) {
-            validateCharacterInteractions(
-              normalized.character_prompts,
-              expectedSceneCharacters,
-              inferredInteractions,
-              true,
-              (message) => {
-                console.warn(`[LLM Extractor] ${message}`);
-                onProgressLog?.(`[LLM] ${message}`, "warning");
-              }
-            );
-          }
-
           // ── V4.5 自然语言模式：单词粘连检测与修复 ──
           const textsToCheck = [
             { field: 'base_prompt', text: normalized.base_prompt },

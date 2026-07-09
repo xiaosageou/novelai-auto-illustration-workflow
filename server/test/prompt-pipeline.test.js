@@ -2005,7 +2005,7 @@ test('LLM can explicitly disable pairing validation for non-paired actions like 
   }
 });
 
-test('advanced prompt tells LLM to map scene interactions into source and target character prompts', async () => {
+test('advanced prompt tells LLM to map scene interactions into source and target character prompts without requiring interaction fields', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
@@ -2025,8 +2025,8 @@ test('advanced prompt tells LLM to map scene interactions into source and target
               orientation: 'square',
               base_prompt: 'A bedroom scene with both characters facing each other.',
               character_prompts: [
-                { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '', interaction: { role: 'source', action: 'undressing', target: '阿宾' } },
-                { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '', interaction: { role: 'target', action: 'undressing', target: '钰慧' } }
+                { name: '钰慧', prompt: 'A young woman with source#undressing, loosening her clothes with a shy expression.', negative_prompt: '' },
+                { name: '阿宾', prompt: 'A young man with target#undressing, watching her in tense surprise.', negative_prompt: '' }
               ],
               negative_prompt: ''
             })
@@ -2053,11 +2053,11 @@ test('advanced prompt tells LLM to map scene interactions into source and target
     assert.match(systemPrompt, /mutual#action/i);
     assert.match(systemPrompt, /relevant character prompt/i);
     assert.match(systemPrompt, /must not appear in base_prompt/i);
-    assert.match(userPrompt, /interaction 字段/i);
-    assert.match(userPrompt, /"role":"source\|target\|mutual"/i);
     assert.match(userPrompt, /interaction_actions/i);
     assert.match(userPrompt, /对应角色 prompt 里使用 source#动作、target#动作、mutual#动作/i);
     assert.match(userPrompt, /不要把 source#\/target#\/mutual# 这类方向标签放进 base_prompt/i);
+    assert.doesNotMatch(userPrompt, /interaction 字段/i);
+    assert.doesNotMatch(userPrompt, /"role":"source\|target\|mutual"/i);
     assert.match(userPrompt, /"source":\s*"钰慧"/);
     assert.match(userPrompt, /"target":\s*"阿宾"/);
   } finally {
@@ -2065,32 +2065,22 @@ test('advanced prompt tells LLM to map scene interactions into source and target
   }
 });
 
-test('advanced prompt retries when 2-character scene omits required interaction field', async () => {
+test('advanced prompt accepts 2-character output without interaction field when scene interaction_actions is present', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
   let fetchCount = 0;
   globalThis.fetch = async () => {
     fetchCount++;
-    const content = fetchCount === 1
-      ? JSON.stringify({
-          orientation: 'square',
-          base_prompt: 'A bedroom scene with both characters facing each other.',
-          character_prompts: [
-            { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '' },
-            { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '' }
-          ],
-          negative_prompt: ''
-        })
-      : JSON.stringify({
-          orientation: 'square',
-          base_prompt: 'A bedroom scene with both characters facing each other.',
-          character_prompts: [
-            { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '', interaction: { role: 'source', action: 'undressing', target: '阿宾' } },
-            { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '', interaction: { role: 'target', action: 'undressing', target: '钰慧' } }
-          ],
-          negative_prompt: ''
-        });
+    const content = JSON.stringify({
+      orientation: 'square',
+      base_prompt: 'A bedroom scene with both characters facing each other.',
+      character_prompts: [
+        { name: '钰慧', prompt: 'A young woman with source#undressing, loosening her clothes with a shy expression.', negative_prompt: '' },
+        { name: '阿宾', prompt: 'A young man with target#undressing, watching her in tense surprise.', negative_prompt: '' }
+      ],
+      negative_prompt: ''
+    });
     return {
       status: 200,
       json: async () => ({
@@ -2114,40 +2104,30 @@ test('advanced prompt retries when 2-character scene omits required interaction 
       ]
     }, [], 'test');
 
-    assert.equal(fetchCount, 2);
-    assert.deepEqual(result.character_prompts[0].interaction, [{ role: 'source', action: 'undressing', target: '阿宾' }]);
-    assert.deepEqual(result.character_prompts[1].interaction, [{ role: 'target', action: 'undressing', target: '钰慧' }]);
+    assert.equal(fetchCount, 1);
+    assert.equal(result.character_prompts[0].interaction, null);
+    assert.equal(result.character_prompts[1].interaction, null);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('advanced prompt retries when inferred interaction field is missing, then accepts structured interaction output', async () => {
+test('advanced prompt accepts output without interaction field when scene interaction is inferred from text', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
   let fetchCount = 0;
   globalThis.fetch = async () => {
     fetchCount++;
-    const content = fetchCount === 1
-      ? JSON.stringify({
-          orientation: 'square',
-          base_prompt: 'A bedroom scene with both characters facing each other.',
-          character_prompts: [
-            { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '' },
-            { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '' }
-          ],
-          negative_prompt: ''
-        })
-      : JSON.stringify({
-          orientation: 'square',
-          base_prompt: 'A bedroom scene with both characters facing each other.',
-          character_prompts: [
-            { name: '钰慧', prompt: 'A young woman loosening her clothes with a shy expression.', negative_prompt: '', interaction: { role: 'source', action: 'undressing', target: '阿宾' } },
-            { name: '阿宾', prompt: 'A young man watching her in tense surprise.', negative_prompt: '', interaction: { role: 'target', action: 'undressing', target: '钰慧' } }
-          ],
-          negative_prompt: ''
-        });
+    const content = JSON.stringify({
+      orientation: 'square',
+      base_prompt: 'A bedroom scene with both characters facing each other.',
+      character_prompts: [
+        { name: '钰慧', prompt: 'A young woman with source#undressing, loosening her clothes with a shy expression.', negative_prompt: '' },
+        { name: '阿宾', prompt: 'A young man with target#undressing, watching her in tense surprise.', negative_prompt: '' }
+      ],
+      negative_prompt: ''
+    });
     return {
       status: 200,
       json: async () => ({
@@ -2169,15 +2149,15 @@ test('advanced prompt retries when inferred interaction field is missing, then a
       ]
     }, [], 'test');
 
-    assert.equal(fetchCount, 2);
-    assert.deepEqual(result.character_prompts[0].interaction, [{ role: 'source', action: 'undressing', target: '阿宾' }]);
-    assert.deepEqual(result.character_prompts[1].interaction, [{ role: 'target', action: 'undressing', target: '钰慧' }]);
+    assert.equal(fetchCount, 1);
+    assert.equal(result.character_prompts[0].interaction, null);
+    assert.equal(result.character_prompts[1].interaction, null);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('advanced prompt accepts structurally valid interaction fields even when they differ from inferred expectation', async () => {
+test('advanced prompt ignores returned interaction payloads and keeps prompts usable', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
@@ -2216,14 +2196,16 @@ test('advanced prompt accepts structurally valid interaction fields even when th
     }, [], 'test');
 
     assert.equal(fetchCount, 1);
-    assert.deepEqual(result.character_prompts[0].interaction, [{ role: 'source', action: 'stripping', target: '阿宾' }]);
-    assert.deepEqual(result.character_prompts[1].interaction, [{ role: 'target', action: 'watching', target: '钰慧' }]);
+    assert.equal(result.character_prompts[0].interaction, null);
+    assert.equal(result.character_prompts[1].interaction, null);
+    assert.match(result.character_prompts[0].prompt, /shy expression/i);
+    assert.match(result.character_prompts[1].prompt, /tense surprise/i);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('advanced prompt accepts interaction arrays for multi-target scenes', async () => {
+test('advanced prompt ignores per-character interaction arrays for multi-target scenes', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
@@ -2290,22 +2272,15 @@ test('advanced prompt accepts interaction arrays for multi-target scenes', async
     }, [], 'test');
 
     assert.equal(fetchCount, 1);
-    assert.deepEqual(result.character_prompts[0].interaction, [
-      { role: 'source', action: 'penis_in_vagina', target: 'Cindy' },
-      { role: 'source', action: 'fingering', target: '淑华' }
-    ]);
-    assert.deepEqual(result.character_prompts[1].interaction, [
-      { role: 'target', action: 'penis_in_vagina', target: '阿宾' }
-    ]);
-    assert.deepEqual(result.character_prompts[2].interaction, [
-      { role: 'target', action: 'fingering', target: '阿宾' }
-    ]);
+    assert.equal(result.character_prompts[0].interaction, null);
+    assert.equal(result.character_prompts[1].interaction, null);
+    assert.equal(result.character_prompts[2].interaction, null);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('advanced prompt accepts legacy character interaction_actions field as interaction compatibility', async () => {
+test('advanced prompt ignores legacy character interaction_actions payloads', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
@@ -2372,22 +2347,55 @@ test('advanced prompt accepts legacy character interaction_actions field as inte
     }, [], 'test');
 
     assert.equal(fetchCount, 1);
-    assert.deepEqual(result.character_prompts[0].interaction, [
-      { role: 'source', action: 'vaginal_penetration', target: 'Cindy' },
-      { role: 'source', action: 'fingering', target: '淑华' }
-    ]);
-    assert.deepEqual(result.character_prompts[1].interaction, [
-      { role: 'target', action: 'vaginal_penetration', target: '阿宾' }
-    ]);
-    assert.deepEqual(result.character_prompts[2].interaction, [
-      { role: 'target', action: 'fingering', target: '阿宾' }
-    ]);
+    assert.equal(result.character_prompts[0].interaction, null);
+    assert.equal(result.character_prompts[1].interaction, null);
+    assert.equal(result.character_prompts[2].interaction, null);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('advanced prompt infers structured interactions from natural-language interaction strings', async () => {
+test('advanced prompt strips genital-state tags from unspecified-clothing character output', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    status: 200,
+    json: async () => ({
+      choices: [{
+        finish_reason: 'stop',
+        message: {
+          content: JSON.stringify({
+            orientation: 'portrait',
+            base_prompt: '1boy, bedroom',
+            character_prompts: [{
+              name: '乙',
+              prompt: 'boy, handsome, athletic_build, flat_chest, short_hair, black_hair, black_eyes, fair_skin, teen, young_man, casual_wear, t-shirt, shorts, sitting, holding_receiver, phone_call, playing_with_cord, looking_away, nonchalant, relaxed_posture, tall, big_penis',
+              negative_prompt: 'penis, erection, bulge, nude, shirtless'
+            }],
+            negative_prompt: ''
+          })
+        }
+      }]
+    })
+  });
+
+  try {
+    const result = await extractor.generateScenePromptAdvanced({
+      visual_description: '男孩穿日常便服坐着打电话',
+      characters: [{ name: '乙', gender: 'man', clothing: '未指明' }]
+    }, [], 'test');
+
+    assert.doesNotMatch(result.character_prompts[0].prompt, /big_penis/i);
+    assert.match(result.character_prompts[0].prompt, /casual_wear/i);
+    assert.match(result.character_prompts[0].prompt, /t-shirt/i);
+    assert.match(result.character_prompts[0].prompt, /shorts/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('advanced prompt ignores natural-language interaction strings', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
@@ -2441,16 +2449,72 @@ test('advanced prompt infers structured interactions from natural-language inter
       ]
     }, [], 'test');
 
-    assert.deepEqual(result.character_prompts[0].interaction, [
-      { role: 'source', action: 'guiding', target: '乙' }
-    ]);
-    assert.deepEqual(result.character_prompts[1].interaction, [
-      { role: 'target', action: 'guiding', target: '甲' },
-      { role: 'target', action: 'patting', target: '丙' }
-    ]);
-    assert.deepEqual(result.character_prompts[2].interaction, [
-      { role: 'source', action: 'patting', target: '乙' }
-    ]);
+    assert.equal(result.character_prompts[0].interaction, null);
+    assert.equal(result.character_prompts[1].interaction, null);
+    assert.equal(result.character_prompts[2].interaction, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('advanced prompt ignores malformed interaction fields even when prompts contain direction tags', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    status: 200,
+    json: async () => ({
+      choices: [{
+        finish_reason: 'stop',
+        message: {
+          content: JSON.stringify({
+            orientation: 'landscape',
+            base_prompt: 'bedroom, three people, explicit scene',
+            character_prompts: [
+              {
+                name: '阿宾',
+                prompt: 'boy, source#vaginal_penetration, source#fingering, kneeling',
+                negative_prompt: '',
+                interaction: ['source#vaginal_penetration', 'source#fingering']
+              },
+              {
+                name: 'Cindy',
+                prompt: 'girl, target#vaginal_penetration, lying_on_back',
+                negative_prompt: '',
+                interaction: ['target#vaginal_penetration']
+              },
+              {
+                name: '淑华',
+                prompt: 'girl, target#fingering, kneeling',
+                negative_prompt: '',
+                interaction: ['target#fingering']
+              }
+            ],
+            negative_prompt: 'text'
+          })
+        }
+      }]
+    })
+  });
+
+  try {
+    const result = await extractor.generateScenePromptAdvanced({
+      visual_description: '阿宾同时插入Cindy并手指插入淑华',
+      core_action: '阿宾同时与Cindy和淑华发生明确性接触',
+      characters: [
+        { name: '阿宾', gender: 'man' },
+        { name: 'Cindy', gender: 'woman' },
+        { name: '淑华', gender: 'woman' }
+      ],
+      interaction_actions: [
+        { action: 'vaginal_penetration', source: '阿宾', target: 'Cindy', mutual: false },
+        { action: 'fingering', source: '阿宾', target: '淑华', mutual: false }
+      ]
+    }, [], 'test');
+
+    assert.equal(result.character_prompts[0].interaction, null);
+    assert.equal(result.character_prompts[1].interaction, null);
+    assert.equal(result.character_prompts[2].interaction, null);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -2502,7 +2566,7 @@ test('advanced prompt does not require interaction markers when scene has no dir
   }
 });
 
-test('advanced prompt validation accepts directional penetration roles', async () => {
+test('advanced prompt keeps directional penetration prompt tags without persisting interaction fields', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
@@ -2571,12 +2635,10 @@ test('advanced prompt validation accepts directional penetration roles', async (
     assert.match(result.base_prompt, /magnified inset/i);
     assert.match(result.base_prompt, /x-ray inset/i);
     assert.ok(!('interaction_actions' in result.character_prompts[0]));
-    assert.deepEqual(result.character_prompts[0].interaction, [
-      { role: 'source', action: 'penetration', target: '王忆如' }
-    ]);
-    assert.deepEqual(result.character_prompts[1].interaction, [
-      { role: 'target', action: 'penetration', target: '阿宾' }
-    ]);
+    assert.equal(result.character_prompts[0].interaction, null);
+    assert.equal(result.character_prompts[1].interaction, null);
+    assert.match(result.character_prompts[0].prompt, /source#penetration/i);
+    assert.match(result.character_prompts[1].prompt, /target#penetration/i);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -3710,16 +3772,17 @@ test('final prompt keeps characters separated while reinforcing interaction dire
   assert.doesNotMatch(result.characterPrompts[1], /blonde hair|white dress/);
 });
 
-test('pipeline converts LLM per-character interactions into source target tags when scene interaction_actions is empty', async () => {
+test('pipeline injects source target tags from inferred scene interactions when LLM omits per-character interaction data', async () => {
   const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nai-llm-interact-'));
   const pipeline = new PipelineManager({ projectName: 'llm-interact-test' });
   const scene = {
     scene_idx: 1,
-    visual_description: '阿宾在卧室中与两个女人发生关系',
+    visual_description: '阿宾在卧室里同时插入Cindy，并用手指插入跪在旁边的淑华',
     environment: 'bedroom',
     nsfw_rating: 'nsfw_explicit',
     interactions: '',
     interaction_actions: [],
+    core_action: '阿宾同时插入Cindy，并手指插入淑华',
     characters: [
       { name: '阿宾', gender: 'man', position: 'center' },
       { name: 'Cindy', gender: 'woman', position: 'left' },
@@ -3736,23 +3799,17 @@ test('pipeline converts LLM per-character interactions into source target tags w
       {
         name: '阿宾',
         prompt: 'Young man, athletic build, nude.',
-        negative_prompt: '',
-        interaction: [
-          { role: 'source', action: 'vaginal_penetration', target: 'Cindy' },
-          { role: 'source', action: 'fingering', target: '淑华' }
-        ]
+        negative_prompt: ''
       },
       {
         name: 'Cindy',
         prompt: 'Woman, lying on back, nude.',
-        negative_prompt: '',
-        interaction: { role: 'target', action: 'vaginal_penetration', target: '阿宾' }
+        negative_prompt: ''
       },
       {
         name: '淑华',
         prompt: 'Young woman, kneeling, nude.',
-        negative_prompt: '',
-        interaction: { role: 'target', action: 'fingering', target: '阿宾' }
+        negative_prompt: ''
       }
     ],
     negative_prompt: ''
@@ -3769,7 +3826,7 @@ test('pipeline converts LLM per-character interactions into source target tags w
 
   try {
     await pipeline.generateSingleScene(
-      { chapter: '测试章', content: '阿宾在卧室中与两个女人发生关系' },
+      { chapter: '测试章', content: '阿宾同时插入Cindy，并手指插入淑华' },
       scene,
       [scene],
       '测试章',
@@ -3780,19 +3837,14 @@ test('pipeline converts LLM per-character interactions into source target tags w
     assert.equal(scene.status, 'SUCCESS');
     assert.equal(capturedCharacterPrompts.length, 3);
     const allPrompts = capturedCharacterPrompts.join('\n');
-    assert.match(allPrompts, /source#vaginal_penetration/i);
-    assert.match(allPrompts, /source#fingering/i);
-    assert.match(allPrompts, /target#vaginal_penetration/i);
-    assert.match(allPrompts, /target#fingering/i);
-    // 确保 source 和 target 标签分配给了正确的角色
+    assert.match(allPrompts, /source#penetration/i);
+    assert.match(allPrompts, /target#penetration/i);
+    // 至少确保场景文本推断出的主要 source / target 标签分配给了不同角色
     const sourcePrompt = capturedCharacterPrompts.find(p => /source#/.test(p));
-    const targetPenetration = capturedCharacterPrompts.find(p => /target#vaginal_penetration/i.test(p));
-    const targetFingering = capturedCharacterPrompts.find(p => /target#fingering/i.test(p));
+    const targetPenetration = capturedCharacterPrompts.find(p => /target#penetration/i.test(p));
     assert.ok(sourcePrompt, 'should have a character with source tags');
-    assert.ok(targetPenetration, 'should have a character with target#vaginal_penetration');
-    assert.ok(targetFingering, 'should have a character with target#fingering');
+    assert.ok(targetPenetration, 'should have a character with target#penetration');
     assert.notEqual(sourcePrompt, targetPenetration, 'source and target should be different characters');
-    assert.notEqual(sourcePrompt, targetFingering, 'source and target should be different characters');
   } finally {
     await fs.rm(outputDir, { recursive: true, force: true });
   }
