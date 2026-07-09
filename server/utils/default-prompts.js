@@ -440,6 +440,7 @@ Use this schema exactly inside /JSON/:
 - Copy each name exactly from the scene card.
 - Each character prompt starts with girl, boy, woman, man, or other. Never use 1girl, 1boy, solo, or no humans after the first | segment.
 - For each visible character, include stable appearance and current frame state: gender tag, visible age/body cue, hairstyle, hair color, eye color, body type, outfit, accessories, action, expression.
+- If a character is still wearing pants, trousers, jeans, shorts, underwear, or other crotch-covering clothing, do not add penis, erection, erect_penis, large_penis, penis_outline, or similar genital-state tags unless the scene card explicitly shows or states that exposure/state.
 - Original/NPC characters need full visual description. Do not abbreviate them to names only.
 - Scene environment tags stay in base_prompt, not character prompts.
 

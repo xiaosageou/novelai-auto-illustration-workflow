@@ -1199,6 +1199,10 @@ test('advanced prompt user message includes clothing enforcement', async () => {
     assert.match(capturedUserMessage, /\u8863\u7740\u72B6\u6001/i);
     assert.match(capturedUserMessage, /nude/i);
     assert.match(capturedUserMessage, /\u672A\u6307\u660E/i);
+    assert.match(capturedUserMessage, /pants/i);
+    assert.match(capturedUserMessage, /penis/i);
+    assert.match(capturedUserMessage, /erection/i);
+    assert.match(capturedUserMessage, /\u9664\u975E\u573A\u666F\u5361\u660E\u786E\u8868\u793A/i);
   } finally {
     globalThis.fetch = originalFetch;
   }
