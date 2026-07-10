@@ -144,6 +144,8 @@ function App() {
   const [editingCharacterName, setEditingCharacterName] = useState("");
   const [editingCharacterFeatures, setEditingCharacterFeatures] = useState(null);
   const [savingCharacterTags, setSavingCharacterTags] = useState(false);
+  const [editingAppearanceVersion, setEditingAppearanceVersion] = useState(null);
+  const [savingAppearanceVersion, setSavingAppearanceVersion] = useState(false);
   
   // 新建项目表单
   const [newProjName, setNewProjName] = useState("");
@@ -1096,6 +1098,7 @@ function App() {
 
   const progressInfo = getProgress();
   const characters = projectDetails?.progress?.global_characters || {};
+  const characterDnaVersions = projectDetails?.progress?.character_dna_versions || {};
   const dnaFeatureOrder = [
     '外貌标签',
     '身材标签',
@@ -1599,7 +1602,7 @@ function App() {
     }
   };
 
-  const startEditingCharacterTags = (name, tags = "") => {
+  const startEditingCharacterTags = (name) => {
     setEditingCharacterName(name);
     const character = characters[name] || {};
     setEditingCharacterFeatures(featuresToEditorState(character.features || {}));
@@ -1631,6 +1634,41 @@ function App() {
       addLog(`❌ 保存角色结构化 DNA 失败: ${error.message}`, 'error');
     } finally {
       setSavingCharacterTags(false);
+    }
+  };
+
+  const saveAppearanceVersion = async () => {
+    if (!activeProject || !editingAppearanceVersion) return;
+    const { characterName, id, startChapterIndex, tags } = editingAppearanceVersion;
+    setSavingAppearanceVersion(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/characters/${encodeURIComponent(characterName)}/dna-versions/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startChapterIndex: Number(startChapterIndex), tags })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || '保存失败');
+      addLog(`🧬 已更新角色「${characterName}」的外观版本。`);
+      setEditingAppearanceVersion(null);
+      await fetchProjectDetails(activeProject);
+    } catch (error) {
+      addLog(`❌ 保存外观版本失败: ${error.message}`, 'error');
+    } finally {
+      setSavingAppearanceVersion(false);
+    }
+  };
+
+  const deleteAppearanceVersion = async (characterName, id) => {
+    if (!activeProject) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/characters/${encodeURIComponent(characterName)}/dna-versions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || '删除失败');
+      addLog(`🧬 已删除角色「${characterName}」的外观版本。`);
+      await fetchProjectDetails(activeProject);
+    } catch (error) {
+      addLog(`❌ 删除外观版本失败: ${error.message}`, 'error');
     }
   };
 
@@ -1758,6 +1796,41 @@ function App() {
                     </div>
                   )}
                   {editingCharacterName === name ? renderFeatureEditor() : renderDnaFeatures(data.features)}
+                  {(characterDnaVersions[name] || []).length > 0 && (
+                    <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--color-pink)', fontWeight: 600, letterSpacing: '0.03em', marginBottom: '6px' }}>章节外观版本</div>
+                      {characterDnaVersions[name].map(version => {
+                        const isEditing = editingAppearanceVersion?.characterName === name && editingAppearanceVersion?.id === version.id;
+                        const range = `第 ${Number(version.startChapterIndex) + 1} 章${version.endChapterIndex == null ? '起' : `–${Number(version.endChapterIndex) + 1} 章`}`;
+                        return (
+                          <div key={version.id} style={{ padding: '7px 8px', marginTop: '5px', borderRadius: '6px', background: 'rgba(255,255,255,0.035)' }}>
+                            {isEditing ? (
+                              <>
+                                <div style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
+                                  <input type="number" min="1" value={Number(editingAppearanceVersion.startChapterIndex) + 1} onChange={(event) => setEditingAppearanceVersion(current => ({ ...current, startChapterIndex: Math.max(0, Number(event.target.value || 1) - 1) }))} style={{ width: '72px' }} aria-label="外观版本起始章节" />
+                                  <button className="btn-secondary" type="button" onClick={saveAppearanceVersion} disabled={savingAppearanceVersion} style={{ padding: '2px 7px', fontSize: '0.72rem' }}>{savingAppearanceVersion ? '保存中' : '保存'}</button>
+                                  <button className="btn-secondary" type="button" onClick={() => setEditingAppearanceVersion(null)} disabled={savingAppearanceVersion} style={{ padding: '2px 7px', fontSize: '0.72rem' }}>取消</button>
+                                </div>
+                                <AutoResizeTextarea minRows={2} value={editingAppearanceVersion.tags} onChange={(event) => setEditingAppearanceVersion(current => ({ ...current, tags: event.target.value }))} style={{ width: '100%', fontSize: '0.72rem' }} aria-label="外观版本标签" />
+                              </>
+                            ) : (
+                              <>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '6px', alignItems: 'start' }}>
+                                  <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>{range}</span>
+                                  <span style={{ display: 'flex', gap: '4px' }}>
+                                    <button className="btn-secondary" type="button" onClick={() => setEditingAppearanceVersion({ characterName: name, id: version.id, startChapterIndex: version.startChapterIndex, tags: version.tags || '' })} style={{ padding: '2px 5px' }} title="编辑外观版本"><Pencil size={10} /></button>
+                                    <button className="btn-secondary" type="button" onClick={() => deleteAppearanceVersion(name, version.id)} disabled={characterDnaVersions[name].length <= 1} style={{ padding: '2px 5px', color: 'var(--color-pink)' }} title="删除外观版本"><Trash2 size={10} /></button>
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px', wordBreak: 'break-word' }}>{version.tags}</div>
+                                {version.evidence?.[0]?.quote && <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', marginTop: '4px' }}>证据：{version.evidence[0].quote}</div>}
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               ))
             )}

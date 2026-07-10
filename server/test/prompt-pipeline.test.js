@@ -3644,6 +3644,27 @@ test('scene prompt preparation continues while the NAI queue is still rendering'
   }
 });
 
+test('chapter-specific DNA anchors keep the active hairstyle and reject the superseded one', () => {
+  const result = buildFinalImagePrompt('1girl, indoors', {
+    sceneCharacters: [{ name: '小玉', gender: 'girl', clothing: '未指明' }],
+    characterAnchors: [{
+      name: '小玉',
+      正面提示词: 'black_hair, short_hair, blue_eyes',
+      负面提示词: 'ponytail',
+      结构化特征: {
+        发型标签: ['short_hair'],
+        发色标签: ['black_hair'],
+        眼睛标签: ['blue_eyes']
+      }
+    }],
+    structuredCharacterPrompts: [{ name: '小玉', prompt: 'girl, short_hair, black_hair' }]
+  });
+
+  assert.match(result.characterPrompts[0], /short_hair/);
+  assert.doesNotMatch(result.characterPrompts[0], /ponytail/);
+  assert.match(result.negativeCharacterPrompts[0], /ponytail/);
+});
+
 test('scene extraction can disable streaming and parse regular JSON responses', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid', streamEnabled: false });
   const originalFetch = globalThis.fetch;

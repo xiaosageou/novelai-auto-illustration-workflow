@@ -798,6 +798,40 @@ app.put('/api/projects/:projectName/characters/:characterName/features', async (
   }
 });
 
+app.put('/api/projects/:projectName/characters/:characterName/dna-versions/:versionId', async (req, res) => {
+  try {
+    const { projectName, characterName, versionId } = req.params;
+    const pipeline = await getPipeline(projectName);
+    const versions = pipeline.projectProgress.getCharacterDnaVersions()?.[characterName] || [];
+    const existing = versions.find(version => version.id === versionId);
+    if (!existing) return res.status(404).json({ error: `未找到角色「${characterName}」的外观版本` });
+    const updated = pipeline.projectProgress.upsertCharacterDnaVersion(characterName, {
+      ...existing,
+      ...req.body,
+      id: versionId,
+      startChapterIndex: Number(req.body?.startChapterIndex ?? existing.startChapterIndex)
+    });
+    if (!updated) return res.status(400).json({ error: '外观版本数据无效' });
+    await pipeline.projectProgress.save();
+    res.json({ success: true, versions: pipeline.projectProgress.getCharacterDnaVersions()[characterName] || [] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/projects/:projectName/characters/:characterName/dna-versions/:versionId', async (req, res) => {
+  try {
+    const { projectName, characterName, versionId } = req.params;
+    const pipeline = await getPipeline(projectName);
+    const deleted = pipeline.projectProgress.deleteCharacterDnaVersion(characterName, versionId);
+    if (!deleted) return res.status(400).json({ error: '至少保留一个外观版本，或检查版本是否存在' });
+    await pipeline.projectProgress.save();
+    res.json({ success: true, versions: pipeline.projectProgress.getCharacterDnaVersions()[characterName] || [] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 启动生图流水线
 app.post('/api/projects/:projectName/pipeline/start', async (req, res) => {
   try {

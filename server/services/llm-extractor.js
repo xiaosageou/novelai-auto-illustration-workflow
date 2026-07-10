@@ -1919,7 +1919,19 @@ export class LLMExtractor {
           evidence,
           confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
           source_chapters: Array.isArray(char.source_chapters) ? char.source_chapters : sourceChapters,
-          source_text_summary: String(char.source_text_summary || '').trim()
+          source_text_summary: String(char.source_text_summary || '').trim(),
+          appearance_versions: Array.isArray(char.appearance_versions)
+            ? char.appearance_versions
+              .filter(version => version && typeof version === 'object')
+              .map(version => ({
+                start_chapter: String(version.start_chapter || '').trim(),
+                tags: cleanCharacterDnaTags(version.tags || ''),
+                features: version.features && typeof version.features === 'object' ? version.features : cleanFeatures,
+                evidence: Array.isArray(version.evidence) ? version.evidence : evidence,
+                confidence: Number.isFinite(Number(version.confidence)) ? Math.max(0, Math.min(1, Number(version.confidence))) : confidence,
+                persistent_change: version.persistent_change === true
+              }))
+            : []
         };
       });
     } catch (error) {

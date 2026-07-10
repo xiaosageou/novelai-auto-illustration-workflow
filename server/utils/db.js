@@ -143,12 +143,14 @@ export class ProjectProgress {
     this.data = await readJson(this.progressFile, {
       completed_chapters: {},
       global_characters: {},
+      character_dna_versions: {},
       character_dna_slices: {},
       pipeline_pause: null
     });
     // 初始化默认字段，防止字段不存在
     if (!this.data.completed_chapters) this.data.completed_chapters = {};
     if (!this.data.global_characters) this.data.global_characters = {};
+    if (!this.data.character_dna_versions) this.data.character_dna_versions = {};
     if (!this.data.character_dna_slices) this.data.character_dna_slices = {};
 
     let promptsMigrated = false;
@@ -191,6 +193,80 @@ export class ProjectProgress {
 
   getGlobalCharacters() {
     return this.data?.global_characters || {};
+  }
+
+  getCharacterDnaVersions() {
+    return this.data?.character_dna_versions || {};
+  }
+
+  findCharacterName(name = '') {
+    const target = String(name || '').split('(')[0].trim().toLowerCase();
+    if (!target) return '';
+    return Object.entries(this.getGlobalCharacters()).find(([characterName, character]) => {
+      const candidates = [characterName, ...(Array.isArray(character?.aliases) ? character.aliases : [])]
+        .map(value => String(value || '').split('(')[0].trim().toLowerCase());
+      return candidates.includes(target);
+    })?.[0] || '';
+  }
+
+  getCharacterDNAForChapter(name = '', chapterIndex = 0) {
+    const characterName = this.findCharacterName(name);
+    if (!characterName) return null;
+    const character = this.getGlobalCharacters()[characterName] || {};
+    const versions = Array.isArray(this.getCharacterDnaVersions()[characterName])
+      ? this.getCharacterDnaVersions()[characterName]
+      : [];
+    const index = Number.isInteger(Number(chapterIndex)) ? Number(chapterIndex) : 0;
+    const active = versions
+      .filter(version => Number(version?.startChapterIndex) <= index
+        && (version?.endChapterIndex == null || Number(version.endChapterIndex) >= index))
+      .sort((a, b) => Number(b.startChapterIndex) - Number(a.startChapterIndex))[0];
+    return active ? { ...character, ...active, name: characterName } : { ...character, name: characterName };
+  }
+
+  upsertCharacterDnaVersion(name, version = {}) {
+    if (!this.data) return null;
+    const characterName = this.findCharacterName(name) || String(name || '').trim();
+    if (!characterName || !this.data.global_characters?.[characterName]) return null;
+    const startChapterIndex = Number(version.startChapterIndex);
+    if (!Number.isInteger(startChapterIndex) || startChapterIndex < 0) return null;
+    const versions = Array.isArray(this.data.character_dna_versions[characterName])
+      ? this.data.character_dna_versions[characterName]
+      : [];
+    const next = {
+      id: String(version.id || `chapter_${startChapterIndex + 1}`).trim(),
+      startChapterIndex,
+      tags: uniqueClean(String(version.tags || '').split(/[,，]/)).join(', '),
+      features: mergeFeatureTags(Object.fromEntries(DNA_FEATURE_KEYS.map(key => [key, []])), version.features || {}),
+      evidence: Array.isArray(version.evidence) ? version.evidence.slice(0, 20) : [],
+      confidence: normalizeConfidence(version.confidence),
+      supersededNegative: uniqueClean(String(version.supersededNegative || '').split(/[,，]/)).join(', '),
+      sourceSliceKey: String(version.sourceSliceKey || '').trim(),
+      sourceChapters: uniqueClean(version.sourceChapters || []),
+      updatedAt: Date.now()
+    };
+    const existingIndex = versions.findIndex(item => item.id === next.id || Number(item.startChapterIndex) === startChapterIndex);
+    if (existingIndex >= 0) versions.splice(existingIndex, 1, { ...versions[existingIndex], ...next });
+    else versions.push(next);
+    versions.sort((a, b) => Number(a.startChapterIndex) - Number(b.startChapterIndex));
+    versions.forEach((item, index) => {
+      item.endChapterIndex = index + 1 < versions.length ? Number(versions[index + 1].startChapterIndex) - 1 : null;
+    });
+    this.data.character_dna_versions[characterName] = versions;
+    return versions.find(item => item.id === next.id);
+  }
+
+  deleteCharacterDnaVersion(name, versionId) {
+    const characterName = this.findCharacterName(name);
+    const versions = this.getCharacterDnaVersions()[characterName];
+    if (!characterName || !Array.isArray(versions) || versions.length <= 1) return false;
+    const index = versions.findIndex(item => item.id === versionId);
+    if (index < 0) return false;
+    versions.splice(index, 1);
+    versions.forEach((item, position) => {
+      item.endChapterIndex = position + 1 < versions.length ? Number(versions[position + 1].startChapterIndex) - 1 : null;
+    });
+    return true;
   }
 
   getCharacterDnaSlices() {

@@ -13,6 +13,40 @@ import { extractChapterScenesInBatches } from '../utils/chapter-scene-batching.j
 
 const CHARACTER_DNA_LONG_CHAPTER_THRESHOLD = 5000;
 const CHARACTER_DNA_LONG_CHAPTER_BATCH_SIZE = 5;
+const VERSIONED_DNA_FEATURE_KEYS = ['发型标签', '发色标签', '服装基底标签', '特殊特征标签'];
+
+function normalizedFeatureValues(features = {}, keys = VERSIONED_DNA_FEATURE_KEYS) {
+  return keys.flatMap(key => Array.isArray(features?.[key]) ? features[key] : [])
+    .map(value => String(value || '').trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+}
+
+function hasPersistentAppearanceChange(previous = null, next = {}) {
+  if (!previous) return true;
+  const oldValues = normalizedFeatureValues(previous.features);
+  const nextValues = normalizedFeatureValues(next.features);
+  return oldValues.join('|') !== nextValues.join('|');
+}
+
+function buildSupersededAppearanceNegative(previous = null, next = {}) {
+  if (!previous) return '';
+  const nextValues = new Set(normalizedFeatureValues(next.features));
+  return normalizedFeatureValues(previous.features)
+    .filter(value => !nextValues.has(value))
+    .join(', ');
+}
+
+function resolveAppearanceVersionStartIndex(version = {}, info, batchSourceChapters = []) {
+  const requested = String(version?.start_chapter || version?.startChapter || '').trim();
+  if (!requested) return info.startIndex;
+  const allChapterLabels = info.chapters.map((chapter, index) => ({
+    index: info.startIndex + index,
+    labels: [`${chapter.volume}_${chapter.chapter}`, chapter.chapter, `${chapter.volume} / ${chapter.chapter}`]
+  }));
+  return allChapterLabels.find(item => item.labels.some(label => label === requested))?.index
+    ?? info.startIndex + Math.max(0, batchSourceChapters.indexOf(requested));
+}
 
 function normalizePresetList(presets = []) {
   return (Array.isArray(presets) ? presets : []).map(preset => ({
@@ -410,6 +444,41 @@ export class PipelineManager {
             source_chapters: char.source_chapters || batchSourceChapters,
             source_text_summary: char.source_text_summary || ""
           });
+
+          const appearanceVersions = Array.isArray(char.appearance_versions) && char.appearance_versions.length > 0
+            ? char.appearance_versions
+            : [{
+                start_chapter: batchSourceChapters[0],
+                tags: char.tags || '',
+                features: char.features || {},
+                evidence: char.evidence || [],
+                confidence: char.confidence || 0,
+                persistent_change: false
+          }];
+          for (const appearanceVersion of appearanceVersions) {
+            const startChapterIndex = resolveAppearanceVersionStartIndex(appearanceVersion, info, batchSourceChapters);
+            const current = this.projectProgress.getCharacterDNAForChapter(char.name, startChapterIndex);
+            const hasExistingVersions = Array.isArray(this.projectProgress.getCharacterDnaVersions()?.[char.name])
+              && this.projectProgress.getCharacterDnaVersions()[char.name].length > 0;
+            const isExplicitPersistentChange = appearanceVersion.persistent_change === true;
+            if (hasExistingVersions && !isExplicitPersistentChange && !hasPersistentAppearanceChange(current, appearanceVersion)) {
+              continue;
+            }
+            if (hasExistingVersions && !isExplicitPersistentChange && hasPersistentAppearanceChange(current, appearanceVersion)) {
+              // A snapshot without a specific persistence assertion must not overwrite a prior visual state.
+              continue;
+            }
+            this.projectProgress.upsertCharacterDnaVersion(char.name, {
+              startChapterIndex,
+              tags: appearanceVersion.tags || char.tags || '',
+              features: appearanceVersion.features || char.features || {},
+              evidence: appearanceVersion.evidence || char.evidence || [],
+              confidence: appearanceVersion.confidence ?? char.confidence ?? 0,
+              sourceSliceKey: info.sliceKey,
+              sourceChapters: batchSourceChapters,
+              supersededNegative: buildSupersededAppearanceNegative(current, appearanceVersion)
+            });
+          }
         }
       }
 
@@ -435,7 +504,7 @@ export class PipelineManager {
   /**
    * 自动在描述和文本中用正则匹配人物姓名，联动返回其 DNA 标签
    */
-  autoMatchCharacterDNA(sceneInput, chapContent) {
+  autoMatchCharacterDNA(sceneInput, chapContent, chapterIndex = 0) {
     const globalChars = this.projectProgress.getGlobalCharacters();
     const sceneText = typeof sceneInput === 'string' ? sceneInput : serializeSceneForMatching(sceneInput);
     const combinedText = sceneText.toLowerCase();
@@ -460,13 +529,18 @@ export class PipelineManager {
 
       // 如果结构化角色名单、正文或描述命中了该角色
       if (namesToMatch.some(candidate => explicitNames.has(candidate) || combinedText.includes(candidate))) {
+        const effectiveDna = typeof this.projectProgress.getCharacterDNAForChapter === 'function'
+          ? (this.projectProgress.getCharacterDNAForChapter(name, chapterIndex) || charData)
+          : charData;
         this.writeLog(`[Pipeline] 🎯 自动命中角色 DNA: ${name}`);
         matchedAnchors.push({
           name,
-          正面提示词: charData.tags || "",
-          结构化特征: charData.features,
-          身高等级: charData.height_class || "",
-          身体比例: charData.body_proportion || ""
+          aliases,
+          正面提示词: effectiveDna.tags || "",
+          负面提示词: effectiveDna.supersededNegative || "",
+          结构化特征: effectiveDna.features,
+          身高等级: effectiveDna.height_class || charData.height_class || "",
+          身体比例: effectiveDna.body_proportion || charData.body_proportion || ""
         });
       }
     }
@@ -779,7 +853,9 @@ export class PipelineManager {
    */
   async prepareSingleScenePrompt(chap, scene, scenes, chapKey, llmModel) {
     // A. 智能命中角色 DNA 标签组
-    const matchedAnchors = this.autoMatchCharacterDNA(scene, chap.content);
+    const chapterIndex = this.chapterIndexMap?.get(chapKey)
+      ?? this.chapters.findIndex(item => item.volume === chap.volume && item.chapter === chap.chapter);
+    const matchedAnchors = this.autoMatchCharacterDNA(scene, chap.content, Math.max(0, chapterIndex));
 
     // B. 高级参数生成
     const advancedParams = await this.naiTagsExtractor.generateScenePromptAdvanced(

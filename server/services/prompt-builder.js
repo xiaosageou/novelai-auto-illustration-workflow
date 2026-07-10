@@ -1019,7 +1019,10 @@ export function buildFinalImagePrompt(prompt, {
       || (!hasCharacterName ? structuredPromptList[index] || null : null);
     const structuredPrompt = typeof structured === 'string' ? structured : structured?.prompt;
     negativeCharacterPrompts.push(
-      removeNonEnglishPromptTokens(typeof structured === 'string' ? '' : structured?.negative_prompt || '')
+      removeNonEnglishPromptTokens(mergeNegativePromptParts(
+        typeof structured === 'string' ? '' : structured?.negative_prompt || '',
+        matchedAnchor?.负面提示词 || ''
+      ))
     );
 
     let finalCharPrompt;

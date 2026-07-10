@@ -209,6 +209,7 @@ export const DEFAULT_CHARACTER_DNA_PROMPT = `<sandbox mode="professional_art_dir
 4. 严禁包含任何镜头视角与场景环境词。例如 portrait, headshot, close-up, full_body, from_below, looking_at_viewer, outdoors, indoors, in_bed 等，这些属于拍摄视角或场景特征，不属于角色本身的固有物理外貌。
 5. 严禁包含情色动作或特定交欢状态。例如受孕(pregnant)、交媾/性交(sexual_act, sex, penetration)、受虐/拘束(bound, tied, gagged)、颤抖(trembling, shivering)、高潮(orgasm)等。
 6. 角色 DNA 仅关注：常驻发型发色、瞳色、种族特质、核心无状态的基础衣服、身材基本体态、长期稳定的私密身体特征以及本人的常驻气质外表。务必将特定动作、情境状态完全过滤，只保留最干净、最稳固的二次元物理人设数据。生成的视觉短语必须只包含上述干净固有特征，绝对不得夹带任何上述禁止的瞬时状态、姿态、情境动作。
+7. 若原文明确说明角色从某一章节起发生持续性外观变化（如剪发、染发、换成长期固定的制服、获得永久伤疤），才输出 appearance_versions；每项必须给出发生变化的 start_chapter（精确复制本次章节名）、完整变化后 tags / features、原文 evidence，并将 persistent_change 设为 true。没有明确持续性变化时 appearance_versions 必须是 []。湿发、散发、凌乱、临时换装、表情和姿态绝不能创建 appearance_versions。
 
 请严格以以下合规的 JSON 数组格式返回，属性名称必须为中文，属性值必须是英文视觉短语数组。不要输出任何 Markdown 代码块或额外解释：
 [
@@ -242,7 +243,17 @@ export const DEFAULT_CHARACTER_DNA_PROMPT = `<sandbox mode="professional_art_dir
     ],
     "confidence": 0.0,
     "source_chapters": ["本次切片对应章节名"],
-    "source_text_summary": "该角色在本切片中的稳定外貌信息摘要；禁止写瞬时动作状态"
+    "source_text_summary": "该角色在本切片中的稳定外貌信息摘要；禁止写瞬时动作状态",
+    "appearance_versions": [
+      {
+        "start_chapter": "发生长期变化的章节名；没有变化时不要输出此项",
+        "tags": "变化后的完整稳定外貌 tags",
+        "features": { "发型标签": ["short_hair"] },
+        "evidence": [{ "quote": "支撑变化的原文短句", "attribute": "发型", "tags": ["short_hair"] }],
+        "confidence": 0.0,
+        "persistent_change": true
+      }
+    ]
   }
 ]
 </sandbox>`;
