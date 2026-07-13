@@ -1543,30 +1543,13 @@ export class LLMExtractor {
       }
     }
 
-    onProgressLog?.(`[LLM] 连续 3 次场景提炼均失败，使用兜底策略: ${lastError?.message || "未知错误"}`, "warning");
+    const failureMessage = `场景提炼连续 3 次失败: ${lastError?.message || "未知错误"}`;
+    onProgressLog?.(`[LLM] ${failureMessage}。已记录为失败，等待手动重试。`, "error");
     console.error(`[LLM Extractor] 场景提炼连续 3 次失败:`, lastError);
-    const lines = text.split("\n").filter(l => l.trim().length > 10);
-    const fallbackSentence = lines[Math.floor(lines.length / 2)] || "起风了。";
-    return [normalizeSceneCard({
-      scene_idx: 1,
-      trigger_sentence: fallbackSentence.substring(0, 30),
-      nsfw_rating: 'sfw',
-      visual_description: "1girl, solo, anime style, looking at viewer",
-      environment: "detailed background",
-      cinematography: "balanced composition, anime illustration",
-      characters: [{
-        name: "",
-        gender: "girl",
-        appearance: "",
-        clothing: "",
-        expression: "looking at viewer",
-        pose: "solo",
-        position: "center"
-      }],
-      interactions: "",
-      plot_traces: "",
-      text_elements: ""
-    })];
+    const failure = new Error(failureMessage);
+    failure.code = 'SCENE_EXTRACTION_EXHAUSTED';
+    failure.cause = lastError;
+    throw failure;
   }
 
   /**

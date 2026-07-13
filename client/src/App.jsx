@@ -406,6 +406,9 @@ function App() {
         addLog(`🎬 单章「${data.chapterKey}」开始执行重画队列。`);
       } else if (data.state === 'failed') {
         addLog(`❌ 单章「${data.chapterKey}」队列执行失败: ${data.message || '未知错误'}`, 'error');
+        if (activeProject) {
+          fetchProjectDetails(activeProject);
+        }
       } else if (data.state === 'paused') {
         addLog(`⏸️ 单章「${data.chapterKey}」执行到需要更新角色 DNA，队列已暂停等待处理。`, 'warning');
       }
@@ -435,6 +438,9 @@ function App() {
         addLog(`🎉 项目 ${data.projectName} 批量插画流水线大功告成！`);
       }
       setPipelineRunning(false);
+      if (activeProject) {
+        fetchProjectDetails(activeProject);
+      }
     });
 
     eventSource.addEventListener('pipeline_failed', (e) => {
@@ -1933,6 +1939,9 @@ function App() {
                     {(() => {
                       const selectedChapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
                       const selectedChapterQueueState = chapterQueueStates[getChapterQueueStateKey(activeProject, selectedChapterKey)];
+                      const selectedChapterProgress = getChapterProgress(selectedChapter.volume, selectedChapter.chapter);
+                      const isSceneExtractionFailed = selectedChapterProgress?.status === 'failed'
+                        && (selectedChapterProgress?.scenes || []).length === 0;
                       return (
                     <div className="glass-panel" style={{ padding: '16px', background: 'rgba(255,255,255,0.01)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div>
@@ -1952,7 +1961,9 @@ function App() {
                           ? '单章排队中'
                           : selectedChapterQueueState === 'running'
                             ? '单章执行中'
-                            : '单章重画'}
+                            : isSceneExtractionFailed
+                              ? '重试场景提炼'
+                              : '单章重画'}
                       </button>
                     </div>
                       );
@@ -1965,9 +1976,29 @@ function App() {
                       const scenes = progress?.scenes || [];
 
                       if (scenes.length === 0) {
+                        const extractionFailed = progress?.status === 'failed';
                         return (
                           <div className="glass-panel" style={{ padding: '40px', textLight: 'center', textAlign: 'center', color: 'var(--text-muted)' }}>
-                            本章尚未提取生成场景卡片。启动生图流水线时，将自动为您分析提取 5-10 个高潮插画场景。
+                            {extractionFailed ? (
+                              <div style={{ display: 'grid', justifyItems: 'center', gap: '12px' }}>
+                                <div style={{ color: '#fca5a5' }}>场景提炼失败，未创建兜底场景卡。</div>
+                                {progress?.error && (
+                                  <div style={{ maxWidth: '680px', fontSize: '0.82rem', color: 'var(--text-secondary)', wordBreak: 'break-word' }}>
+                                    {progress.error}
+                                  </div>
+                                )}
+                                <button
+                                  className="btn-secondary"
+                                  disabled={isSingleChapterGenerateDisabled({ pipelineRunning, chapterQueueState: chapterQueueStates[getChapterQueueStateKey(activeProject, chapKey)] })}
+                                  onClick={() => generateSingleChapter(selectedChapter)}
+                                  style={{ display: 'flex', alignItems: 'center', gap: '5px', borderColor: 'rgba(248, 113, 113, 0.7)', color: '#fecaca' }}
+                                >
+                                  <Play size={14} /> 重试场景提炼
+                                </button>
+                              </div>
+                            ) : (
+                              '本章尚未提取生成场景卡片。启动生图流水线时，将自动为您分析提取 5-10 个高潮插画场景。'
+                            )}
                           </div>
                         );
                       }
@@ -2041,7 +2072,7 @@ function App() {
                                   </>
                                 ) : scene.status === 'SUCCESS' ? (
                                   '已完成'
-                                ) : scene.status === 'failed' ? (
+                                ) : scene.status === 'FAILED' ? (
                                   '失败'
                                 ) : scene.status === 'PROMPT_READY' ? (
                                   <span style={{ color: 'var(--color-purple)', fontWeight: '600' }}>⚡ Prompt 已就绪</span>

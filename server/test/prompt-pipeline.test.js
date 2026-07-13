@@ -337,7 +337,7 @@ test('scene extraction retries when the LLM omits the end marker', async () => {
   }
 });
 
-test('scene extraction falls back only after three failed attempts', async () => {
+test('scene extraction records failure after three failed attempts instead of creating a fallback scene', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
   const originalFetch = globalThis.fetch;
   let fetchCount = 0;
@@ -347,9 +347,12 @@ test('scene extraction falls back only after three failed attempts', async () =>
   };
 
   try {
-    const scenes = await extractor.extractChapterScenes('测试章', '这是用于兜底的完整句子。', 'test-model');
+    await assert.rejects(
+      extractor.extractChapterScenes('测试章', '这是用于兜底的完整句子。', 'test-model'),
+      (error) => error?.code === 'SCENE_EXTRACTION_EXHAUSTED'
+        && /场景提炼连续 3 次失败/.test(error.message)
+    );
     assert.equal(fetchCount, 3);
-    assert.equal(scenes.length, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

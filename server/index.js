@@ -389,6 +389,25 @@ async function processChapterQueue(projectName) {
           break;
         }
 
+        const chapterProgress = pipeline.projectProgress.getCompletedChapters()?.[job.effectiveKey];
+        if (chapterProgress?.status === 'failed') {
+          const message = chapterProgress.error || `章节「${job.chapterKey}」场景生成失败`;
+          broadcastSSE('chapter_queue', {
+            projectName,
+            chapterKey: job.chapterKey,
+            state: 'failed',
+            message,
+            remaining: queue.items.length
+          });
+          broadcastSSE('pipeline_failed', {
+            projectName,
+            chapterKey: job.chapterKey,
+            type: 'chapter_generate',
+            message
+          });
+          continue;
+        }
+
         broadcastSSE('chapter_queue', {
           projectName,
           chapterKey: job.chapterKey,
