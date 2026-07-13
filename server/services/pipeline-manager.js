@@ -807,6 +807,35 @@ export class PipelineManager {
     this._emitChapterScenesExtracted(chap, chapKey, scenes);
   }
 
+  async _recordSceneExtractionBatchFailure(chap, chapKey, scenes, error, batchInfo = {}) {
+    const chapterProgress = this.projectProgress.getCompletedChapters?.()?.[chapKey] || {};
+    const existingFailures = Array.isArray(chapterProgress.scene_extraction_failures)
+      ? chapterProgress.scene_extraction_failures
+      : [];
+    const failure = {
+      batch_index: Number(batchInfo.batchIndex) + 1,
+      total_batches: Number(batchInfo.totalBatches) || 1,
+      requested_scene_count: Number(batchInfo.requestedSceneCount) || 0,
+      chapter_title: batchInfo.chapterTitle || chap.chapter,
+      source_char_count: String(batchInfo.sourceText || '').length,
+      source_preview: String(batchInfo.sourceText || '').slice(0, 300),
+      error: String(error?.message || error || '未知错误'),
+      failed_at: Date.now()
+    };
+    const failures = [
+      ...existingFailures.filter(item => Number(item?.batch_index) !== failure.batch_index),
+      failure
+    ].sort((a, b) => Number(a.batch_index) - Number(b.batch_index));
+
+    this.projectProgress.setChapterSceneExtractionFailures(chapKey, failures);
+    await this.projectProgress.save();
+    this._emitChapterScenesExtracted(chap, chapKey, scenes);
+    this.writeLog(
+      `[Pipeline] 章节「${chap.chapter}」第 ${failure.batch_index}/${failure.total_batches} 段提炼失败已记录；其余分段继续处理。`,
+      'error'
+    );
+  }
+
   async _extractChapterScenesIncrementally(chap, chapKey, sceneModel, logPrefix, onBatchReady = null) {
     const countMetrics = getSceneCountMetrics(
       chap.content,
@@ -826,12 +855,15 @@ export class PipelineManager {
       model: sceneModel,
       sceneExtractor: this.sceneExtractor,
       onProgressLog: (logMsg, type, options) => this.writeLog(logMsg, type, options),
-      onBatchExtracted: async (batchScenes) => {
+      onBatchExtracted: async (batchScenes, batchInfo) => {
         const normalizedBatch = this._normalizeExtractedSceneBatch(chap, batchScenes, scenes);
         if (normalizedBatch.length === 0) return;
         scenes.push(...normalizedBatch);
         await this._persistChapterScenes(chap, chapKey, scenes);
         await onBatchReady?.(normalizedBatch, scenes);
+      },
+      onBatchFailed: async (error, batchInfo) => {
+        await this._recordSceneExtractionBatchFailure(chap, chapKey, scenes, error, batchInfo);
       },
       requestedSceneCount,
       sceneCountOptions: {

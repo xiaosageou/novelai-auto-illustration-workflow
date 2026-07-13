@@ -293,9 +293,23 @@ export class ProjectProgress {
 
   setChapterStatus(chapKey, status, scenes = []) {
     if (!this.data) return;
+    const previous = this.data.completed_chapters[chapKey] || {};
     this.data.completed_chapters[chapKey] = {
       status,
       scenes,
+      scene_extraction_failures: Array.isArray(previous.scene_extraction_failures)
+        ? previous.scene_extraction_failures
+        : [],
+      updatedAt: Date.now()
+    };
+  }
+
+  setChapterSceneExtractionFailures(chapKey, failures = []) {
+    if (!this.data) return;
+    const previous = this.data.completed_chapters[chapKey] || {};
+    this.data.completed_chapters[chapKey] = {
+      ...previous,
+      scene_extraction_failures: Array.isArray(failures) ? failures : [],
       updatedAt: Date.now()
     };
   }
@@ -307,6 +321,9 @@ export class ProjectProgress {
       status: 'failed',
       error: String(error),
       scenes: Array.isArray(scenes) ? scenes : (Array.isArray(previous.scenes) ? previous.scenes : []),
+      scene_extraction_failures: Array.isArray(previous.scene_extraction_failures)
+        ? previous.scene_extraction_failures
+        : [],
       updatedAt: Date.now()
     };
   }

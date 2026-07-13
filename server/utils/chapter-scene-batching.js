@@ -166,6 +166,7 @@ export async function extractChapterScenesInBatches({
   sceneExtractor,
   onProgressLog = null,
   onBatchExtracted = null,
+  onBatchFailed = null,
   requestedSceneCount = null,
   sceneCountOptions = {},
   maxScenesPerRequest = 10,
@@ -200,21 +201,29 @@ export async function extractChapterScenesInBatches({
     const batchText = batchPlan[index].text;
     const batchSceneCount = batchPlan[index].sceneCount || 1;
     onProgressLog?.(`[LLM] 章节「${chapterTitle}」拆分提炼第 ${index + 1}/${batchPlan.length} 段，发送 ${batchText.length} 字，提炼 ${batchSceneCount} 个场景...`);
-    const batchScenes = await sceneExtractor.extractChapterScenes(
-      batchTitle,
-      batchText,
-      model,
-      onProgressLog,
-      batchSceneCount,
-      sceneCountOptions
-    );
-    await onBatchExtracted?.(batchScenes, {
+    const batchInfo = {
       batchIndex: index,
       totalBatches: batchPlan.length,
       requestedSceneCount: batchSceneCount,
-      chapterTitle: batchTitle
-    });
-    mergedScenes.push(...batchScenes);
+      chapterTitle: batchTitle,
+      sourceText: batchText
+    };
+    try {
+      const batchScenes = await sceneExtractor.extractChapterScenes(
+        batchTitle,
+        batchText,
+        model,
+        onProgressLog,
+        batchSceneCount,
+        sceneCountOptions
+      );
+      await onBatchExtracted?.(batchScenes, batchInfo);
+      mergedScenes.push(...batchScenes);
+    } catch (error) {
+      const failureMessage = `章节「${chapterTitle}」第 ${index + 1}/${batchPlan.length} 段提炼失败：${error.message}`;
+      onProgressLog?.(`[LLM] ${failureMessage}；已记录该段，继续处理其余分段。`, 'error');
+      await onBatchFailed?.(error, batchInfo);
+    }
   }
 
   return mergedScenes.map((scene, index) => ({
