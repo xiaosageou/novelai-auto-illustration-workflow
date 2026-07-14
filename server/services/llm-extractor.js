@@ -2040,7 +2040,8 @@ export class LLMExtractor {
       "6. 互动必须尽量使用 source#action、target#action、mutual#action 标清主动方和承受方，而且这些方向标签只能放在对应角色的 character_prompts[].prompt 中，must not appear in base_prompt。",
       "7. Token 预算必须前置控制：总正向 tags 不超过 410 tokens。优先删除氛围形容词、重复概念和次要配饰，不得删除人物数量、角色识别特征和核心互动。",
       "8. 衣着状态必须忠实于场景卡 characters[].clothing：有具体服装名则用对应 tags（如 white_dress、school_uniform）；是 nude 则用 completely_nude；是 未指明 则从角色 DNA 参考中继承默认服装 tags，不要自行编造服装细节。",
-      "9. 除非场景卡明确表示已经露出、强调 crotch bulge、或明确写出 penis/erection 状态，否则角色只要仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，或者 clothing 仍是 未指明 / unspecified / unknown，就不要擅自加入 penis、erection、erect_penis、large_penis、penis_outline、big_penis 等生殖器状态 tags，也不要从 DNA 参考继承这类私密体征。"
+      "9. 除非场景卡明确表示已经露出、强调 crotch bulge、或明确写出 penis/erection 状态，否则角色只要仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，或者 clothing 仍是 未指明 / unspecified / unknown，就不要擅自加入 penis、erection、erect_penis、large_penis、penis_outline、big_penis 等生殖器状态 tags，也不要从 DNA 参考继承这类私密体征。",
+      "10. 后端不会补写角色 DNA、位置、互动/性行为体位、近景镜头或插入局部放大。在 /thinking/ 中逐项核对角色 DNA、站位、体位与局部放大需求，并把最终决定完整写入 /JSON/ 的 base_prompt 或对应 character_prompts[].prompt。"
     ].join("\n");
 
     const userMessage = [
@@ -2050,6 +2051,7 @@ export class LLMExtractor {
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
       "如果 scene card 里有 core_action，请把它当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
       "你必须先根据 visual_description、core_action 和角色站位，自行判断本场景中人物之间是否存在直接互动。",
+      "后端不会在 LLM 返回后补写角色 DNA、角色位置、互动/性行为体位、近景镜头或插入局部放大。请在 /thinking/ 中逐项判断这些内容，并将结论完整写进 /JSON/ 对应字段。",
       "如果 scene card 里有 interaction_actions，你必须先理解每条 interaction 的主动方 source、承受方 target，以及是否 mutual，然后把这个角色职责落实到对应角色的 character_prompts 中。",
       "参考 NovelAI V4 多角色互动文档：多人互动必须在对应角色 prompt 里使用 source#动作、target#动作、mutual#动作 来强调谁在主动、谁在承受、谁是相互动作。不要把 source#/target#/mutual# 这类方向标签放进 base_prompt。若动作天然有方向性，不要把 source 和 target 写反。",
       "示例：若 interaction_actions 里是 {\"action\":\"undressing\",\"source\":\"钰慧\",\"target\":\"阿宾\"}，则钰慧的 character prompt 使用 source#undressing；阿宾的 character prompt 使用 target#undressing。不要把两人的动作职责写成一样。",
@@ -2164,42 +2166,8 @@ export class LLMExtractor {
           throw new Error(`character_prompts[${index}].name 应为「${expectedName}」，实际为「${actualName || '空'}」`);
         }
       }
-      const characterSpecificTags = new Set(
-        character_prompts
-          .flatMap(item => item.prompt.split(/[,，]/))
-          .map(tag => tag.trim().toLowerCase())
-          .filter(Boolean)
-      );
-      const cleanedBasePrompt = base_prompt
-        .split(/[,，]/)
-        .map(tag => tag.trim())
-        .filter(Boolean)
-        .filter(tag => !characterSpecificTags.has(tag.toLowerCase()))
-        .join(', ');
-      const shouldBiasCloseFraming = nsfwRating !== 'sfw'
-        || (Array.isArray(sceneDesc?.interaction_actions) && sceneDesc.interaction_actions.length > 0)
-        || WIDE_FRAMING_TAG_PATTERN.test(cleanedBasePrompt);
-      const baseTags = cleanedBasePrompt
-        .split(/[,，]/)
-        .map(tag => tag.trim())
-        .filter(Boolean)
-        .filter(tag => !(shouldBiasCloseFraming && WIDE_FRAMING_TAG_PATTERN.test(tag)));
-      const hasPreferredCloseFraming = baseTags.some(tag => CLOSE_FRAMING_TAG_PATTERN.test(tag));
-      if (shouldBiasCloseFraming && !hasPreferredCloseFraming) {
-        baseTags.push(getPreferredCloseFramingTag({
-          characterCount: expectedSceneCharacters.length,
-          isPenetrationScene,
-          isNsfw: nsfwRating !== 'sfw'
-        }));
-      }
-      const hasPenetrationInsetPlan = baseTags.some(tag => PENETRATION_INSET_TAG_PATTERN.test(tag));
-      if (isPenetrationScene && !hasPenetrationInsetPlan) {
-        baseTags.push('main scene plus one inset', 'magnified inset', 'x-ray inset', 'cross-section', 'penetration focus');
-      }
-      const cleanedBaseTags = uniquePhrases(baseTags);
-      const resolvedBasePrompt = nsfwRating !== 'sfw'
-        ? cleanedBaseTags.join(', ')
-        : cleanedBaseTags.join(', ');
+      // LLM 已在 /thinking/ 中决定镜头、局部放大、角色位置和互动；后端不再补写或改写这些内容。
+      const resolvedBasePrompt = uniquePhrases(base_prompt.split(/[,，]/)).join(', ');
       const prompt = uniquePhrases([
         ...resolvedBasePrompt.split(/[,，]/),
         ...character_prompts.flatMap(item => item.prompt.split(/[,，]/))

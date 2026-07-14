@@ -47,8 +47,6 @@ export function clampNaturalLanguageWeights(prompt, maxWeight = 1.3, maxCount = 
 // 常量定义
 const 自动去水印负面提示词 = 'text, watermark, signature, logo, subtitles, qr code';
 const 全局无文字正向提示词 = 'single coherent image, natural subject focus, clear silhouette';
-const 默认中国人物正向提示词 = 'Chinese person, East Asian facial features, Chinese facial structure, black or dark brown hair, dark brown eyes';
-const 默认中国人物负向提示词 = 'western face, blonde hair, blue eyes';
 const 部位特写单图正向提示词 = 'single image, one frame, one subject only, extreme close-up macro crop, target fills the frame, plain blurred background, cohesive macro composition';
 const NSFW部位特写画质增强提示词 = 'adult character only, target anatomy only, macro anatomical close-up, ultra tight crop, wet skin texture, glistening moisture, natural skin folds, soft rim light, specular highlights, subsurface scattering, single private anatomy focus, no minors';
 const 部位特写反拼贴负面提示词 = 'multiple views, split screen, panel layout, comic panel, comic page, manga panel, collage, contact sheet, character sheet, duplicate anatomy, mirrored anatomy, multiple organs, extra organs, extra nipples';
@@ -73,16 +71,6 @@ const 构图附加负面提示词映射 = {
   部位特写: 部位特写反拼贴负面提示词,
   场景: 'split screen, collage, contact sheet, comic panel, manga panel, panel layout, text box, multiple views'
 };
-
-function 是否角色构图(composition) {
-  return composition === '头像' || composition === '半身' || composition === '立绘';
-}
-
-function 提示词明确外国人(text) {
-  if (!text) return false;
-  return /\b(foreigner|foreign|Caucasian|European|Western|white person|blonde|blond|blue eyes|Nordic|Slavic|Russian|British|French|German|American|Japanese|Korean|Indian|Arab|African|Latina|Hispanic)\b/i.test(text)
-    || /外国|欧美|白人|金发|碧眼|蓝眼|俄罗斯|英伦|法国|德国|美国|日本人|韩国人|印度人|阿拉伯|非洲|拉丁/.test(text);
-}
 
 function 去重提示词片段(arr) {
   if (!Array.isArray(arr)) return [];
@@ -938,140 +926,29 @@ export function buildFinalImagePrompt(prompt, {
     .map(item => String(item || '').trim())
     .filter(item => item && /^[\x20-\x7E]+$/.test(item));
 
-  let hardPositive;
-  if (useNaturalLanguage) {
-    // V4.5 自然语言模式：将 must_show 元素用较低权重（1.2::）标注，最多取前 2 个
-    // 超过 2 个的元素直接以自然语言写入 cleanPrompt，不加权重
-    hardPositive = rawMustShow.slice(0, 2).map(item => `1.2::${item}::`).join(', ');
-    const extraMustShow = rawMustShow.slice(2).join(', ');
-    if (extraMustShow) cleanPrompt = mergePositivePromptParts(cleanPrompt, extraMustShow);
-  } else {
-    // 旧版标签模式：保留原有的 1.45:: 高权重逻辑
-    hardPositive = rawMustShow.map(item => `1.45::${item}::`).join(', ');
-  }
-  cleanPrompt = mergePositivePromptParts(cleanPrompt, hardPositive);
-  cleanPrompt = 移除无依据的高风险表情(cleanPrompt, sceneCharacterList);
-  if (sceneCharacterList.length >= 2) {
-    cleanPrompt = 净化多人身高标签(cleanPrompt);
-  }
-  const balancedMultiCharacter = 构建均衡多人构图(cleanPrompt, sceneCharacterList);
-  cleanPrompt = balancedMultiCharacter.prompt;
+  // must_show、表情、构图和互动均由 LLM 在角色/场景段中自行决定；后端不再追加或改写。
 
-  // 3. 中国人面部特征注入（针对角色构图，且提示词中没有指明外国人）
-  const needsChinesePerson = 是否角色构图(composition)
-    && !提示词明确外国人(`${extraPositive}, ${cleanPrompt}`);
+  const prePositive = mergePositivePromptParts(extraPositive);
 
-  const finalChinesePersonPrompt = needsChinesePerson
-    ? (useNaturalLanguage ? 'East Asian features' : 默认中国人物正向提示词)
-    : '';
-
-  const prePositive = mergePositivePromptParts(
-    extraPositive,
-    finalChinesePersonPrompt
-  );
-
-  const postPositive = 构建后置正向提示词({
-    构图: composition,
-    场景类型: sceneType,
-    尺寸: finalSize,
-    角色列表: sceneCharacterList,
-    主体提示词: cleanPrompt,
-    useNaturalLanguage: useNaturalLanguage
-  });
-
-  // 4. 角色 DNA 标签 (Prompts Bundle) 计算与注入
-  // 将匹配到的角色 DNA 结构化数据转换成适合当前构图的 tags
-  const charDnaTagsArray = characterAnchors.map(anchor => {
-    return 构建角色锚点注入提示词(anchor, { 构图: composition, 部位: sceneType });
-  }).filter(Boolean);
-
+  // 4. LLM 已在请求上下文中获得角色 DNA；后端不再把 DNA 追加到角色段。
   const structuredPromptList = Array.isArray(structuredCharacterPrompts) ? structuredCharacterPrompts : [];
-  const heightConstraints = 构建多人身高约束(sceneCharacterList, characterAnchors);
-  const spatialGuidance = buildCharacterSpatialGuidance(sceneCharacterList, sceneInteractions, sceneInteractionActions);
-  const needsPenetrationInset = 是插入局部放大场景({
-    sceneNsfwRating,
-    sourcePrompt: cleanPrompt,
-    sceneDescription,
-    sceneInteractions,
-    sceneInteractionActions,
-    sceneMustShow
-  });
-  const hasDirectInteraction = 场景存在直接互动({
-    prompt: cleanPrompt,
-    sceneInteractions,
-    sceneInteractionActions
-  });
-  const needsMultiCompositionGuard = sceneCharacterList.length >= 2
-    && hasDirectInteraction
-    && !已有统一构图提示(cleanPrompt);
-  const needsScaleGuard = sceneCharacterList.length >= 2
-    && !/consistent character scale|same ground plane|same focal plane|natural proportions/i.test(cleanPrompt);
-  const interactionTags = 构建互动动作标签(sceneCharacterList, sceneInteractionActions);
   const negativeCharacterPrompts = [];
   const characterPrompts = sceneCharacterList.map((char, index) => {
     const hasCharacterName = Boolean(String(char?.name || '').trim());
-    const matchedAnchor = 按姓名查找(characterAnchors, char?.name)
-      || (!hasCharacterName ? characterAnchors[index] || null : null);
-    const dnaTags = matchedAnchor
-      ? 构建角色锚点注入提示词(matchedAnchor, { 构图: composition, 部位: sceneType, 当前角色: char })
-      : (!hasCharacterName ? charDnaTagsArray[index] || '' : '');
     const structured = 按姓名查找(structuredPromptList, char?.name)
       || (!hasCharacterName ? structuredPromptList[index] || null : null);
     const structuredPrompt = typeof structured === 'string' ? structured : structured?.prompt;
     negativeCharacterPrompts.push(
       removeNonEnglishPromptTokens(mergeNegativePromptParts(
-        typeof structured === 'string' ? '' : structured?.negative_prompt || '',
-        matchedAnchor?.负面提示词 || ''
+        typeof structured === 'string' ? '' : structured?.negative_prompt || ''
       ))
     );
 
-    let finalCharPrompt;
-    if (useNaturalLanguage) {
-      if (structuredPrompt) {
-        // 自然语言模式：直接使用 LLM 输出的英文描述，不拼接原始逗号分隔的 DNA 标签
-        finalCharPrompt = structuredPrompt;
-      } else {
-        const genderTag = 角色性别标签(char?.gender);
-        finalCharPrompt = mergePositivePromptParts(genderTag, dnaTags);
-      }
-    } else {
-      if (structuredPrompt) {
-        // 旧版标签模式：直接使用，再叠加 DNA 锚点
-        finalCharPrompt = mergePositivePromptParts(structuredPrompt, dnaTags);
-      } else {
-        // 无 structured prompt：仅使用 DNA 锚点，添加性别标签
-        const genderTag = 角色性别标签(char?.gender);
-        finalCharPrompt = mergePositivePromptParts(genderTag, dnaTags);
-      }
-    }
-
-    finalCharPrompt = 应用角色场景状态覆盖(finalCharPrompt, char);
-    finalCharPrompt = 清理体液与汗水冲突(finalCharPrompt);
+    let finalCharPrompt = structuredPrompt || '';
     const genderTag = 角色性别标签(char?.gender);
     if (genderTag === 'girl' || genderTag === 'boy') {
       const segmentGenderTag = useCharacterSegments && !useNaturalLanguage ? genderTag : `1${genderTag}`;
       finalCharPrompt = mergePositivePromptParts(segmentGenderTag, 移除角色局部数量标签(finalCharPrompt));
-    }
-    finalCharPrompt = 净化角色表情提示词(
-      finalCharPrompt,
-      char?.expression || '',
-      sceneNsfwRating
-    );
-    if (sceneCharacterList.length >= 2) {
-      const heightKey = String(char?.name || '').trim().toLowerCase() || `#${index}`;
-      const charInteractionTags = (interactionTags[index] || []).filter(tag => {
-        const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return !new RegExp(`\\b${escaped}\\b`, 'i').test(finalCharPrompt);
-      });
-      finalCharPrompt = mergePositivePromptParts(
-        净化多人身高标签(finalCharPrompt),
-        heightConstraints.byName.get(heightKey) || '',
-        spatialGuidance.characterDirections[index] || '',
-        charInteractionTags.join(', ')
-      );
-      finalCharPrompt = 按逗号拆分提示词(finalCharPrompt)
-        .filter(token => !/^(?:on[_ ]?(?:the[_ ]?)?(?:left|right)|left[_ ]?(?:side|foreground|background)?|right[_ ]?(?:side|foreground|background)?|far[_ ]?(?:left|right))$/i.test(token))
-        .join(', ');
     }
 
     return finalCharPrompt;
@@ -1079,13 +956,11 @@ export function buildFinalImagePrompt(prompt, {
 
   let fallbackCharacterPrompts;
   if (useNaturalLanguage) {
-    // V4.5 自然语言模式：不过滤中文（已经是英语句子），不过滤 non-English
-    // 但进行权重守卫
-    fallbackCharacterPrompts = (characterPrompts.length > 0 ? characterPrompts : charDnaTagsArray)
+    fallbackCharacterPrompts = characterPrompts
       .map(p => clampNaturalLanguageWeights(p))
       .filter(Boolean);
   } else {
-    fallbackCharacterPrompts = (characterPrompts.length > 0 ? characterPrompts : charDnaTagsArray)
+    fallbackCharacterPrompts = characterPrompts
       .map(prompt => useCharacterSegments
         ? normalizeDanbooruPromptSegment(prompt, { character: true })
         : removeNonEnglishPromptTokens(prompt)
@@ -1094,12 +969,6 @@ export function buildFinalImagePrompt(prompt, {
   }
   const characterCountPrompt = 构建人物数量标签(sceneCharacterList);
   const exactCharacterCountPrompt = 构建精确人物数量约束(sceneCharacterList);
-  const actionEmphasisPrompt = 构建动作关系强调提示词(cleanPrompt);
-  const environmentEnhancementPrompt = 构建场景环境增强提示词(
-    sceneEnvironment,
-    sceneDescription,
-    composition
-  );
   const normalizedArtistStylePrompt = normalizeArtistTag(artistStylePrompt || '');
 
   // 5. 组合正向提示词
@@ -1108,13 +977,6 @@ export function buildFinalImagePrompt(prompt, {
     characterCountPrompt,
     exactCharacterCountPrompt,
     cleanPrompt,
-    actionEmphasisPrompt,
-    environmentEnhancementPrompt,
-    needsScaleGuard ? (useNaturalLanguage ? 'natural proportions, slight height difference, eye-level camera.' : heightConstraints.basePrompt) : '',
-    spatialGuidance.basePrompt,
-    needsMultiCompositionGuard ? (useNaturalLanguage ? 'same focal plane.' : balancedMultiCharacter.positive) : '',
-    needsPenetrationInset ? (useNaturalLanguage ? 'single magnified inset showing cross-section penetration focus.' : 插入局部放大正向提示词) : '',
-    postPositive,
     normalizedArtistStylePrompt
   );
   // 对 basePrompt 应用全局正则规则
@@ -1160,32 +1022,9 @@ export function buildFinalImagePrompt(prompt, {
   }
 
   // 6. 组合负面提示词：基础画质/文字压制 + 构图约束 + 全局/场景额外负面词
-  let compositionNegative = 构图附加负面提示词映射[composition] || '';
-  
-  const characterCount = sceneCharacterList.length;
-  const promptText = String(cleanPrompt || '');
-  const isMultiCharacter = characterCount >= 2 || /\b(2girls|3girls|4girls|5girls|6girls|2boys|3boys|4boys|5boys|6boys|1girl\s*,\s*1boy|1boy\s*,\s*1girl|multiple characters|group)\b/i.test(promptText);
-  
-  if (isMultiCharacter) {
-    const multiPersonDenyTags = new Set([
-      'multiple people', 'two people', 'three people', 'group'
-    ]);
-    compositionNegative = compositionNegative
-      .split(',')
-      .map(tag => tag.trim())
-      .filter(tag => !multiPersonDenyTags.has(tag.toLowerCase()))
-      .join(', ');
-  }
-
   const finalNegative = 移除纯色背景负面限制(removeNonEnglishPromptTokens(mergeNegativePromptParts(
     默认NovelAI负面提示词,
-    sceneCharacterList.some(char => 原文明确要求露齿表情(char?.expression || ''))
-      ? ''
-      : 默认表情稳定负面提示词,
-    compositionNegative,
     构建额外人物负面提示词(sceneCharacterList),
-    构建动作关系负面提示词(cleanPrompt),
-    balancedMultiCharacter.negative,
     构建私密场景负面词({ prompt: cleanPrompt, sceneEnvironment, sceneDescription }),
     (Array.isArray(sceneMustNotShow) ? sceneMustNotShow : [])
       .map(item => String(item || '').trim())
@@ -1194,21 +1033,17 @@ export function buildFinalImagePrompt(prompt, {
     extraNegative
   )));
 
-  const resolvedFinalNegative = needsPenetrationInset
-    ? 允许插入放大图负面词(finalNegative)
-    : finalNegative;
-
   return {
     prePositive,
     mainPositive: cleanPrompt,
-    postPositive,
+    postPositive: '',
     basePrompt,
     characterPrompts: fallbackCharacterPrompts,
     negativeCharacterPrompts,
-    characterCenters: spatialGuidance.centers,
+    characterCenters: [],
     estimatedPromptTokens: budgetedPrompts.estimatedTokens,
     finalPositive,
-    finalNegative: resolvedFinalNegative,
+    finalNegative,
     size: finalSize,
     width,
     height
