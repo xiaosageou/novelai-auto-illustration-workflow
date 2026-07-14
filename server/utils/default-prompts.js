@@ -98,10 +98,10 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 
 ---
 
-【角色外观继承约束 — 核心一致性保障】
-- 每个主要可见角色的外观描述，必须继承角色 DNA 资料库中该角色已记录的发色、瞳色、发型、服装基底等固有特征，确保同一角色在多张图里稳定可识别。
-- 禁止根据当前场景上下文随意改变已确立的角色外观（除非正文明确描写了服装更换）。
-- 若角色 DNA 资料库中尚未收录该角色，则根据正文中对该角色的描写进行推断，并在 appearance 字段中尽可能详细标注，以供后续固化。
+【场景卡角色描述约束】
+- characters[].appearance 只记录当前小说片段或当前画面明确可见的外观信息；不得自动搬运角色 DNA 的完整标签列表。
+- 角色 DNA 会在后续生图参数阶段另行提供给专用 LLM 作为候选参考，由该 LLM 决定保留或删除；场景卡不承担 DNA 继承职责。
+- 若正文没有外观描写，appearance 保持空字符串，不要为了完整性补写发色、瞳色、身材或服装基底。
 
 ---
 
@@ -435,7 +435,7 @@ Use this schema exactly inside /JSON/:
 - Bad: "a girl is hugging him from behind in a shy way". Good: from_behind, hug, arms_around_waist, shy.
 - Bad: explanatory phrases, full English sentences, or prose joined by commas. Good: concrete visible tags only.
 - Use numerical NAI weights only when necessary: 1.2::tag::, 0.7::tag::, -1::tag::. Do not use {}, [], or SD bracket weights.
-- Keep the total positive prompt under 410 tokens. If too long, cut minor atmosphere, duplicate adjectives, minor actions, then minor accessories. Never cut count tags, identity-critical appearance, or core interaction tags.
+- Keep the total positive prompt under 410 tokens. If too long, cut minor atmosphere, duplicate adjectives, minor actions, then minor accessories. Never cut count tags or core interaction tags. Keep an appearance tag only after scene-specific judgment selects it from the DNA candidates.
 
 ## Base Prompt
 - base_prompt starts with nsfw only when the scene rating requires it.
@@ -449,9 +449,9 @@ Use this schema exactly inside /JSON/:
 - One character_prompts item per visible character, in left-to-right image order.
 - Copy each name exactly from the scene card.
 - Each character prompt starts with girl, boy, woman, man, or other. Never use 1girl, 1boy, solo, or no humans after the first | segment.
-- For each visible character, include stable appearance and current frame state: gender tag, visible age/body cue, hairstyle, hair color, eye color, body type, outfit, accessories, action, expression.
+- For each visible character, include only the DNA traits selected as useful and visible for this frame, plus current frame state. Do not copy a complete DNA profile merely because it is available.
 - If a character is still wearing pants, trousers, jeans, shorts, underwear, or other crotch-covering clothing, do not add penis, erection, erect_penis, large_penis, penis_outline, or similar genital-state tags unless the scene card explicitly shows or states that exposure/state.
-- Original/NPC characters need full visual description. Do not abbreviate them to names only.
+- Original/NPC characters need enough selected visual detail to be recognizable in this frame; this does not require a full DNA profile.
 - Scene environment tags stay in base_prompt, not character prompts.
 
 ## Interaction Tags

@@ -1482,6 +1482,7 @@ test('advanced prompt suppresses unspecified-clothing nsfw dna references in cha
     assert.match(contextSection, /tattoo/i);
     assert.match(capturedUserMessage, /候选参考/);
     assert.match(capturedUserMessage, /保留或删除/);
+    assert.match(capturedUserMessage, /DNA selection: keep/i);
     assert.match(capturedUserMessage, /未指明/i);
   } finally {
     globalThis.fetch = originalFetch;
