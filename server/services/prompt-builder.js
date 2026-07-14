@@ -866,7 +866,6 @@ export function buildFinalImagePrompt(prompt, {
   extraPositive = '',
   extraNegative = '',
   size = '',
-  characterAnchors = [], // 匹配到的角色 DNA 数组
   sceneCharacters = [], // 结构化场景角色数组
   sceneNsfwRating = 'sfw',
   sceneEnvironment = '',

@@ -739,6 +739,7 @@ test('updateSceneCard persists edited structured scene fields', async () => {
   const pipeline = new PipelineManager({ projectName: 'scene-edit-test' });
   pipeline.baseDir = outputDir;
   pipeline.switchProject('scene-edit-test');
+  pipeline.isRunning = true;
 
   const result = await pipeline.updateSceneCard('第一卷_第一章', 1, {
     trigger_sentence: '她抬起了头',
@@ -767,6 +768,12 @@ test('updateSceneCard persists edited structured scene fields', async () => {
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].visual_description, '新描述');
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].characters.length, 4);
   assert.deepEqual(saved.completed_chapters['第一卷_第一章'].scenes[0].negative_character_prompts, ['avoid_long_hair', 'avoid_armor']);
+
+  pipeline.markSceneQueued('第一卷_第一章', 1);
+  await assert.rejects(
+    () => pipeline.updateSceneCard('第一卷_第一章', 1, { visual_description: '不应保存的修改' }),
+    /正在队列中处理/
+  );
 });
 
 test('updateSceneCard clears stale derived context when lightweight scene fields change', async () => {
@@ -1469,10 +1476,12 @@ test('advanced prompt suppresses unspecified-clothing nsfw dna references in cha
         特殊特征标签: ['tattoo']
       }
     }], 'test');
-    const contextSection = capturedUserMessage.split('【本场景涉及角色外貌参考（转换为角色段 Danbooru tags，不要写成自然语言句子）】')[1] || '';
+    const contextSection = capturedUserMessage.split('【本场景角色 DNA 候选参考】')[1] || '';
     assert.match(contextSection, /乙：/);
     assert.doesNotMatch(contextSection, /big_penis/i);
     assert.match(contextSection, /tattoo/i);
+    assert.match(capturedUserMessage, /候选参考/);
+    assert.match(capturedUserMessage, /保留或删除/);
     assert.match(capturedUserMessage, /未指明/i);
   } finally {
     globalThis.fetch = originalFetch;

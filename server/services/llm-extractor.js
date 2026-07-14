@@ -2005,7 +2005,7 @@ export class LLMExtractor {
         const reference = filterAnchorReferenceForScene(anchor, sceneCharacter);
         return `• ${name}：${reference}`;
       }).filter(line => !/：\s*$/.test(line)).join("\n");
-      const contextLabel = "【本场景涉及角色外貌参考（转换为角色段 Danbooru tags，不要写成自然语言句子）】";
+      const contextLabel = "【本场景角色 DNA 候选参考】以下仅供判断，不是必须逐项继承。结合当前画面，保留可见且有助于角色识别的特征；删除与场景状态冲突、当前不可见、无关或会造成冗余的内容。只将最终选中的 tag 写入对应角色段。";
       characterContext = charLines ? `\n\n${contextLabel}\n${charLines}` : "";
     }
 
@@ -2039,7 +2039,7 @@ export class LLMExtractor {
       "5. 遇到单个标签难以准确表达的概念时，先拆成多个可见标签组合，不要退回自然语言整句。例如“从背后抱住”应优先写成 from_behind、hug、arms_around_waist，而不是一句英文描述。",
       "6. 互动必须尽量使用 source#action、target#action、mutual#action 标清主动方和承受方，而且这些方向标签只能放在对应角色的 character_prompts[].prompt 中，must not appear in base_prompt。",
       "7. Token 预算必须前置控制：总正向 tags 不超过 410 tokens。优先删除氛围形容词、重复概念和次要配饰，不得删除人物数量、角色识别特征和核心互动。",
-      "8. 衣着状态必须忠实于场景卡 characters[].clothing：有具体服装名则用对应 tags（如 white_dress、school_uniform）；是 nude 则用 completely_nude；是 未指明 则从角色 DNA 参考中继承默认服装 tags，不要自行编造服装细节。",
+      "8. 衣着状态必须忠实于场景卡 characters[].clothing：有具体服装名则用对应 tags（如 white_dress、school_uniform）；是 nude 则用 completely_nude；是 未指明 时，把角色 DNA 仅当作候选参考，自行判断哪些服装或外貌 tag 对当前画面可见且必要。不得整段照抄 DNA，也不得自行编造细节。",
       "9. 除非场景卡明确表示已经露出、强调 crotch bulge、或明确写出 penis/erection 状态，否则角色只要仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，或者 clothing 仍是 未指明 / unspecified / unknown，就不要擅自加入 penis、erection、erect_penis、large_penis、penis_outline、big_penis 等生殖器状态 tags，也不要从 DNA 参考继承这类私密体征。",
       "10. 后端不会补写角色 DNA、位置、互动/性行为体位、近景镜头或插入局部放大。在 /thinking/ 中逐项核对角色 DNA、站位、体位与局部放大需求，并把最终决定完整写入 /JSON/ 的 base_prompt 或对应 character_prompts[].prompt。"
     ].join("\n");
@@ -2051,7 +2051,7 @@ export class LLMExtractor {
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
       "如果 scene card 里有 core_action，请把它当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
       "你必须先根据 visual_description、core_action 和角色站位，自行判断本场景中人物之间是否存在直接互动。",
-      "后端不会在 LLM 返回后补写角色 DNA、角色位置、互动/性行为体位、近景镜头或插入局部放大。请在 /thinking/ 中逐项判断这些内容，并将结论完整写进 /JSON/ 对应字段。",
+      "后端不会在 LLM 返回后补写角色 DNA、角色位置、互动/性行为体位、近景镜头或插入局部放大。角色 DNA 只是候选参考：请在 /thinking/ 中逐项决定保留或删除哪些 DNA tag，并将仅保留的结果完整写进 /JSON/ 对应字段。",
       "如果 scene card 里有 interaction_actions，你必须先理解每条 interaction 的主动方 source、承受方 target，以及是否 mutual，然后把这个角色职责落实到对应角色的 character_prompts 中。",
       "参考 NovelAI V4 多角色互动文档：多人互动必须在对应角色 prompt 里使用 source#动作、target#动作、mutual#动作 来强调谁在主动、谁在承受、谁是相互动作。不要把 source#/target#/mutual# 这类方向标签放进 base_prompt。若动作天然有方向性，不要把 source 和 target 写反。",
       "示例：若 interaction_actions 里是 {\"action\":\"undressing\",\"source\":\"钰慧\",\"target\":\"阿宾\"}，则钰慧的 character prompt 使用 source#undressing；阿宾的 character prompt 使用 target#undressing。不要把两人的动作职责写成一样。",
