@@ -949,7 +949,6 @@ export function buildFinalImagePrompt(prompt, {
       const segmentGenderTag = useCharacterSegments && !useNaturalLanguage ? genderTag : `1${genderTag}`;
       finalCharPrompt = mergePositivePromptParts(segmentGenderTag, 移除角色局部数量标签(finalCharPrompt));
     }
-
     return finalCharPrompt;
   }).filter(Boolean);
 

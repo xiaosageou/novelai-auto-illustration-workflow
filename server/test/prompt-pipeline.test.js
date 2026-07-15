@@ -982,6 +982,20 @@ test('minimal backend assembly keeps only counts, gender segments, and approved 
   assert.doesNotMatch(result.finalPositive, /blue_hair|silver_hair|ponytail|slightly taller|magnified inset/i);
 });
 
+test('final prompt preserves LLM-selected character tags without post-filtering', () => {
+  const result = buildFinalImagePrompt('bedroom', {
+    sceneCharacters: [{ name: '乙', gender: 'man', clothing: 'casual_wear' }],
+    structuredCharacterPrompts: [{
+      name: '乙',
+      prompt: 'boy, casual_wear, big_penis, big penis, bigpenis, 1.2::large_penis::',
+      negative_prompt: ''
+    }]
+  });
+
+  assert.match(result.characterPrompts[0], /(?:big[_ ]?penis|large[_ ]?penis)/i);
+  assert.match(result.characterPrompts[0], /casual_wear/i);
+});
+
 test.skip('current scene state overrides conflicting DNA clothing, hair, and poses', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, indoors', {
     sceneCharacters: [
@@ -1394,7 +1408,7 @@ test('advanced prompt user message includes clothing enforcement', async () => {
   }
 });
 
-test('advanced prompt suppresses non-nude nsfw dna references in character context', async () => {
+test('advanced prompt gives non-nude DNA candidates to the LLM for selection', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
   const originalFetch = globalThis.fetch;
   let capturedUserMessage = '';
@@ -1432,14 +1446,15 @@ test('advanced prompt suppresses non-nude nsfw dna references in character conte
       }
     }], 'test');
     assert.match(capturedUserMessage, /乙：/);
-    assert.doesNotMatch(capturedUserMessage, /large penis/i);
+    assert.match(capturedUserMessage, /large penis/i);
     assert.match(capturedUserMessage, /tattoo/i);
+    assert.match(capturedUserMessage, /DNA selection: keep/i);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('advanced prompt suppresses unspecified-clothing nsfw dna references in character context', async () => {
+test('advanced prompt gives unspecified-clothing DNA candidates to the LLM for selection', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
   const originalFetch = globalThis.fetch;
   let capturedUserMessage = '';
@@ -1478,7 +1493,7 @@ test('advanced prompt suppresses unspecified-clothing nsfw dna references in cha
     }], 'test');
     const contextSection = capturedUserMessage.split('【本场景角色 DNA 候选参考】')[1] || '';
     assert.match(contextSection, /乙：/);
-    assert.doesNotMatch(contextSection, /big_penis/i);
+    assert.match(contextSection, /big_penis/i);
     assert.match(contextSection, /tattoo/i);
     assert.match(capturedUserMessage, /候选参考/);
     assert.match(capturedUserMessage, /保留或删除/);
@@ -2415,7 +2430,7 @@ test('advanced prompt ignores legacy character interaction_actions payloads', as
   }
 });
 
-test('advanced prompt strips genital-state tags from unspecified-clothing character output', async () => {
+test('advanced prompt preserves LLM-selected tags from unspecified-clothing character output', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
@@ -2430,7 +2445,7 @@ test('advanced prompt strips genital-state tags from unspecified-clothing charac
             base_prompt: '1boy, bedroom',
             character_prompts: [{
               name: '乙',
-              prompt: 'boy, handsome, athletic_build, flat_chest, short_hair, black_hair, black_eyes, fair_skin, teen, young_man, casual_wear, t-shirt, shorts, sitting, holding_receiver, phone_call, playing_with_cord, looking_away, nonchalant, relaxed_posture, tall, big_penis',
+              prompt: 'boy, handsome, athletic_build, flat_chest, short_hair, black_hair, black_eyes, fair_skin, teen, young_man, casual_wear, t-shirt, shorts, sitting, holding_receiver, phone_call, playing_with_cord, looking_away, nonchalant, relaxed_posture, tall, big_penis, big penis, bigpenis, 1.2::large_penis::',
               negative_prompt: 'penis, erection, bulge, nude, shirtless'
             }],
             negative_prompt: ''
@@ -2446,7 +2461,7 @@ test('advanced prompt strips genital-state tags from unspecified-clothing charac
       characters: [{ name: '乙', gender: 'man', clothing: '未指明' }]
     }, [], 'test');
 
-    assert.doesNotMatch(result.character_prompts[0].prompt, /big_penis/i);
+    assert.match(result.character_prompts[0].prompt, /(?:big[_ ]?penis|large[_ ]?penis)/i);
     assert.match(result.character_prompts[0].prompt, /casual_wear/i);
     assert.match(result.character_prompts[0].prompt, /t-shirt/i);
     assert.match(result.character_prompts[0].prompt, /shorts/i);
