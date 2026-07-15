@@ -7,6 +7,7 @@ import {
 import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
 import { isNaiLogMessage } from './logClassification.js';
 import { mergeProjectProgressSnapshot } from './projectProgressState.js';
+import { placeReaderScenesByParagraph } from './readerScenePlacement.js';
 import {
   SCENE_CHARACTER_DETAIL_FIELDS,
   buildCharacterReferenceSummary,
@@ -2400,13 +2401,11 @@ function App() {
                   >
                     {!chapterContent ? (
                       <div className="reader-empty">正在载入正文...</div>
-                    ) : chapterContent.paragraphs.map((paragraph, paragraphIndex) => {
+                    ) : (() => {
                       const scenes = getChapterProgress(selectedChapter.volume, selectedChapter.chapter)?.scenes || [];
-                      const paragraphScenes = scenes.filter(scene => scene.status === 'SUCCESS' && scene.image_path && (
-                        Number(scene.source_paragraph_index) === paragraphIndex ||
-                        String(scene.source_paragraph || '').trim() === paragraph ||
-                        (!scene.source_paragraph && scene.trigger_sentence && paragraph.includes(scene.trigger_sentence))
-                      ));
+                      const paragraphScenePlacements = placeReaderScenesByParagraph(chapterContent.paragraphs, scenes);
+                      return chapterContent.paragraphs.map((paragraph, paragraphIndex) => {
+                      const paragraphScenes = paragraphScenePlacements[paragraphIndex] || [];
                       return (
                         <section key={`${paragraphIndex}-${paragraph.slice(0, 16)}`} className="reader-paragraph-block">
                           <p className="reader-paragraph" data-paragraph-index={paragraphIndex}>{paragraph}</p>
@@ -2421,7 +2420,8 @@ function App() {
                           ))}
                         </section>
                       );
-                    })}
+                    });
+                    })()}
                   </article>
                 </div>
               </div>

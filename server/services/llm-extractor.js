@@ -707,6 +707,9 @@ class GlobalRateLimiter {
     this.requests = []; // 存储请求时间戳
     this.queue = [];    // 异步排队队列
     this.freezeUntil = 0; // 冻结截止时间戳
+    // RPM 不能只限制一分钟内的总次数，否则前三个请求仍会在同一瞬间发出。
+    // 对响应很快的模型而言，这种突发很容易触发上游 5xx。
+    this.nextRequestAt = 0;
   }
 
   // 外部通知触发了 429，锁定冻结队列一段时间以进行 API 冷却
@@ -742,11 +745,21 @@ class GlobalRateLimiter {
     // 清理窗口过期的记录
     this.requests = this.requests.filter(timestamp => now - timestamp < this.intervalMs);
 
-    // 2. 如果未达到上限，则立即释放队列最前列的一个请求
+    // 2. RPM 限制同时作为最小发包间隔使用，避免窗口起始时突发多个请求。
     if (this.requests.length < this.limit) {
+      const spacingMs = Math.ceil(this.intervalMs / this.limit);
+      if (now < this.nextRequestAt) {
+        const waitTime = this.nextRequestAt - now + 100;
+        setTimeout(() => {
+          this.processQueue();
+        }, waitTime);
+        return;
+      }
       const resolve = this.queue.shift();
       if (resolve) {
-        this.requests.push(Date.now());
+        const requestAt = Date.now();
+        this.requests.push(requestAt);
+        this.nextRequestAt = requestAt + spacingMs;
         resolve();
         // 递归继续处理队列中剩下的请求
         this.processQueue();
@@ -808,14 +821,19 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
     llmResponseAbortControllers.set(res, controller);
     res.__llmIdleTimeoutMs = idleTimeoutMs;
 
-    if (res.status !== 429) {
+    const isRateLimited = res.status === 429;
+    // flash-lite 的 500 是上游偶发的临时失败；快速模型的突发请求尤其容易遇到它。
+    // 502/503/504 保持原有上层处理语义，避免吞掉代理或服务维护等明确错误。
+    const isTransientServerError = res.status === 500;
+    if (!isRateLimited && !isTransientServerError) {
       return res;
     }
 
     if (attempt >= max429Retries) {
-      const error = new Error(`LLM 返回 429，已重试 ${max429Retries} 次仍失败`);
-      error.code = "LLM_429_EXHAUSTED";
-      error.status = 429;
+      const status = res.status;
+      const error = new Error(`LLM 返回 ${status}，已重试 ${max429Retries} 次仍失败`);
+      error.code = isRateLimited ? "LLM_429_EXHAUSTED" : "LLM_SERVER_ERROR_EXHAUSTED";
+      error.status = status;
       throw error;
     }
 
@@ -824,9 +842,9 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
       baseDelaySeconds: initialDelaySeconds,
       maxDelaySeconds: 120
     });
-    console.warn(`${logPrefix} 触发 429，${delaySeconds} 秒后重试（${attempt + 1}/${max429Retries}）...`);
+    console.warn(`${logPrefix} 触发 ${res.status}，${delaySeconds} 秒后重试（${attempt + 1}/${max429Retries}）...`);
     
-    // 触发 429 时，通知全局限流器同步进行冷却冻结，挂起所有新并发请求
+    // 临时 500 和 429 都冻结同一连接的队列，避免继续向不稳定的上游施压。
     limiter?.notify429(delaySeconds * 1000);
 
     await waitMs(delaySeconds * 1000);

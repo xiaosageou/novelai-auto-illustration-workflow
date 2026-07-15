@@ -3170,6 +3170,40 @@ test('LLM 429 retries use exponential backoff delays', async () => {
   assert.deepEqual(waits, [10000, 20000]);
 });
 
+test('LLM transient 500 errors retry with exponential backoff', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const waits = [];
+  let callCount = 0;
+
+  globalThis.setTimeout = (callback, ms, ...args) => {
+    waits.push(ms);
+    callback(...args);
+    return 0;
+  };
+  globalThis.fetch = async () => {
+    callCount += 1;
+    if (callCount <= 2) return { status: 500, text: async () => 'temporary upstream failure' };
+    return { status: 200, body: new ReadableStream({ start(controller) { controller.close(); } }) };
+  };
+
+  try {
+    const res = await postChatCompletionWith429Retry({
+      url: 'https://example.invalid/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      payload: { model: 'test', messages: [] },
+      max429Retries: 5,
+      initialDelaySeconds: 2
+    });
+    assert.equal(res.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+  }
+
+  assert.deepEqual(waits, [2000, 4000]);
+});
+
 test('LLM requests preserve original wording without sensitive-term replacement', async () => {
   const originalFetch = globalThis.fetch;
   let capturedBody = '';
