@@ -937,13 +937,13 @@ function ensureStructuredScenePrompt(prompt) {
   "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
   "visual_description": "一个瞬间定格的单帧画面，40-80 字，开头或前半句必须明确场景发生地点，只描述这一帧已经看得见的状态",
   "characters": [
-    { "name": "角色姓名", "gender": "boy 或 girl 或 woman 或 man 或 other", "clothing": "正文明写服装则填具体服装名；正文明写裸体则填 nude；正文未提及则填 未指明" }
+    { "name": "角色姓名", "gender": "boy 或 girl 或 woman 或 man 或 other", "clothing": "必须填具体服装名；正文未直接写明时按身份、时代、地点、天气和上下文推断；正文明写裸体才填 nude；禁止填 未指明" }
   ],
   "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触"
 }
 - 不要输出 environment、cinematography、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show。这些留给后续 Prompt 生成阶段补全。
 - visual_description 必须是单帧定格，开头或前半句必须明确发生地点（如“昏暗卧室中央”“雪夜庭院的石阶前”“地铁车厢内”）；禁止“然后、随后、接着、慢慢、逐渐、准备、开始”等过程词。
-- characters[].clothing 必须优先从正文、相邻上下文和当前场景状态推断可见衣着，尽量明确上衣、下衣及必要时的内衣状态；只有确实没有任何可用线索时才填 未指明。
+- characters[].clothing 必须写出具体可见衣着，优先从正文、相邻上下文和当前场景状态推断，并尽量明确上衣、下衣及必要时的内衣状态；正文未直接说明时，按角色身份、时代、地点、天气和当前动作推断合理衣着。明确裸体才填 nude；禁止对可见角色填 未指明，默认仍穿着衣物。
 - 正确示例：'昏暗卧室中央，女子跪地抬头看向床边的男人，衣襟凌乱。'
 - 错误示例：'女子先跪下，然后抬头看向男人，接着整理衣襟。'`;
   const withBoundaryContract = (content) => withSystemPrefix(`${content}
@@ -1302,7 +1302,7 @@ function buildSceneExtractionUserContent({
     `- 每个场景只输出：scene_idx、trigger_sentence、nsfw_rating、visual_description、characters（含 name/gender/clothing）、core_action。`,
     `- 不要输出 environment、cinematography、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show。`,
     `- characters 数组最多 3 人；多人场景只保留这一帧真正推动画面的主要人物。若原文超过 3 人，必须裁剪次要人物，只保留动作主体、动作受体、镜头中心人物。每个 character 项必须包含 name、gender、clothing 三个字段。`,
-    `- characters[].clothing 必须优先从正文、相邻上下文和当前场景状态推断可见衣着，尽量写清上衣和下衣；如果这一帧没有外衣或只剩内层衣物，必须进一步写明内衣状态；只有确实没有任何可用线索时才允许填 未指明。`,
+    `- characters[].clothing 必须填写具体可见衣着，优先从正文、相邻上下文和当前场景状态推断，尽量写清上衣和下衣；若正文未直接说明，必须按角色身份、时代、地点、天气和当前动作推断合理衣着；没有外衣或只剩内层衣物时进一步写明内衣状态；明确裸体才填 nude，禁止填 未指明。`,
     `- 如果本章同时存在 NSFW 与 SFW 场景，名额要向 NSFW 场景倾斜：多选取 NSFW 场景，适当选取 SFW 场景。`,
     `- SFW 场景只保留少量真正必要的铺垫、反差、情绪停顿或结果镜头，不要让 SFW 数量超过 NSFW。`,
     `- visual_description 必须是一个瞬间定格场景，控制在 40-80 字；开头或前半句必须明确场景发生地点（室内具体房间、室外具体区域或可识别场所），不能只写人物和动作。`,
@@ -1558,7 +1558,7 @@ export class LLMExtractor {
           return [
             `请针对以下章节正文中指定的「触发高潮句」，重新提炼并生成一份轻量场景卡。只保留这一帧值得画的瞬间定格信息。`,
             `【人数硬约束】: 场景最多只允许 3 个实际可见或直接参与互动的人物。若原文涉及更多人，必须裁剪次要人物，只保留推动画面的主要人物；背景路人不要写入 characters。`,
-            `【场景卡必填细节】: visual_description 必须在开头或前半句明确发生地点；characters[].clothing 必须优先根据正文、完整段落和当前场景推断可见衣着，尽量写清上衣、下衣和必要时的内衣状态，确实无任何线索才填 未指明。`,
+            `【场景卡必填细节】: visual_description 必须在开头或前半句明确发生地点；characters[].clothing 必须填写具体可见衣着，优先根据正文、完整段落和当前场景推断；未直接说明时必须按身份、时代、地点、天气和当前动作补全合理衣着，尽量写清上衣、下衣和必要时的内衣状态；明确裸体才填 nude，禁止填 未指明。`,
             `【瞬间定格规则】: visual_description 必须是单帧画面，只描述已经看得见的状态。禁止写“然后、随后、接着、慢慢、逐渐、准备、开始”等过程动作。正确示例：'门厅入口处，她跪在门边抬头看向来人。' 错误示例：'她先跪下，然后抬头看向来人。'`,
             `【章节名】: ${cleanedTitle}`,
             `【触发句 (trigger_sentence)】: 「${triggerSentence}」`,
@@ -1572,7 +1572,7 @@ export class LLMExtractor {
         return [
           `请只输出一个合法 JSON 对象，不要 Markdown、不要解释、不要代码块。`,
           `【人数硬约束】: 角色上限为 3 人，超出时必须裁剪次要人物，只保留主要人物。`,
-          `【场景卡必填细节】: visual_description 开头或前半句必须明确发生地点；characters[].clothing 优先根据正文、段落和场景推断可见衣着，尽量写清上衣、下衣和必要时的内衣状态，确实无任何线索才填 未指明。`,
+          `【场景卡必填细节】: visual_description 开头或前半句必须明确发生地点；characters[].clothing 必须填写具体可见衣着，优先根据正文、段落和场景推断；未直接说明时必须按身份、时代、地点、天气和当前动作补全合理衣着，尽量写清上衣、下衣和必要时的内衣状态；明确裸体才填 nude，禁止填 未指明。`,
           `【瞬间定格规则】: 只输出单帧定格状态，禁止“然后、随后、接着”等过程动作。`,
           `【章节名】: ${cleanedTitle}`,
           `【触发句 (trigger_sentence)】: 「${triggerSentence}」`,
@@ -2018,7 +2018,7 @@ export class LLMExtractor {
       "3. character_prompts[].prompt 必须以 girl, / boy, / woman, / man, / other, 开头，禁止出现 1girl、1boy、solo、no humans 等人数标签。",
       "4. Danbooru tag 指短视觉标签，不是英文句子。优先使用 lower_snake_case 或常见短标签，如 white_dress、looking_at_viewer、from_behind、cowboy shot。",
       "5. 遇到单个标签难以准确表达的概念时，先拆成多个可见标签组合，不要退回自然语言整句。例如“从背后抱住”应优先写成 from_behind、hug、arms_around_waist，而不是一句英文描述。",
-      "6. 互动必须尽量使用 source#action、target#action、mutual#action 标清主动方和承受方，而且这些方向标签只能放在对应角色的 character_prompts[].prompt 中，must not appear in base_prompt。",
+      "6. 互动必须尽量使用 source#action、target#action、mutual#action 标清主动方和承受方，而且这些方向标签只能放在对应角色的 character_prompts[].prompt 中，must not appear in base_prompt。每一个方向性互动必须恰好由一组 source#action 与对应的 target#action 成对出现，整张图最多 3 对；两个角色共同、互相完成同一动作时，两人的 prompt 都使用相同的 mutual#action，不能改写成 source#/target#，且该 mutual 对也计入最多 3 对。",
       "7. Token 预算必须前置控制：总正向 tags 不超过 410 tokens。优先删除氛围形容词、重复概念、次要配饰和未被当前画面选中的 DNA tag；不得删除人物数量和核心互动。",
       "8. 衣着状态必须忠实于场景卡 characters[].clothing：有具体服装名则用对应 tags（如 white_dress、school_uniform）；是 nude 则用 completely_nude；是 未指明 时，把角色 DNA 仅当作候选参考，自行判断哪些服装或外貌 tag 对当前画面可见且必要。不得整段照抄 DNA，也不得自行编造细节。",
       "9. 除非场景卡明确表示已经露出、强调 crotch bulge、或明确写出 penis/erection 状态，否则角色只要仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，或者 clothing 仍是 未指明 / unspecified / unknown，就不要擅自加入 penis、erection、erect_penis、large_penis、penis_outline、big_penis 等生殖器状态 tags，也不要从 DNA 参考继承这类私密体征。",
@@ -2031,10 +2031,10 @@ export class LLMExtractor {
       "你现在负责把轻量场景卡扩展成可生图参数。场景 LLM 只负责选帧；你负责补全环境、镜头、人物外观与负面限制，但不得改写这一帧的核心事件。",
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
       "如果 scene card 里有 core_action，请把它当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
-      "你必须先根据 visual_description、core_action 和角色站位，自行判断本场景中人物之间是否存在直接互动。",
+      "你必须先根据 visual_description、core_action 和角色站位，自行判断本场景中人物之间是否存在直接互动；在 /thinking/ 中逐对列出互动：方向性互动必须写清一组 source#action + target#action，最多 3 对；若两人互相完成同一动作，则写同一 mutual#action，并在两人的 character prompts 中各出现一次。",
       "后端不会在 LLM 返回后补写角色 DNA、角色位置、互动/性行为体位、近景镜头或插入局部放大。角色 DNA 只是候选参考：/thinking/ 中每个角色必须先输出 `DNA selection: keep [tag,...]; drop [tag,...]`，逐项决定保留或删除；/JSON/ 只能使用经你选择保留且对当前画面必要的 tag，禁止整段照抄 DNA。",
       "如果 scene card 里有 interaction_actions，你必须先理解每条 interaction 的主动方 source、承受方 target，以及是否 mutual，然后把这个角色职责落实到对应角色的 character_prompts 中。",
-      "参考 NovelAI V4 多角色互动文档：多人互动必须在对应角色 prompt 里使用 source#动作、target#动作、mutual#动作 来强调谁在主动、谁在承受、谁是相互动作。不要把 source#/target#/mutual# 这类方向标签放进 base_prompt。若动作天然有方向性，不要把 source 和 target 写反。",
+      "参考 NovelAI V4 多角色互动文档：多人互动必须在对应角色 prompt 里使用 source#动作、target#动作、mutual#动作 来强调谁在主动、谁在承受、谁是相互动作。方向性动作的 source# 与对应 target# 必须成对出现，整图最多 3 对；两个角色互相完成同一动作时，双方都使用同一个 mutual#动作，而不是 source#/target#。不要把 source#/target#/mutual# 这类方向标签放进 base_prompt。若动作天然有方向性，不要把 source 和 target 写反。",
       "示例：若 interaction_actions 里是 {\"action\":\"undressing\",\"source\":\"钰慧\",\"target\":\"阿宾\"}，则钰慧的 character prompt 使用 source#undressing；阿宾的 character prompt 使用 target#undressing。不要把两人的动作职责写成一样。",
       "不要输出 interaction 或 interaction_actions 这样的角色级结构化字段；互动关系只需要落实到对应角色 prompt 的 source#动作、target#动作、mutual#动作 标签中。",
       "Danbooru 标签的判断标准：它应该像 white_dress、long_hair、looking_at_viewer、from_behind、cowboy shot 这样的短视觉标签，而不是完整英文句子。若一个概念没有把握对应单标签，就拆成多个可见标签，不要写解释性 prose。",

@@ -80,7 +80,7 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 
 【画面描述约束】
 - visual_description 必须在开头或前半句明确交代场景发生地点（具体房间、庭院、街道、车厢、山林等）；不能只写人物和动作。画面描述还必须包含：角色发色 / 瞳色 / 服装状态（见下方衣着状态规则）、表情细节、身体姿态与动作、背景环境与光影氛围。描述的精细程度应达到让原画师直接作画的水平。
-- 【衣着状态规则】：在 characters 数组的 clothing 字段中，必须优先结合正文、相邻上下文和当前场景状态推断并明确写出每个角色可见的衣着状态。如果正文明确描述了穿什么衣服（如"白衣""黑裙""盔甲"），直接写明，并尽量拆清上衣与下衣；如果没有外衣或正文明确写到只穿内层，必须补明内衣状态；如果正文明确描写角色未穿衣物（如"全裸""赤裸""一丝不挂"），写 nude。只有确实没有任何可用线索时才写"未指明"；禁止凭空编造衣物细节。
+- 【衣着状态规则】：characters[].clothing 是必填的具体可见衣着，禁止对可见角色填“未指明”。正文明确描述服装（如"白衣""黑裙""盔甲"）时，直接写明并尽量拆清上衣与下衣；没有外衣或只穿内层时，补明内衣状态；明确裸体（如"全裸""赤裸""一丝不挂"）时写 nude。正文未直接说明时，必须结合角色身份、时代、地点、天气、前后文和当前动作推断一套合理的具体衣着；除非明确裸体，否则默认角色仍穿着衣物。不得让“未指明”成为兜底输出。
 - 动作必须用整体画面动作概括，例如：embracing（相拥）、kneeling（跪地）、turning away（背身而立）、looking at each other（对视）、holding a sword（握剑对峙）。
 - 严禁拆成连续动画式细节（如"他慢慢走过去然后伸出右手"）。每个动作描述应是一帧画面可以表达的静态姿态概括。
 - 必须保留剧情痕迹，例如：凌乱发丝、含泪眼眶、汗水、血迹、衣物破损凌乱、姿态虚弱、呼吸急促等能体现情绪与剧情状态的视觉细节，将其收入 plot_traces 字段。
@@ -145,7 +145,7 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
       {
         "name": "角色姓名",
         "gender": "boy 或 girl 或 woman 或 man 或 other",
-        "clothing": "正文明写服装则填具体服装名，并尽量写清上衣/下衣；无外衣时补明内衣状态；正文明写裸体则填 nude；正文未提及则填 未指明"
+        "clothing": "必须填写具体可见服装名：正文明写服装则如实填写并尽量写清上衣/下衣；未直接写明时按身份、时代、地点、天气和上下文推断；无外衣时补明内衣状态；明确裸体才填 nude；禁止填 未指明"
       }
     ]
   }
@@ -164,7 +164,7 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 - 每个 nsfw_rating 是否是 sfw / nsfw_mild / nsfw_moderate / nsfw_explicit 四选一？
 - 若 nsfw_rating 为 nsfw_moderate 或 nsfw_explicit，visual_description 中是否已包含极其直白的裸露/身体描写细节，绝对禁止隐喻和意境规避？
 - core_action 是否只概括这一帧的核心互动，而不是讲述前后过程？
-- 每个 characters 项的 clothing 字段是否已正确填写：正文明写服装则填具体名称并尽量写清上衣/下衣；无外衣时是否补明内衣状态；正文明写裸体则填 nude，正文未提及则填 未指明？`;
+- 每个 characters 项的 clothing 字段是否都填写了具体可见衣着：正文明写服装则如实填写，未直接写明时是否已按身份、时代、地点、天气和上下文推断；无外衣时是否补明内衣状态；明确裸体才填 nude，且没有填“未指明”？`;
 
 // ═══════════════════════════════════════════════════════════
 // Prompt 2 · 全书角色 DNA 提取（小说切片 → 角色外观词典）
@@ -302,6 +302,8 @@ When the scene card contains interaction_actions, first determine which characte
 - Keep the shared relationship readable in base_prompt, but put each character's own role and reaction inside that character's prompt.
 - Follow NovelAI V4 multi-character prompting guidance directly: source#action marks the active party, target#action marks the receiving party, and mutual#action marks a reciprocal action.
 - Example: if the scene says { "action": "undressing", "source": "Yuhui", "target": "Abin" }, Yuhui's prompt should include source#undressing, while Abin's prompt should include target#undressing.
+- Every directional interaction must be planned as exactly one matching source#action + target#action pair across the two counterpart prompts; use no more than 3 such pairs in one image.
+- For a reciprocal action between two characters, put the same mutual#action in both counterpart prompts instead of source#action / target#action; a mutual pair also counts as one of the maximum 3 pairs.
 - Never assign the same interaction role text to both characters when the action is directional.
 
 ### Rule 5 — Self-Review Before Output
@@ -388,7 +390,7 @@ Use a concise visible planning checklist before writing tags:
 1. visible characters and exact count
 2. global scene, lighting, camera, and background
 3. each character's stable DNA anchors and current frame state
-4. direct contacts or interactions, with source# / target# / mutual# role mapping
+4. interaction pairing: each directional interaction needs exactly one source#action + matching target#action pair, with no more than 3 total directional/mutual pairs; for a reciprocal two-character action, use the same mutual#action in both prompts instead of source#/target#
 5. NSFW rating requirements and any camera/focus tags needed for readability
 6. token budget cleanup: what to keep, what to cut
 /thinking/
@@ -461,6 +463,8 @@ Use this schema exactly inside /JSON/:
   mutual#action = both
 - source# / target# / mutual# tags must appear only inside the relevant character prompt. They must not appear in base_prompt.
 - Syntax is source#hug, target#pointing, mutual#kiss. Never use source: hug or source_hug.
+- Each directional interaction must form exactly one source#action + matching target#action pair across counterpart prompts; keep all directional and mutual interaction pairs to 3 or fewer.
+- If two characters perform the same reciprocal action, put the identical mutual#action in both of their character prompts, not source#action / target#action.
 - Do not assign the same directional role to both characters.
 - Keep character order left-to-right, then top-to-bottom.
 
@@ -518,7 +522,7 @@ export const DEFAULT_REGENERATE_SCENE_PROMPT = `<sandbox mode="cinematic_storybo
   "trigger_sentence": "传入的触发句本身，必须与传入的字符串完全一致",
   "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
   "visual_description": "一个瞬间定格的单帧画面，40-80字，开头或前半句必须明确场景发生地点，只描述这一帧已经看得见的状态，禁止过程动作",
-  "characters": [ { "name": "角色姓名", "gender": "boy/girl/woman/man/other", "clothing": "优先根据正文、上下文和场景推断的具体服装名；仅确实无任何线索时才填 未指明" } ],
+  "characters": [ { "name": "角色姓名", "gender": "boy/girl/woman/man/other", "clothing": "必须填写具体服装名；正文未直接写明时按身份、时代、地点、天气和上下文推断；明确裸体才填 nude；禁止填 未指明" } ],
   "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触"
 }
 </sandbox>
@@ -526,7 +530,7 @@ export const DEFAULT_REGENERATE_SCENE_PROMPT = `<sandbox mode="cinematic_storybo
 输出前自检（必须逐项核对）：
 - 你的 visual_description 中在涉及 NSFW 裸露动作时是否足够直白、直接描写了对应的衣物状态与器官部位？
 - visual_description 的开头或前半句是否明确写出了场景发生地点？
-- 每个 characters[].clothing 是否已优先结合正文、上下文和场景状态写明可见衣着，且只在确实无任何线索时填“未指明”？
+- 每个 characters[].clothing 是否都写明具体可见衣着；正文未直接写明时是否已按身份、时代、地点、天气和上下文推断，且没有填“未指明”？
 - visual_description 是否是瞬间定格的单帧画面，而不是“然后、随后、接着”的过程动作？
 - 当前场景的可见人物是否不超过 3 个？若原文是多人场景，是否只保留了最主要的 1-3 个角色？
 - core_action 是否只概括这一帧的核心互动，而不是前后过程？`;

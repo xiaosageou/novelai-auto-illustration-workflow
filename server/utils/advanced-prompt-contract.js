@@ -19,7 +19,7 @@ export function normalizeAdvancedPromptForConfig(taskPrompt) {
 ## THINKING AND JSON ENVELOPE CONTRACT (HIGHEST PRIORITY)
 Return two sections in this exact order:
 /thinking/
-Concise visible planning checklist: characters/count, scene/camera, character DNA anchors, interactions with source#/target#/mutual# role mapping, NSFW/focus needs, and token cleanup.
+Concise visible planning checklist: characters/count, scene/camera, character DNA anchors, and interaction pairing. For each directional interaction, plan exactly one source#action plus one matching target#action in the counterpart prompts; use at most 3 such pairs. For a reciprocal two-character action, plan the same mutual#action in both counterpart prompts instead of source#/target#. Then cover NSFW/focus needs and token cleanup.
 /thinking/
 /JSON/
 One complete JSON object using the schema above. No Markdown, no code fences, no commentary.
@@ -36,7 +36,7 @@ The legacy schema containing only "prompt" is obsolete and MUST NOT be used.
 
 Return two sections in this exact order. The parser will use only the /JSON/ block:
 /thinking/
-Concise visible planning checklist: characters/count, scene/camera, character DNA anchors, interactions with source#/target#/mutual# role mapping, NSFW/focus needs, and token cleanup.
+Concise visible planning checklist: characters/count, scene/camera, character DNA anchors, and interaction pairing. For each directional interaction, plan exactly one source#action plus one matching target#action in the counterpart prompts; use at most 3 such pairs. For a reciprocal two-character action, plan the same mutual#action in both counterpart prompts instead of source#/target#. Then cover NSFW/focus needs and token cleanup.
 /thinking/
 /JSON/
 {

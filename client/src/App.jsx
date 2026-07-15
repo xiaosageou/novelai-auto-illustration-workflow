@@ -1213,13 +1213,8 @@ function App() {
       character_names: characterNamesText,
       must_show: Array.isArray(scene.must_show) ? scene.must_show.join(', ') : '',
       must_not_show: Array.isArray(scene.must_not_show) ? scene.must_not_show.join(', ') : '',
-      final_prompt: String(scene.final_prompt || scene.prepared_prompt?.finalPositive || ''),
       base_prompt: String(scene.base_prompt || scene.prepared_prompt?.basePrompt || ''),
-      final_negative: String(scene.final_negative || scene.prepared_prompt?.finalNegative || ''),
       character_prompts: finalCharacterPrompts,
-      negative_character_prompts: Array.isArray(scene.negative_character_prompts || scene.prepared_prompt?.negativeCharacterPrompts)
-        ? (scene.negative_character_prompts || scene.prepared_prompt?.negativeCharacterPrompts).join('\n')
-        : '',
       width: scene.width || scene.prepared_prompt?.width || '',
       height: scene.height || scene.prepared_prompt?.height || '',
       characters: syncedCharacters,
@@ -1277,9 +1272,7 @@ function App() {
     character_names: splitSceneList(draft.character_names),
     must_show: splitSceneList(draft.must_show),
     must_not_show: splitSceneList(draft.must_not_show),
-    final_prompt: String(draft.final_prompt || '').trim(),
     base_prompt: String(draft.base_prompt || '').trim(),
-    final_negative: String(draft.final_negative || '').trim(),
     character_prompts: String(draft.character_prompts || '')
       .split(/\r?\n/)
       .map(item => String(item || '').trim())
@@ -1292,10 +1285,6 @@ function App() {
         interactions
       };
     }),
-    negative_character_prompts: String(draft.negative_character_prompts || '')
-      .split(/\r?\n/)
-      .map(item => item.trim())
-      .filter(Boolean),
     width: draft.width === '' ? null : Number(draft.width),
     height: draft.height === '' ? null : Number(draft.height),
     characters: (Array.isArray(draft.characters) ? draft.characters : [])
@@ -2013,21 +2002,13 @@ function App() {
                           ? sceneCharacters.length
                           : (Array.isArray(scene.character_names) ? scene.character_names.length : 0);
                         const sceneImage = scene.image_path ? encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`) : null;
-                        const finalPrompt = String(scene.final_prompt || scene.prepared_prompt?.finalPositive || '').trim();
                         const basePrompt = String(scene.base_prompt || scene.prepared_prompt?.basePrompt || '').trim();
-                        const finalNegative = String(scene.final_negative || scene.prepared_prompt?.finalNegative || '').trim();
                         const characterPrompts = Array.isArray(scene.character_prompts)
                           ? scene.character_prompts
                           : (Array.isArray(scene.prepared_prompt?.characterPrompts) ? scene.prepared_prompt.characterPrompts : []);
-                        const negativeCharacterPrompts = Array.isArray(scene.negative_character_prompts)
-                          ? scene.negative_character_prompts
-                          : (Array.isArray(scene.prepared_prompt?.negativeCharacterPrompts) ? scene.prepared_prompt.negativeCharacterPrompts : []);
                         const promptSections = [
-                          ['Final Danbooru Prompt', finalPrompt],
-                          ['V4 Base Prompt', basePrompt],
-                          ['V4 Character Prompts', characterPrompts.join('\n')],
-                          ['V4 Character Negative Prompts', negativeCharacterPrompts.join('\n')],
-                          ['Final Negative Prompt', finalNegative]
+                          ['Base Prompt', basePrompt],
+                          ['Character Prompts', characterPrompts.join('\n')]
                         ].filter(([, value]) => String(value || '').trim());
                         const hasPrompt = promptSections.length > 0;
                         const isPromptExpanded = expandedPrompt === sceneKey;
@@ -2835,11 +2816,8 @@ function App() {
                       style={{ padding: '4px 10px', fontSize: '0.75rem', borderRadius: '999px' }}
                       onClick={() => {
                         const parts = [
-                          sceneEditor.draft.final_prompt && `正向提示词:\n${sceneEditor.draft.final_prompt}`,
-                          sceneEditor.draft.base_prompt && `V4 Base Prompt:\n${sceneEditor.draft.base_prompt}`,
-                          sceneEditor.draft.character_prompts && `V4 Character Prompts:\n${sceneEditor.draft.character_prompts}`,
-                          sceneEditor.draft.negative_character_prompts && `V4 Character Negative Prompts:\n${sceneEditor.draft.negative_character_prompts}`,
-                          sceneEditor.draft.final_negative && `负向提示词:\n${sceneEditor.draft.final_negative}`
+                          sceneEditor.draft.base_prompt && `Base Prompt:\n${sceneEditor.draft.base_prompt}`,
+                          sceneEditor.draft.character_prompts && `Character Prompts:\n${sceneEditor.draft.character_prompts}`
                         ].filter(Boolean);
                         navigator.clipboard.writeText(parts.join('\n\n'));
                         addLog(`📋 已复制场景 #${sceneEditor.sceneIdx} 完整生图参数到剪贴板！`, 'success');
@@ -2849,11 +2827,8 @@ function App() {
                     </button>
                   </div>
                   {[
-                    ['final_prompt', 'Final Prompt', 4],
                     ['base_prompt', 'Base Prompt', 4],
-                    ['character_prompts', 'Character Prompts (一行一个)', 4],
-                    ['negative_character_prompts', 'Character Negative Prompts (一行一个)', 4],
-                    ['final_negative', 'Final Negative', 3]
+                    ['character_prompts', 'Character Prompts (一行一个)', 4]
                   ].map(([field, label, rows]) => (
                     <label key={field} style={sceneEditorLabelStyle}>
                       {label}

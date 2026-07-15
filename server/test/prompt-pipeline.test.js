@@ -756,17 +756,23 @@ test('updateSceneCard persists edited structured scene fields', async () => {
       { name: '戊', pose: '远景路人' }
     ],
     character_names: ['甲', '乙', '丙', '丁', '戊'],
+    base_prompt: '4people, moonlit courtyard, medium shot',
+    character_prompts: ['woman, white_robe, standing', 'man, black_robe, looking_at_viewer'],
     negative_character_prompts: ['avoid_long_hair', 'avoid_armor']
   });
 
   assert.equal(result.scene.visual_description, '新描述');
   assert.equal(result.scene.characters.length, 4);
   assert.deepEqual(result.scene.character_names, ['甲', '乙', '丙', '丁']);
+  assert.equal(result.scene.base_prompt, '4people, moonlit courtyard, medium shot');
+  assert.deepEqual(result.scene.character_prompts, ['woman, white_robe, standing', 'man, black_robe, looking_at_viewer']);
   assert.deepEqual(result.scene.negative_character_prompts, ['avoid_long_hair', 'avoid_armor']);
 
   const saved = JSON.parse(await fs.readFile(path.join(projectDir, 'pipeline_progress.json'), 'utf-8'));
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].visual_description, '新描述');
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].characters.length, 4);
+  assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].base_prompt, '4people, moonlit courtyard, medium shot');
+  assert.deepEqual(saved.completed_chapters['第一卷_第一章'].scenes[0].character_prompts, ['woman, white_robe, standing', 'man, black_robe, looking_at_viewer']);
   assert.deepEqual(saved.completed_chapters['第一卷_第一章'].scenes[0].negative_character_prompts, ['avoid_long_hair', 'avoid_armor']);
 
   pipeline.markSceneQueued('第一卷_第一章', 1);
@@ -1337,8 +1343,9 @@ test('scene extraction prompt requires location and detailed clothing state', as
   assert.match(extractPrompt, /下衣/);
   assert.match(extractPrompt, /内衣/);
   assert.match(extractPrompt, /发生地点/);
-  assert.match(extractPrompt, /相邻上下文/);
-  assert.match(extractPrompt, /确实没有任何可用线索/);
+  assert.match(extractPrompt, /相邻短段落|前后文/);
+  assert.match(extractPrompt, /禁止填 未指明/);
+  assert.match(extractPrompt, /身份、时代、地点、天气/);
 });
 
 test('unspecified clothing preserves DNA clothing tags in final prompt', () => {
@@ -2129,10 +2136,15 @@ test('advanced prompt tells LLM to map scene interactions into source and target
     assert.match(systemPrompt, /source#action/i);
     assert.match(systemPrompt, /target#action/i);
     assert.match(systemPrompt, /mutual#action/i);
+    assert.match(systemPrompt, /3 total directional\/mutual pairs/i);
+    assert.match(systemPrompt, /same mutual#action in both prompts/i);
     assert.match(systemPrompt, /relevant character prompt/i);
     assert.match(systemPrompt, /must not appear in base_prompt/i);
     assert.match(userPrompt, /interaction_actions/i);
     assert.match(userPrompt, /对应角色 prompt 里使用 source#动作、target#动作、mutual#动作/i);
+    assert.match(userPrompt, /source#action 与对应的 target#action 成对出现/i);
+    assert.match(userPrompt, /最多 3 对/i);
+    assert.match(userPrompt, /双方都使用同一个 mutual#动作/i);
     assert.match(userPrompt, /不要把 source#\/target#\/mutual# 这类方向标签放进 base_prompt/i);
     assert.doesNotMatch(userPrompt, /interaction 字段/i);
     assert.doesNotMatch(userPrompt, /"role":"source\|target\|mutual"/i);
