@@ -1326,7 +1326,7 @@ test('final negative prompt uses the current global fallback set', () => {
   assert.doesNotMatch(result.finalNegative, /\blowres\b/i);
 });
 
-test('scene extraction prompt includes clothing state rule', async () => {
+test('scene extraction prompt requires location and detailed clothing state', async () => {
   const mod = await import('../utils/default-prompts.js');
   const extractPrompt = mod.DEFAULT_EXTRACT_SCENES_PROMPT || '';
   assert.match(extractPrompt, /characters/i);
@@ -1336,6 +1336,9 @@ test('scene extraction prompt includes clothing state rule', async () => {
   assert.match(extractPrompt, /上衣/);
   assert.match(extractPrompt, /下衣/);
   assert.match(extractPrompt, /内衣/);
+  assert.match(extractPrompt, /发生地点/);
+  assert.match(extractPrompt, /相邻上下文/);
+  assert.match(extractPrompt, /确实没有任何可用线索/);
 });
 
 test('unspecified clothing preserves DNA clothing tags in final prompt', () => {

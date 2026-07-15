@@ -935,15 +935,16 @@ function ensureStructuredScenePrompt(prompt) {
   "scene_idx": 1,
   "trigger_sentence": "逐字复制正文中的连续原文短片段，8-30字，能Ctrl+F精准命中",
   "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
-  "visual_description": "一个瞬间定格的单帧画面，40-80 字，只描述这一帧已经看得见的状态",
+  "visual_description": "一个瞬间定格的单帧画面，40-80 字，开头或前半句必须明确场景发生地点，只描述这一帧已经看得见的状态",
   "characters": [
     { "name": "角色姓名", "gender": "boy 或 girl 或 woman 或 man 或 other", "clothing": "正文明写服装则填具体服装名；正文明写裸体则填 nude；正文未提及则填 未指明" }
   ],
   "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触"
 }
 - 不要输出 environment、cinematography、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show。这些留给后续 Prompt 生成阶段补全。
-- visual_description 必须是单帧定格，禁止“然后、随后、接着、慢慢、逐渐、准备、开始”等过程词。
-- 正确示例：'女子跪在昏暗卧室中央，抬头看向床边的男人，衣襟凌乱。'
+- visual_description 必须是单帧定格，开头或前半句必须明确发生地点（如“昏暗卧室中央”“雪夜庭院的石阶前”“地铁车厢内”）；禁止“然后、随后、接着、慢慢、逐渐、准备、开始”等过程词。
+- characters[].clothing 必须优先从正文、相邻上下文和当前场景状态推断可见衣着，尽量明确上衣、下衣及必要时的内衣状态；只有确实没有任何可用线索时才填 未指明。
+- 正确示例：'昏暗卧室中央，女子跪地抬头看向床边的男人，衣襟凌乱。'
 - 错误示例：'女子先跪下，然后抬头看向男人，接着整理衣襟。'`;
   const withBoundaryContract = (content) => withSystemPrefix(`${content}
 
@@ -1301,10 +1302,10 @@ function buildSceneExtractionUserContent({
     `- 每个场景只输出：scene_idx、trigger_sentence、nsfw_rating、visual_description、characters（含 name/gender/clothing）、core_action。`,
     `- 不要输出 environment、cinematography、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show。`,
     `- characters 数组最多 3 人；多人场景只保留这一帧真正推动画面的主要人物。若原文超过 3 人，必须裁剪次要人物，只保留动作主体、动作受体、镜头中心人物。每个 character 项必须包含 name、gender、clothing 三个字段。`,
-    `- characters[].clothing 必须尽量写清上衣和下衣；如果这一帧没有外衣或只剩内层衣物，必须进一步写明内衣状态；正文没写才允许填 未指明。`,
+    `- characters[].clothing 必须优先从正文、相邻上下文和当前场景状态推断可见衣着，尽量写清上衣和下衣；如果这一帧没有外衣或只剩内层衣物，必须进一步写明内衣状态；只有确实没有任何可用线索时才允许填 未指明。`,
     `- 如果本章同时存在 NSFW 与 SFW 场景，名额要向 NSFW 场景倾斜：多选取 NSFW 场景，适当选取 SFW 场景。`,
     `- SFW 场景只保留少量真正必要的铺垫、反差、情绪停顿或结果镜头，不要让 SFW 数量超过 NSFW。`,
-    `- visual_description 必须是一个瞬间定格场景，控制在 40-80 字。`,
+    `- visual_description 必须是一个瞬间定格场景，控制在 40-80 字；开头或前半句必须明确场景发生地点（室内具体房间、室外具体区域或可识别场所），不能只写人物和动作。`,
     `- core_action 用一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触。`,
     ``,
     `【瞬间定格规则】`,
@@ -1557,7 +1558,8 @@ export class LLMExtractor {
           return [
             `请针对以下章节正文中指定的「触发高潮句」，重新提炼并生成一份轻量场景卡。只保留这一帧值得画的瞬间定格信息。`,
             `【人数硬约束】: 场景最多只允许 3 个实际可见或直接参与互动的人物。若原文涉及更多人，必须裁剪次要人物，只保留推动画面的主要人物；背景路人不要写入 characters。`,
-            `【瞬间定格规则】: visual_description 必须是单帧画面，只描述已经看得见的状态。禁止写“然后、随后、接着、慢慢、逐渐、准备、开始”等过程动作。正确示例：'她跪在门边抬头看向来人。' 错误示例：'她先跪下，然后抬头看向来人。'`,
+            `【场景卡必填细节】: visual_description 必须在开头或前半句明确发生地点；characters[].clothing 必须优先根据正文、完整段落和当前场景推断可见衣着，尽量写清上衣、下衣和必要时的内衣状态，确实无任何线索才填 未指明。`,
+            `【瞬间定格规则】: visual_description 必须是单帧画面，只描述已经看得见的状态。禁止写“然后、随后、接着、慢慢、逐渐、准备、开始”等过程动作。正确示例：'门厅入口处，她跪在门边抬头看向来人。' 错误示例：'她先跪下，然后抬头看向来人。'`,
             `【章节名】: ${cleanedTitle}`,
             `【触发句 (trigger_sentence)】: 「${triggerSentence}」`,
             compactParagraph,
@@ -1570,6 +1572,7 @@ export class LLMExtractor {
         return [
           `请只输出一个合法 JSON 对象，不要 Markdown、不要解释、不要代码块。`,
           `【人数硬约束】: 角色上限为 3 人，超出时必须裁剪次要人物，只保留主要人物。`,
+          `【场景卡必填细节】: visual_description 开头或前半句必须明确发生地点；characters[].clothing 优先根据正文、段落和场景推断可见衣着，尽量写清上衣、下衣和必要时的内衣状态，确实无任何线索才填 未指明。`,
           `【瞬间定格规则】: 只输出单帧定格状态，禁止“然后、随后、接着”等过程动作。`,
           `【章节名】: ${cleanedTitle}`,
           `【触发句 (trigger_sentence)】: 「${triggerSentence}」`,

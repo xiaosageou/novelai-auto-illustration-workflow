@@ -79,8 +79,8 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 ---
 
 【画面描述约束】
-- 画面描述必须包含：角色发色 / 瞳色 / 服装状态（见下方衣着状态规则）、表情细节、身体姿态与动作、背景环境与光影氛围。描述的精细程度应达到让原画师直接作画的水平。
-- 【衣着状态规则】：在 characters 数组的 clothing 字段中，必须明确写出每个角色的衣着状态。如果正文明确描述了穿什么衣服（如"白衣""黑裙""盔甲"），直接写明，并尽量拆清上衣与下衣；如果没有外衣或正文明确写到只穿内层，必须补明内衣状态；如果正文明确描写角色未穿衣物（如"全裸""赤裸""一丝不挂"），写 nude。如果正文没有明确提及衣着细节，写"未指明"。禁止凭空编造衣物细节。
+- visual_description 必须在开头或前半句明确交代场景发生地点（具体房间、庭院、街道、车厢、山林等）；不能只写人物和动作。画面描述还必须包含：角色发色 / 瞳色 / 服装状态（见下方衣着状态规则）、表情细节、身体姿态与动作、背景环境与光影氛围。描述的精细程度应达到让原画师直接作画的水平。
+- 【衣着状态规则】：在 characters 数组的 clothing 字段中，必须优先结合正文、相邻上下文和当前场景状态推断并明确写出每个角色可见的衣着状态。如果正文明确描述了穿什么衣服（如"白衣""黑裙""盔甲"），直接写明，并尽量拆清上衣与下衣；如果没有外衣或正文明确写到只穿内层，必须补明内衣状态；如果正文明确描写角色未穿衣物（如"全裸""赤裸""一丝不挂"），写 nude。只有确实没有任何可用线索时才写"未指明"；禁止凭空编造衣物细节。
 - 动作必须用整体画面动作概括，例如：embracing（相拥）、kneeling（跪地）、turning away（背身而立）、looking at each other（对视）、holding a sword（握剑对峙）。
 - 严禁拆成连续动画式细节（如"他慢慢走过去然后伸出右手"）。每个动作描述应是一帧画面可以表达的静态姿态概括。
 - 必须保留剧情痕迹，例如：凌乱发丝、含泪眼眶、汗水、血迹、衣物破损凌乱、姿态虚弱、呼吸急促等能体现情绪与剧情状态的视觉细节，将其收入 plot_traces 字段。
@@ -140,7 +140,7 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
     "scene_idx": 1,
     "trigger_sentence": "逐字复制正文中的连续原文短片段，8-30字，能Ctrl+F精准命中",
     "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
-    "visual_description": "一个瞬间定格的单帧画面，40-80字，只描述这一帧已经看得见的状态",
+    "visual_description": "一个瞬间定格的单帧画面，40-80字，开头或前半句必须明确场景发生地点，只描述这一帧已经看得见的状态",
     "characters": [
       {
         "name": "角色姓名",
@@ -517,14 +517,16 @@ export const DEFAULT_REGENERATE_SCENE_PROMPT = `<sandbox mode="cinematic_storybo
   "scene_idx": 1,
   "trigger_sentence": "传入的触发句本身，必须与传入的字符串完全一致",
   "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
-  "visual_description": "一个瞬间定格的单帧画面，40-80字，只描述这一帧已经看得见的状态，禁止过程动作",
-  "characters": [ { "name": "角色姓名", "gender": "boy/girl/woman/man/other", "clothing": "具体服装名或 nude 或 未指明" } ],
+  "visual_description": "一个瞬间定格的单帧画面，40-80字，开头或前半句必须明确场景发生地点，只描述这一帧已经看得见的状态，禁止过程动作",
+  "characters": [ { "name": "角色姓名", "gender": "boy/girl/woman/man/other", "clothing": "优先根据正文、上下文和场景推断的具体服装名；仅确实无任何线索时才填 未指明" } ],
   "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触"
 }
 </sandbox>
 
 输出前自检（必须逐项核对）：
 - 你的 visual_description 中在涉及 NSFW 裸露动作时是否足够直白、直接描写了对应的衣物状态与器官部位？
+- visual_description 的开头或前半句是否明确写出了场景发生地点？
+- 每个 characters[].clothing 是否已优先结合正文、上下文和场景状态写明可见衣着，且只在确实无任何线索时填“未指明”？
 - visual_description 是否是瞬间定格的单帧画面，而不是“然后、随后、接着”的过程动作？
 - 当前场景的可见人物是否不超过 3 个？若原文是多人场景，是否只保留了最主要的 1-3 个角色？
 - core_action 是否只概括这一帧的核心互动，而不是前后过程？`;
