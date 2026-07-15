@@ -1814,6 +1814,19 @@ export class PipelineManager {
       character_prompts: Array.isArray(updates.character_prompts)
         ? updates.character_prompts.map(item => String(item || '').trim()).filter(Boolean)
         : currentScene.character_prompts,
+      prepared_prompt: currentScene.prepared_prompt && typeof currentScene.prepared_prompt === 'object'
+        ? {
+            ...currentScene.prepared_prompt,
+            basePrompt: typeof updates.base_prompt === 'string' ? updates.base_prompt.trim() : currentScene.prepared_prompt.basePrompt,
+            characterPrompts: Array.isArray(updates.character_prompts)
+              ? updates.character_prompts.map(item => String(item || '').trim()).filter(Boolean)
+              : currentScene.prepared_prompt.characterPrompts,
+            finalNegative: typeof updates.final_negative === 'string' ? updates.final_negative.trim() : currentScene.prepared_prompt.finalNegative,
+            negativeCharacterPrompts: Array.isArray(updates.negative_character_prompts)
+              ? updates.negative_character_prompts.map(item => String(item || '').trim()).filter(Boolean)
+              : currentScene.prepared_prompt.negativeCharacterPrompts
+          }
+        : currentScene.prepared_prompt,
       character_prompt_interactions: Array.isArray(updates.character_prompt_interactions)
         ? updates.character_prompt_interactions.map((item, index) => {
             if (!item || typeof item !== 'object') return null;

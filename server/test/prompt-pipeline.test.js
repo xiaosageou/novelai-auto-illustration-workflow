@@ -723,6 +723,12 @@ test('updateSceneCard persists edited structured scene fields', async () => {
               scene_idx: 1,
               trigger_sentence: '她抬起了头',
               visual_description: '旧描述',
+              prepared_prompt: {
+                basePrompt: '旧 Base Prompt',
+                characterPrompts: ['旧 Character Prompt'],
+                finalNegative: '旧 Final Negative',
+                negativeCharacterPrompts: ['旧 Character Negative Prompt']
+              },
               character_names: ['甲', '乙', '丙', '丁', '戊'],
               characters: [{ name: '甲' }, { name: '乙' }, { name: '丙' }, { name: '丁' }, { name: '戊' }]
             }
@@ -758,6 +764,7 @@ test('updateSceneCard persists edited structured scene fields', async () => {
     character_names: ['甲', '乙', '丙', '丁', '戊'],
     base_prompt: '4people, moonlit courtyard, medium shot',
     character_prompts: ['woman, white_robe, standing', 'man, black_robe, looking_at_viewer'],
+    final_negative: 'lowres, text',
     negative_character_prompts: ['avoid_long_hair', 'avoid_armor']
   });
 
@@ -766,13 +773,20 @@ test('updateSceneCard persists edited structured scene fields', async () => {
   assert.deepEqual(result.scene.character_names, ['甲', '乙', '丙', '丁']);
   assert.equal(result.scene.base_prompt, '4people, moonlit courtyard, medium shot');
   assert.deepEqual(result.scene.character_prompts, ['woman, white_robe, standing', 'man, black_robe, looking_at_viewer']);
+  assert.equal(result.scene.final_negative, 'lowres, text');
   assert.deepEqual(result.scene.negative_character_prompts, ['avoid_long_hair', 'avoid_armor']);
+  assert.equal(result.scene.prepared_prompt.basePrompt, '4people, moonlit courtyard, medium shot');
+  assert.deepEqual(result.scene.prepared_prompt.characterPrompts, ['woman, white_robe, standing', 'man, black_robe, looking_at_viewer']);
+  assert.equal(result.scene.prepared_prompt.finalNegative, 'lowres, text');
+  assert.deepEqual(result.scene.prepared_prompt.negativeCharacterPrompts, ['avoid_long_hair', 'avoid_armor']);
 
   const saved = JSON.parse(await fs.readFile(path.join(projectDir, 'pipeline_progress.json'), 'utf-8'));
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].visual_description, '新描述');
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].characters.length, 4);
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].base_prompt, '4people, moonlit courtyard, medium shot');
   assert.deepEqual(saved.completed_chapters['第一卷_第一章'].scenes[0].character_prompts, ['woman, white_robe, standing', 'man, black_robe, looking_at_viewer']);
+  assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].prepared_prompt.basePrompt, '4people, moonlit courtyard, medium shot');
+  assert.deepEqual(saved.completed_chapters['第一卷_第一章'].scenes[0].prepared_prompt.characterPrompts, ['woman, white_robe, standing', 'man, black_robe, looking_at_viewer']);
   assert.deepEqual(saved.completed_chapters['第一卷_第一章'].scenes[0].negative_character_prompts, ['avoid_long_hair', 'avoid_armor']);
 
   pipeline.markSceneQueued('第一卷_第一章', 1);

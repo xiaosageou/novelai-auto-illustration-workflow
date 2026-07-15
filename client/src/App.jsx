@@ -1171,6 +1171,13 @@ function App() {
       .filter(Boolean)
   );
 
+  const getNonEmptyPromptList = (...candidates) => {
+    const selected = candidates.find(candidate => (
+      Array.isArray(candidate) && candidate.some(item => String(item || '').trim())
+    ));
+    return selected || [];
+  };
+
   const buildSceneEditorDraft = (scene = {}) => {
     const characterNamesText = Array.isArray(scene.character_names) ? scene.character_names.join(', ') : '';
     const normalizedCharacters = Array.isArray(scene.characters)
@@ -1193,12 +1200,10 @@ function App() {
       : [];
 
     const characterPromptInteractions = syncSceneCharacterInteractions(syncedCharacters, [], promptInteractionSeed);
-    const finalCharacterPrompts = Array.isArray(scene.character_prompts || scene.prepared_prompt?.characterPrompts)
-      ? (scene.character_prompts || scene.prepared_prompt?.characterPrompts)
-        .map(prompt => String(prompt || '').trim())
-        .filter(Boolean)
-        .join('\n')
-      : '';
+    const finalCharacterPrompts = getNonEmptyPromptList(
+      scene.character_prompts,
+      scene.prepared_prompt?.characterPrompts
+    ).map(prompt => String(prompt || '').trim()).filter(Boolean).join('\n');
 
     return {
       trigger_sentence: String(scene.trigger_sentence || ''),
@@ -1215,6 +1220,11 @@ function App() {
       must_not_show: Array.isArray(scene.must_not_show) ? scene.must_not_show.join(', ') : '',
       base_prompt: String(scene.base_prompt || scene.prepared_prompt?.basePrompt || ''),
       character_prompts: finalCharacterPrompts,
+      final_negative: String(scene.final_negative || scene.prepared_prompt?.finalNegative || ''),
+      negative_character_prompts: getNonEmptyPromptList(
+        scene.negative_character_prompts,
+        scene.prepared_prompt?.negativeCharacterPrompts
+      ).join('\n'),
       width: scene.width || scene.prepared_prompt?.width || '',
       height: scene.height || scene.prepared_prompt?.height || '',
       characters: syncedCharacters,
@@ -1277,6 +1287,7 @@ function App() {
       .split(/\r?\n/)
       .map(item => String(item || '').trim())
       .filter(Boolean),
+    final_negative: String(draft.final_negative || '').trim(),
     character_prompt_interactions: (Array.isArray(draft.characters) ? draft.characters : []).map((char, index) => {
       const interactions = normalizeSceneCharacterInteractionList(draft.character_prompt_interactions?.[index]);
       if (interactions.length === 0) return null;
@@ -1285,6 +1296,10 @@ function App() {
         interactions
       };
     }),
+    negative_character_prompts: String(draft.negative_character_prompts || '')
+      .split(/\r?\n/)
+      .map(item => item.trim())
+      .filter(Boolean),
     width: draft.width === '' ? null : Number(draft.width),
     height: draft.height === '' ? null : Number(draft.height),
     characters: (Array.isArray(draft.characters) ? draft.characters : [])
@@ -2003,12 +2018,14 @@ function App() {
                           : (Array.isArray(scene.character_names) ? scene.character_names.length : 0);
                         const sceneImage = scene.image_path ? encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`) : null;
                         const basePrompt = String(scene.base_prompt || scene.prepared_prompt?.basePrompt || '').trim();
-                        const characterPrompts = Array.isArray(scene.character_prompts)
-                          ? scene.character_prompts
-                          : (Array.isArray(scene.prepared_prompt?.characterPrompts) ? scene.prepared_prompt.characterPrompts : []);
+                        const characterPrompts = getNonEmptyPromptList(scene.character_prompts, scene.prepared_prompt?.characterPrompts);
+                        const negativeCharacterPrompts = getNonEmptyPromptList(scene.negative_character_prompts, scene.prepared_prompt?.negativeCharacterPrompts);
+                        const finalNegative = String(scene.final_negative || scene.prepared_prompt?.finalNegative || '').trim();
                         const promptSections = [
                           ['Base Prompt', basePrompt],
-                          ['Character Prompts', characterPrompts.join('\n')]
+                          ['Character Prompts', characterPrompts.join('\n')],
+                          ['Character Negative Prompts', negativeCharacterPrompts.join('\n')],
+                          ['Final Negative', finalNegative]
                         ].filter(([, value]) => String(value || '').trim());
                         const hasPrompt = promptSections.length > 0;
                         const isPromptExpanded = expandedPrompt === sceneKey;
@@ -2817,7 +2834,9 @@ function App() {
                       onClick={() => {
                         const parts = [
                           sceneEditor.draft.base_prompt && `Base Prompt:\n${sceneEditor.draft.base_prompt}`,
-                          sceneEditor.draft.character_prompts && `Character Prompts:\n${sceneEditor.draft.character_prompts}`
+                          sceneEditor.draft.character_prompts && `Character Prompts:\n${sceneEditor.draft.character_prompts}`,
+                          sceneEditor.draft.negative_character_prompts && `Character Negative Prompts:\n${sceneEditor.draft.negative_character_prompts}`,
+                          sceneEditor.draft.final_negative && `Final Negative:\n${sceneEditor.draft.final_negative}`
                         ].filter(Boolean);
                         navigator.clipboard.writeText(parts.join('\n\n'));
                         addLog(`📋 已复制场景 #${sceneEditor.sceneIdx} 完整生图参数到剪贴板！`, 'success');
@@ -2828,7 +2847,9 @@ function App() {
                   </div>
                   {[
                     ['base_prompt', 'Base Prompt', 4],
-                    ['character_prompts', 'Character Prompts (一行一个)', 4]
+                    ['character_prompts', 'Character Prompts (一行一个)', 4],
+                    ['negative_character_prompts', 'Character Negative Prompts (一行一个)', 4],
+                    ['final_negative', 'Final Negative', 3]
                   ].map(([field, label, rows]) => (
                     <label key={field} style={sceneEditorLabelStyle}>
                       {label}
