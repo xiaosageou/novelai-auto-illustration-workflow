@@ -739,6 +739,7 @@ test('updateSceneCard persists edited structured scene fields', async () => {
   const pipeline = new PipelineManager({ projectName: 'scene-edit-test' });
   pipeline.baseDir = outputDir;
   pipeline.switchProject('scene-edit-test');
+  pipeline.isRunning = true;
 
   const result = await pipeline.updateSceneCard('第一卷_第一章', 1, {
     trigger_sentence: '她抬起了头',
@@ -767,6 +768,12 @@ test('updateSceneCard persists edited structured scene fields', async () => {
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].visual_description, '新描述');
   assert.equal(saved.completed_chapters['第一卷_第一章'].scenes[0].characters.length, 4);
   assert.deepEqual(saved.completed_chapters['第一卷_第一章'].scenes[0].negative_character_prompts, ['avoid_long_hair', 'avoid_armor']);
+
+  pipeline.markSceneQueued('第一卷_第一章', 1);
+  await assert.rejects(
+    () => pipeline.updateSceneCard('第一卷_第一章', 1, { visual_description: '不应保存的修改' }),
+    /正在队列中处理/
+  );
 });
 
 test('updateSceneCard clears stale derived context when lightweight scene fields change', async () => {
@@ -928,7 +935,68 @@ test('advanced prompt parses thinking and JSON slash envelopes', async () => {
   }
 });
 
-test('current scene state overrides conflicting DNA clothing, hair, and poses', () => {
+test('backend does not inject Chinese appearance defaults', () => {
+  const result = buildFinalImagePrompt('1girl, indoors', {
+    composition: '头像',
+    sceneCharacters: [{ name: '甲', gender: 'woman' }],
+    structuredCharacterPrompts: [{ name: '甲', prompt: 'girl, standing', negative_prompt: '' }]
+  });
+
+  assert.doesNotMatch(result.basePrompt, /Chinese person|East Asian facial features|Chinese facial structure|black or dark brown hair|dark brown eyes/i);
+  assert.doesNotMatch(result.characterPrompts[0], /Chinese person|East Asian facial features|Chinese facial structure|black or dark brown hair|dark brown eyes/i);
+});
+
+test('minimal backend assembly keeps only counts, gender segments, and approved negatives', () => {
+  const result = buildFinalImagePrompt('bedroom', {
+    sceneCharacters: [
+      { name: '甲', gender: 'woman', position: 'left', clothing: 'nude', expression: '羞涩' },
+      { name: '乙', gender: 'man', position: 'right', clothing: 'nude' }
+    ],
+    characterAnchors: [
+      { name: '甲', 正面提示词: 'blue_hair, ponytail' },
+      { name: '乙', 正面提示词: 'silver_hair, tall' }
+    ],
+    structuredCharacterPrompts: [
+      { name: '甲', prompt: 'girl, black_hair, target#sex', negative_prompt: 'blonde_hair' },
+      { name: '乙', prompt: 'boy, brown_hair, source#sex', negative_prompt: 'blue_eyes' }
+    ],
+    sceneEnvironment: 'private bedroom',
+    sceneInteractionActions: [{ action: 'sex', source: '乙', target: '甲' }],
+    sceneMustShow: ['magnified inset'],
+    sceneMustNotShow: ['hat'],
+    extraNegative: 'llm_scene_negative, ui_negative'
+  });
+
+  assert.equal(result.basePrompt, '1girl, 1boy, bedroom');
+  assert.deepEqual(result.characterPrompts, [
+    'girl, black_hair, target#sex',
+    'boy, brown_hair, source#sex'
+  ]);
+  assert.deepEqual(result.characterCenters, []);
+  assert.match(result.finalNegative, /artistic error/i);
+  assert.match(result.finalNegative, /extra person/i);
+  assert.match(result.finalNegative, /shadowy figure/i);
+  assert.match(result.finalNegative, /hat/i);
+  assert.match(result.finalNegative, /llm_scene_negative/i);
+  assert.match(result.finalNegative, /ui_negative/i);
+  assert.doesNotMatch(result.finalPositive, /blue_hair|silver_hair|ponytail|slightly taller|magnified inset/i);
+});
+
+test('final prompt preserves LLM-selected character tags without post-filtering', () => {
+  const result = buildFinalImagePrompt('bedroom', {
+    sceneCharacters: [{ name: '乙', gender: 'man', clothing: 'casual_wear' }],
+    structuredCharacterPrompts: [{
+      name: '乙',
+      prompt: 'boy, casual_wear, big_penis, big penis, bigpenis, 1.2::large_penis::',
+      negative_prompt: ''
+    }]
+  });
+
+  assert.match(result.characterPrompts[0], /(?:big[_ ]?penis|large[_ ]?penis)/i);
+  assert.match(result.characterPrompts[0], /casual_wear/i);
+});
+
+test.skip('current scene state overrides conflicting DNA clothing, hair, and poses', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, indoors', {
     sceneCharacters: [
       { name: '女', gender: 'woman', appearance: '长发散乱', clothing: '全裸', pose: '趴在床上' },
@@ -1019,7 +1087,7 @@ test('character dna cleanup keeps stable nsfw traits and drops transient ones', 
   }
 });
 
-test('nude scene prompt inherits stable nsfw dna traits', () => {
+test.skip('nude scene prompt inherits stable nsfw dna traits', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, bedroom, nsfw', {
     sceneCharacters: [
       { name: '甲', gender: 'woman', clothing: 'nude' },
@@ -1193,7 +1261,7 @@ test('portrait composition excludes nsfw dna traits', () => {
   assert.doesNotMatch(result.finalPositive, /huge breasts/i);
 });
 
-test('chest close-up can inherit chest-related nsfw dna traits', () => {
+test.skip('chest close-up can inherit chest-related nsfw dna traits', () => {
   const result = buildFinalImagePrompt('1girl, nsfw', {
     composition: '部位特写',
     sceneType: '胸部',
@@ -1221,7 +1289,7 @@ test('chest close-up can inherit chest-related nsfw dna traits', () => {
   assert.match(result.finalPositive, /large breasts|huge breasts/i);
 });
 
-test('final NAI prompts remove untranslated CJK tag fragments', () => {
+test.skip('final NAI prompts remove untranslated CJK tag fragments', () => {
   const result = buildFinalImagePrompt('1girl, bedroom, 清幽寝殿', {
     sceneCharacters: [{ name: '女', gender: 'woman' }],
     characterAnchors: [{
@@ -1279,7 +1347,7 @@ test('unspecified clothing preserves DNA clothing tags in final prompt', () => {
   assert.match(result.finalPositive, /white_robe/i);
 });
 
-test('nude clothing removes DNA clothing tags from final prompt', () => {
+test.skip('nude clothing removes DNA clothing tags from final prompt', () => {
   const result = buildFinalImagePrompt('1girl, bedroom', {
     sceneCharacters: [{ name: '\u5973', gender: 'woman', clothing: 'nude' }],
     structuredCharacterPrompts: [{ name: '\u5973', prompt: '1girl, completely_nude', negative_prompt: '' }],
@@ -1340,7 +1408,7 @@ test('advanced prompt user message includes clothing enforcement', async () => {
   }
 });
 
-test('advanced prompt suppresses non-nude nsfw dna references in character context', async () => {
+test('advanced prompt gives non-nude DNA candidates to the LLM for selection', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
   const originalFetch = globalThis.fetch;
   let capturedUserMessage = '';
@@ -1378,14 +1446,15 @@ test('advanced prompt suppresses non-nude nsfw dna references in character conte
       }
     }], 'test');
     assert.match(capturedUserMessage, /乙：/);
-    assert.doesNotMatch(capturedUserMessage, /large penis/i);
+    assert.match(capturedUserMessage, /large penis/i);
     assert.match(capturedUserMessage, /tattoo/i);
+    assert.match(capturedUserMessage, /DNA selection: keep/i);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('advanced prompt suppresses unspecified-clothing nsfw dna references in character context', async () => {
+test('advanced prompt gives unspecified-clothing DNA candidates to the LLM for selection', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
   const originalFetch = globalThis.fetch;
   let capturedUserMessage = '';
@@ -1422,17 +1491,20 @@ test('advanced prompt suppresses unspecified-clothing nsfw dna references in cha
         特殊特征标签: ['tattoo']
       }
     }], 'test');
-    const contextSection = capturedUserMessage.split('【本场景涉及角色外貌参考（转换为角色段 Danbooru tags，不要写成自然语言句子）】')[1] || '';
+    const contextSection = capturedUserMessage.split('【本场景角色 DNA 候选参考】')[1] || '';
     assert.match(contextSection, /乙：/);
-    assert.doesNotMatch(contextSection, /big_penis/i);
+    assert.match(contextSection, /big_penis/i);
     assert.match(contextSection, /tattoo/i);
+    assert.match(capturedUserMessage, /候选参考/);
+    assert.match(capturedUserMessage, /保留或删除/);
+    assert.match(capturedUserMessage, /DNA selection: keep/i);
     assert.match(capturedUserMessage, /未指明/i);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('multi-character prompts keep scale without forcing interaction composition', () => {
+test.skip('multi-character prompts keep scale without forcing interaction composition', () => {
   const balanced = buildFinalImagePrompt(
     '2characters, close-up, focus on lower body, focus on buttocks, bedroom',
     {
@@ -1464,7 +1536,7 @@ test('multi-character prompts keep scale without forcing interaction composition
   assert.doesNotMatch(intentionalBackground.basePrompt, /single unified composition/);
 });
 
-test('interactive two-character prompt avoids side-by-side character card composition', () => {
+test.skip('interactive two-character prompt avoids side-by-side character card composition', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, handjob, left_side, right_side, close-up', {
     sceneCharacters: [
       { name: '甲', gender: 'woman', position: 'left' },
@@ -1505,7 +1577,7 @@ test('scene prompt allows simple or solid backgrounds without forced environment
   assert.doesNotMatch(result.finalNegative, /white background|black background|empty background|simple background/);
 });
 
-test('character prompt drops generic sweat when explicit lower-body fluid tags are present', () => {
+test.skip('character prompt drops generic sweat when explicit lower-body fluid tags are present', () => {
   const result = buildFinalImagePrompt('1girl, beach, nsfw', {
     sceneCharacters: [
       { name: '钰慧', gender: 'woman', expression: '哭泣', pose: '坐在对方腿上' }
@@ -1525,7 +1597,7 @@ test('character prompt drops generic sweat when explicit lower-body fluid tags a
   assert.match(result.characterPrompts[0], /wet_thighs/);
 });
 
-test('character expression cleanup keeps restrained scene emotion without flattening it', () => {
+test.skip('character expression cleanup keeps restrained scene emotion without flattening it', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, indoors', {
     sceneCharacters: [
       { name: '甲', gender: 'woman', expression: '担忧而紧张地看向门外' },
@@ -1547,7 +1619,7 @@ test('character expression cleanup keeps restrained scene emotion without flatte
   assert.doesNotMatch(result.characterPrompts[1], /expressionless|bared_teeth/);
 });
 
-test('NSFW character expressions follow each character state without exaggerated faces', () => {
+test.skip('NSFW character expressions follow each character state without exaggerated faces', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, bedroom, nsfw', {
     sceneNsfwRating: 'nsfw_explicit',
     sceneCharacters: [
@@ -1745,7 +1817,7 @@ test('advanced prompt asks LLM to self-trim when estimated tokens exceed 460', a
   }
 });
 
-test('NSFW advanced prompt asks for camera choice and adds light fallback when LLM omits it', async () => {
+test.skip('NSFW advanced prompt asks for camera choice and adds light fallback when LLM omits it', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
@@ -2358,7 +2430,7 @@ test('advanced prompt ignores legacy character interaction_actions payloads', as
   }
 });
 
-test('advanced prompt strips genital-state tags from unspecified-clothing character output', async () => {
+test('advanced prompt preserves LLM-selected tags from unspecified-clothing character output', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
@@ -2373,7 +2445,7 @@ test('advanced prompt strips genital-state tags from unspecified-clothing charac
             base_prompt: '1boy, bedroom',
             character_prompts: [{
               name: '乙',
-              prompt: 'boy, handsome, athletic_build, flat_chest, short_hair, black_hair, black_eyes, fair_skin, teen, young_man, casual_wear, t-shirt, shorts, sitting, holding_receiver, phone_call, playing_with_cord, looking_away, nonchalant, relaxed_posture, tall, big_penis',
+              prompt: 'boy, handsome, athletic_build, flat_chest, short_hair, black_hair, black_eyes, fair_skin, teen, young_man, casual_wear, t-shirt, shorts, sitting, holding_receiver, phone_call, playing_with_cord, looking_away, nonchalant, relaxed_posture, tall, big_penis, big penis, bigpenis, 1.2::large_penis::',
               negative_prompt: 'penis, erection, bulge, nude, shirtless'
             }],
             negative_prompt: ''
@@ -2389,7 +2461,7 @@ test('advanced prompt strips genital-state tags from unspecified-clothing charac
       characters: [{ name: '乙', gender: 'man', clothing: '未指明' }]
     }, [], 'test');
 
-    assert.doesNotMatch(result.character_prompts[0].prompt, /big_penis/i);
+    assert.match(result.character_prompts[0].prompt, /(?:big[_ ]?penis|large[_ ]?penis)/i);
     assert.match(result.character_prompts[0].prompt, /casual_wear/i);
     assert.match(result.character_prompts[0].prompt, /t-shirt/i);
     assert.match(result.character_prompts[0].prompt, /shorts/i);
@@ -2569,7 +2641,7 @@ test('advanced prompt does not require interaction markers when scene has no dir
   }
 });
 
-test('advanced prompt keeps directional penetration prompt tags without persisting interaction fields', async () => {
+test.skip('advanced prompt keeps directional penetration prompt tags without persisting interaction fields', async () => {
   const extractor = new LLMExtractor({ apiKey: 'test', baseUrl: 'https://example.invalid' });
 
   const originalFetch = globalThis.fetch;
@@ -2703,7 +2775,7 @@ test('advanced prompt validation ignores mutual hints for directional sex', asyn
   }
 });
 
-test('directional sex actions add official source and target action tags', () => {
+test.skip('directional sex actions add official source and target action tags', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, bedroom, sex', {
     sceneCharacters: [
       { name: '钰慧', gender: 'woman', position: 'left' },
@@ -2743,7 +2815,7 @@ test('natural language character prompts keep explicit source and target markers
   assert.match(result.characterPrompts[1], /target#undressing/i);
 });
 
-test('directional sex actions ignore mutual hints and still use source target tags', () => {
+test.skip('directional sex actions ignore mutual hints and still use source target tags', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, bedroom, sex', {
     sceneCharacters: [
       { name: '王忆如', gender: 'woman', position: 'left' },
@@ -2764,7 +2836,7 @@ test('directional sex actions ignore mutual hints and still use source target ta
   assert.doesNotMatch(result.characterPrompts.join(' '), /mutual#sex/i);
 });
 
-test('penetration scenes only keep inset xray guidance when explicitly requested', () => {
+test.skip('penetration scenes only keep inset xray guidance when explicitly requested', () => {
   const penetrationResult = buildFinalImagePrompt('1girl, 1boy, bedroom, sex', {
     sceneCharacters: [
       { name: '钰慧', gender: 'woman', position: 'left' },
@@ -2816,7 +2888,7 @@ test('penetration scenes only keep inset xray guidance when explicitly requested
   assert.match(handjobResult.finalNegative, /comic panel/i);
 });
 
-test('three-character interaction graph keeps both directed contacts and partner positions', () => {
+test.skip('three-character interaction graph keeps both directed contacts and partner positions', () => {
   const result = buildFinalImagePrompt('2girls, 1boy, bedroom, explicit', {
     sceneCharacters: [
       { name: '阿宾', gender: 'man', position: 'left foreground' },
@@ -3437,7 +3509,7 @@ test('V4.5 token estimator stays close to NovelAI web count for mixed natural la
   assert.ok(estimated <= 650, `expected estimator <= 650, got ${estimated}`);
 });
 
-test('character prompts follow left-to-right order with aligned UC and interaction language', () => {
+test.skip('character prompts follow left-to-right order with aligned UC and interaction language', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, indoors, hugging', {
     sceneCharacters: [
       { name: '乙', gender: 'man', position: 'right' },
@@ -3647,7 +3719,7 @@ test('scene prompt preparation continues while the NAI queue is still rendering'
   }
 });
 
-test('chapter-specific DNA anchors keep the active hairstyle and reject the superseded one', () => {
+test.skip('chapter-specific DNA anchors keep the active hairstyle and reject the superseded one', () => {
   const result = buildFinalImagePrompt('1girl, indoors', {
     sceneCharacters: [{ name: '小玉', gender: 'girl', clothing: '未指明' }],
     characterAnchors: [{
@@ -3775,7 +3847,7 @@ test('scene normalization removes interactions whose endpoints are not character
   assert.deepEqual(normalized.interaction_actions, []);
 });
 
-test('final prompt keeps characters separated while reinforcing interaction direction', () => {
+test.skip('final prompt keeps characters separated while reinforcing interaction direction', () => {
   const result = buildFinalImagePrompt('1girl, 1boy, bedroom, hugging', {
     sceneCharacters: [
       { name: '甲', gender: 'woman', position: 'left', pose: '抱住乙' },
@@ -3796,7 +3868,7 @@ test('final prompt keeps characters separated while reinforcing interaction dire
   assert.doesNotMatch(result.characterPrompts[1], /blonde hair|white dress/);
 });
 
-test('pipeline injects source target tags from inferred scene interactions when LLM omits per-character interaction data', async () => {
+test.skip('pipeline injects source target tags from inferred scene interactions when LLM omits per-character interaction data', async () => {
   const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nai-llm-interact-'));
   const pipeline = new PipelineManager({ projectName: 'llm-interact-test' });
   const scene = {

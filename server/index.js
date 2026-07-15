@@ -238,6 +238,15 @@ function getRedrawQueue(projectName) {
   return redrawQueues.get(projectName);
 }
 
+function isSceneInRedrawQueue(projectName, chapterKey, sceneIdx) {
+  const queue = getRedrawQueue(projectName);
+  const normalizedChapterKey = String(chapterKey || '').trim();
+  const normalizedSceneIdx = Number(sceneIdx);
+  return [queue.current, ...queue.items].some(job => job
+    && String(job.effectiveKey || '').trim() === normalizedChapterKey
+    && Number(job.sceneIdx) === normalizedSceneIdx);
+}
+
 function getChapterQueue(projectName) {
   if (!chapterQueues.has(projectName)) {
     chapterQueues.set(projectName, {
@@ -1049,11 +1058,11 @@ app.put('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx', asyn
     const { projectName, chapterKey, sceneIdx } = req.params;
     const pipeline = await getPipeline(projectName);
 
-    if (pipeline.isRunning) {
-      return res.status(400).json({ error: "流水线正在运行中，请先暂停后再编辑场景" });
-    }
-
     const effectiveKey = pipeline.projectProgress.getEffectiveChapKeyByRaw(chapterKey);
+    if (pipeline.isSceneQueued(effectiveKey, sceneIdx)
+      || isSceneInRedrawQueue(projectName, effectiveKey, sceneIdx)) {
+      return res.status(409).json({ error: "该场景正在队列中处理，完成或移出队列后再编辑" });
+    }
     const result = await pipeline.updateSceneCard(effectiveKey, sceneIdx, req.body || {});
     res.json({ success: true, message: `场景 #${sceneIdx} 已保存`, ...result });
   } catch (error) {

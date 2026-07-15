@@ -46,45 +46,6 @@ function escapeRegExp(text = '') {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function isNudeClothing(clothing = '') {
-  return /全裸|赤裸|裸体|一丝不挂|completely[_ ]nude|\bnude\b|\bnaked\b/i.test(String(clothing || ''));
-}
-
-function isUnspecifiedClothing(clothing = '') {
-  return /未指明|unspecified|unknown/i.test(String(clothing || ''));
-}
-
-function filterAnchorReferenceForScene(anchor = {}, sceneCharacter = {}) {
-  const reference = String(anchor?.正面提示词 || '').trim();
-  if (!reference) return reference;
-  if (isNudeClothing(sceneCharacter?.clothing || '')) return reference;
-
-  const nsfwTraits = Array.isArray(anchor?.结构化特征?.NSFW标签)
-    ? anchor.结构化特征.NSFW标签.map(item => String(item || '').trim()).filter(Boolean)
-    : [];
-  if (nsfwTraits.length === 0) return reference;
-
-  return reference
-    .split(',')
-    .map(token => token.trim())
-    .filter(Boolean)
-    .filter(token => !nsfwTraits.some(trait => token.toLowerCase() === trait.toLowerCase()))
-    .join(', ');
-}
-
-function stripGenitalStateTagsForClothing(prompt = '', sceneCharacter = {}) {
-  const clothing = sceneCharacter?.clothing || '';
-  if (isNudeClothing(clothing)) return String(prompt || '').trim();
-
-  const genitalStatePattern = /^(?:penis|erection|erect_penis|large_penis|big_penis|small_penis|thick_penis|long_penis|penis_outline|bulge|visible_penis|penis_print)$/i;
-  return String(prompt || '')
-    .split(/[,，]/)
-    .map(token => token.trim())
-    .filter(Boolean)
-    .filter(token => !genitalStatePattern.test(token))
-    .join(', ');
-}
-
 export function inferSceneInteractionActions(sceneDesc = {}) {
   if (!sceneDesc || typeof sceneDesc !== 'object') return [];
 
@@ -2001,11 +1962,10 @@ export class LLMExtractor {
       const sceneCharacters = getSceneCharacters(sceneDesc);
       const charLines = characterAnchors.map(anchor => {
         const name = anchor.name || "未知角色";
-        const sceneCharacter = sceneCharacters.find(char => String(char?.name || '').trim() === String(name).trim()) || null;
-        const reference = filterAnchorReferenceForScene(anchor, sceneCharacter);
+        const reference = String(anchor?.正面提示词 || '').trim();
         return `• ${name}：${reference}`;
       }).filter(line => !/：\s*$/.test(line)).join("\n");
-      const contextLabel = "【本场景涉及角色外貌参考（转换为角色段 Danbooru tags，不要写成自然语言句子）】";
+      const contextLabel = "【本场景角色 DNA 候选参考】以下仅供判断，不是必须逐项继承。结合当前画面，保留可见且有助于角色识别的特征；删除与场景状态冲突、当前不可见、无关或会造成冗余的内容。只将最终选中的 tag 写入对应角色段。";
       characterContext = charLines ? `\n\n${contextLabel}\n${charLines}` : "";
     }
 
@@ -2038,9 +1998,10 @@ export class LLMExtractor {
       "4. Danbooru tag 指短视觉标签，不是英文句子。优先使用 lower_snake_case 或常见短标签，如 white_dress、looking_at_viewer、from_behind、cowboy shot。",
       "5. 遇到单个标签难以准确表达的概念时，先拆成多个可见标签组合，不要退回自然语言整句。例如“从背后抱住”应优先写成 from_behind、hug、arms_around_waist，而不是一句英文描述。",
       "6. 互动必须尽量使用 source#action、target#action、mutual#action 标清主动方和承受方，而且这些方向标签只能放在对应角色的 character_prompts[].prompt 中，must not appear in base_prompt。",
-      "7. Token 预算必须前置控制：总正向 tags 不超过 410 tokens。优先删除氛围形容词、重复概念和次要配饰，不得删除人物数量、角色识别特征和核心互动。",
-      "8. 衣着状态必须忠实于场景卡 characters[].clothing：有具体服装名则用对应 tags（如 white_dress、school_uniform）；是 nude 则用 completely_nude；是 未指明 则从角色 DNA 参考中继承默认服装 tags，不要自行编造服装细节。",
-      "9. 除非场景卡明确表示已经露出、强调 crotch bulge、或明确写出 penis/erection 状态，否则角色只要仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，或者 clothing 仍是 未指明 / unspecified / unknown，就不要擅自加入 penis、erection、erect_penis、large_penis、penis_outline、big_penis 等生殖器状态 tags，也不要从 DNA 参考继承这类私密体征。"
+      "7. Token 预算必须前置控制：总正向 tags 不超过 410 tokens。优先删除氛围形容词、重复概念、次要配饰和未被当前画面选中的 DNA tag；不得删除人物数量和核心互动。",
+      "8. 衣着状态必须忠实于场景卡 characters[].clothing：有具体服装名则用对应 tags（如 white_dress、school_uniform）；是 nude 则用 completely_nude；是 未指明 时，把角色 DNA 仅当作候选参考，自行判断哪些服装或外貌 tag 对当前画面可见且必要。不得整段照抄 DNA，也不得自行编造细节。",
+      "9. 除非场景卡明确表示已经露出、强调 crotch bulge、或明确写出 penis/erection 状态，否则角色只要仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，或者 clothing 仍是 未指明 / unspecified / unknown，就不要擅自加入 penis、erection、erect_penis、large_penis、penis_outline、big_penis 等生殖器状态 tags，也不要从 DNA 参考继承这类私密体征。",
+      "10. 后端不会补写角色 DNA、位置、互动/性行为体位、近景镜头或插入局部放大。在 /thinking/ 中，每个角色必须先写一行 `DNA selection: keep [tag,...]; drop [tag,...]`，逐项决定候选 DNA 的去留；随后只把 keep 中确有必要的 tag 写入 /JSON/。不得因 DNA 中出现就自动写入 prompt。"
     ].join("\n");
 
     const userMessage = [
@@ -2050,6 +2011,7 @@ export class LLMExtractor {
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
       "如果 scene card 里有 core_action，请把它当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
       "你必须先根据 visual_description、core_action 和角色站位，自行判断本场景中人物之间是否存在直接互动。",
+      "后端不会在 LLM 返回后补写角色 DNA、角色位置、互动/性行为体位、近景镜头或插入局部放大。角色 DNA 只是候选参考：/thinking/ 中每个角色必须先输出 `DNA selection: keep [tag,...]; drop [tag,...]`，逐项决定保留或删除；/JSON/ 只能使用经你选择保留且对当前画面必要的 tag，禁止整段照抄 DNA。",
       "如果 scene card 里有 interaction_actions，你必须先理解每条 interaction 的主动方 source、承受方 target，以及是否 mutual，然后把这个角色职责落实到对应角色的 character_prompts 中。",
       "参考 NovelAI V4 多角色互动文档：多人互动必须在对应角色 prompt 里使用 source#动作、target#动作、mutual#动作 来强调谁在主动、谁在承受、谁是相互动作。不要把 source#/target#/mutual# 这类方向标签放进 base_prompt。若动作天然有方向性，不要把 source 和 target 写反。",
       "示例：若 interaction_actions 里是 {\"action\":\"undressing\",\"source\":\"钰慧\",\"target\":\"阿宾\"}，则钰慧的 character prompt 使用 source#undressing；阿宾的 character prompt 使用 target#undressing。不要把两人的动作职责写成一样。",
@@ -2128,14 +2090,10 @@ export class LLMExtractor {
       }
       const character_prompts = Array.isArray(parsed?.character_prompts)
         ? parsed.character_prompts.map((item, index) => {
-          const sceneCharacter = expectedSceneCharacters[index] || null;
           if (typeof item === 'string') {
             return {
               name: '',
-              prompt: stripGenitalStateTagsForClothing(
-                normalizeDanbooruPromptSegment(item, { character: true }),
-                sceneCharacter
-              ),
+              prompt: normalizeDanbooruPromptSegment(item, { character: true }),
               negative_prompt: '',
               interaction: null
             };
@@ -2143,10 +2101,7 @@ export class LLMExtractor {
           const resolvedName = String(item?.name || expectedSceneCharacters[index]?.name || '').trim();
           return {
             name: resolvedName,
-            prompt: stripGenitalStateTagsForClothing(
-              normalizeDanbooruPromptSegment(item?.prompt || '', { character: true }),
-              sceneCharacter
-            ),
+            prompt: normalizeDanbooruPromptSegment(item?.prompt || '', { character: true }),
             negative_prompt: normalizeDanbooruPromptSegment(item?.negative_prompt || '', { character: true }),
             interaction: null
           };
@@ -2164,42 +2119,8 @@ export class LLMExtractor {
           throw new Error(`character_prompts[${index}].name 应为「${expectedName}」，实际为「${actualName || '空'}」`);
         }
       }
-      const characterSpecificTags = new Set(
-        character_prompts
-          .flatMap(item => item.prompt.split(/[,，]/))
-          .map(tag => tag.trim().toLowerCase())
-          .filter(Boolean)
-      );
-      const cleanedBasePrompt = base_prompt
-        .split(/[,，]/)
-        .map(tag => tag.trim())
-        .filter(Boolean)
-        .filter(tag => !characterSpecificTags.has(tag.toLowerCase()))
-        .join(', ');
-      const shouldBiasCloseFraming = nsfwRating !== 'sfw'
-        || (Array.isArray(sceneDesc?.interaction_actions) && sceneDesc.interaction_actions.length > 0)
-        || WIDE_FRAMING_TAG_PATTERN.test(cleanedBasePrompt);
-      const baseTags = cleanedBasePrompt
-        .split(/[,，]/)
-        .map(tag => tag.trim())
-        .filter(Boolean)
-        .filter(tag => !(shouldBiasCloseFraming && WIDE_FRAMING_TAG_PATTERN.test(tag)));
-      const hasPreferredCloseFraming = baseTags.some(tag => CLOSE_FRAMING_TAG_PATTERN.test(tag));
-      if (shouldBiasCloseFraming && !hasPreferredCloseFraming) {
-        baseTags.push(getPreferredCloseFramingTag({
-          characterCount: expectedSceneCharacters.length,
-          isPenetrationScene,
-          isNsfw: nsfwRating !== 'sfw'
-        }));
-      }
-      const hasPenetrationInsetPlan = baseTags.some(tag => PENETRATION_INSET_TAG_PATTERN.test(tag));
-      if (isPenetrationScene && !hasPenetrationInsetPlan) {
-        baseTags.push('main scene plus one inset', 'magnified inset', 'x-ray inset', 'cross-section', 'penetration focus');
-      }
-      const cleanedBaseTags = uniquePhrases(baseTags);
-      const resolvedBasePrompt = nsfwRating !== 'sfw'
-        ? cleanedBaseTags.join(', ')
-        : cleanedBaseTags.join(', ');
+      // LLM 已在 /thinking/ 中决定镜头、局部放大、角色位置和互动；后端不再补写或改写这些内容。
+      const resolvedBasePrompt = uniquePhrases(base_prompt.split(/[,，]/)).join(', ');
       const prompt = uniquePhrases([
         ...resolvedBasePrompt.split(/[,，]/),
         ...character_prompts.flatMap(item => item.prompt.split(/[,，]/))
