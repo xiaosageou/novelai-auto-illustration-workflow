@@ -4,6 +4,25 @@ function cleanText(value) {
 
 const MAX_VISIBLE_SCENE_CHARACTERS = 4;
 
+function hasVisiblePrivateExposure(rawScene = {}) {
+  const text = [
+    rawScene.visual_description,
+    rawScene.scene_desc,
+    rawScene.core_action,
+    rawScene.coreAction,
+    rawScene.interactions,
+    rawScene.must_show,
+    rawScene.mustShow,
+    ...(Array.isArray(rawScene.characters) ? rawScene.characters.map(character => character?.clothing) : [])
+  ].map(cleanText).join(' ');
+
+  const exposure = '(?:露(?:出|着)?|显露|裸露|外露|可见|露点|赤裸|无遮(?:挡|掩)?|显现)';
+  const privatePart = '(?:乳头|奶头|乳晕|nipples?|areola|下体|外生殖器|生殖器|阴部|外阴|阴茎|龟头|阴囊|睾丸|肛门|臀缝|genitals?|penis|vulva|pussy|scrotum|testicles?|anus|butt(?:ocks?|_?crack))';
+  const exposedEnglishTag = '(?:exposed|visible|bare|uncovered|revealing|showing)[ _-]*(?:nipples?|areola|genitals?|penis|vulva|pussy|scrotum|testicles?|anus|butt(?:ocks?|_?crack))';
+  const nudeState = '(?:裸体|全裸|赤裸|一丝不挂|半裸|上身赤裸|下身赤裸|completely[_ -]?nude|\bnude\b|\bnaked\b|half[_ -]?naked|partially[_ -]?(?:nude|naked)|\btopless\b|\bbottomless\b|bare[_ -]?breasts?)';
+  return new RegExp(`${exposure}.{0,8}${privatePart}|${privatePart}.{0,12}${exposure}|${exposedEnglishTag}|${nudeState}`, 'i').test(text);
+}
+
 function normalizeCharacter(raw = {}) {
   if (typeof raw === 'string') {
     return {
@@ -259,7 +278,8 @@ export function normalizeSceneCard(rawScene = {}) {
   const normalized = {
     scene_idx: Number(rawScene.scene_idx) || Number(rawScene.scene_id) || 1,
     trigger_sentence: cleanText(rawScene.trigger_sentence),
-    nsfw_rating: VALID_NSFW.has(rawNsfw) ? rawNsfw : 'sfw',
+    // 分级以裸体、半裸、露点或下体私密部位裸露为门槛，避免模型仅因亲密或隔衣文本误标 NSFW。
+    nsfw_rating: VALID_NSFW.has(rawNsfw) && hasVisiblePrivateExposure(rawScene) ? rawNsfw : 'sfw',
     visual_description: cleanText(rawScene.visual_description || rawScene.scene_desc),
     core_action: cleanText(rawScene.core_action || rawScene.coreAction || rawScene.primary_action),
     environment: cleanText(rawScene.environment),

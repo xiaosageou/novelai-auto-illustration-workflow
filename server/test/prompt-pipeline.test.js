@@ -226,8 +226,10 @@ test('scene extraction sends the locally calculated exact count to the LLM', asy
   assert.doesNotMatch(userMessage, /selection_reason/);
   assert.match(userMessage, /瞬间定格|单帧|过程动作/);
   assert.match(userMessage, /NSFW/);
-  assert.match(userMessage, /多选取.*NSFW|向\s*NSFW\s*场景倾斜/);
-  assert.match(userMessage, /适当选取.*SFW|保留.*SFW/);
+  assert.match(userMessage, /乳头|乳晕|露点/);
+  assert.match(userMessage, /下体|外生殖器|阴部/);
+  assert.match(userMessage, /裸体|半裸/);
+  assert.match(userMessage, /亲亲抱抱|隔着衣服/);
 });
 
 test('scene extraction requests streaming and parses SSE response bodies', async () => {
@@ -1360,6 +1362,36 @@ test('scene extraction prompt requires location and detailed clothing state', as
   assert.match(extractPrompt, /相邻短段落|前后文/);
   assert.match(extractPrompt, /禁止填 未指明/);
   assert.match(extractPrompt, /身份、时代、地点、天气/);
+  assert.match(extractPrompt, /乳头|乳晕|露点/);
+  assert.match(extractPrompt, /下体|外生殖器|阴部/);
+  assert.match(extractPrompt, /裸体|半裸/);
+  assert.match(extractPrompt, /亲亲抱抱|隔衣互动/);
+});
+
+test('scene normalization marks NSFW only when nipples, areola, or lower private parts are visibly exposed', () => {
+  const nudeScene = normalizeSceneCard({
+    nsfw_rating: 'nsfw_explicit',
+    visual_description: '卧室内两人裸体相拥，身体紧贴。'
+  });
+  assert.equal(nudeScene.nsfw_rating, 'nsfw_explicit');
+
+  const visibleNipples = normalizeSceneCard({
+    nsfw_rating: 'nsfw_moderate',
+    visual_description: '卧室内女子上身赤裸，乳头清晰露出。'
+  });
+  assert.equal(visibleNipples.nsfw_rating, 'nsfw_moderate');
+
+  const visibleLowerPrivatePart = normalizeSceneCard({
+    nsfw_rating: 'nsfw_explicit',
+    visual_description: '卧室内男子下体裸露，阴茎清晰可见。'
+  });
+  assert.equal(visibleLowerPrivatePart.nsfw_rating, 'nsfw_explicit');
+
+  const clothedEmbrace = normalizeSceneCard({
+    nsfw_rating: 'nsfw_mild',
+    visual_description: '雨中的两人隔着衣服拥抱亲吻。'
+  });
+  assert.equal(clothedEmbrace.nsfw_rating, 'sfw');
 });
 
 test('unspecified clothing preserves DNA clothing tags in final prompt', () => {

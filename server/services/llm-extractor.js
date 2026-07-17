@@ -919,14 +919,12 @@ function ensureStructuredScenePrompt(prompt) {
   const withCharacterLimit = withDiversity.includes("【场景人数硬约束】")
     ? withDiversity
     : `${withDiversity}\n\n${characterLimitInstruction}`;
-  const nsfwBiasInstruction = `【NSFW 分配倾斜硬约束】
-- 如果本章同时存在 NSFW 与 SFW 场景，场景名额必须向 NSFW 场景倾斜，多选取 NSFW 场景，适当选取 SFW 场景。
-- 优先保留裸露、挑逗、亲密接触、明确性行为、高潮前后等视觉强度更高的 NSFW 峰值画面。
-- SFW 场景只保留少量真正必要的铺垫、反差、情绪停顿或结果镜头，不要让 SFW 数量超过 NSFW。
-- 只有当章节本身几乎没有可视化的 NSFW 内容时，才允许多数场景为 SFW。`;
-  const withNsfwBias = withCharacterLimit.includes("【NSFW 分配倾斜硬约束】")
+  const nsfwClassificationInstruction = `【NSFW 分级硬约束】
+- 当前单帧出现裸体、半裸、乳头/乳晕（露点），或下体私密部位裸露（外生殖器、阴部、肛门或臀缝）时，nsfw_rating 才可以是 nsfw_mild、nsfw_moderate 或 nsfw_explicit。
+- 仅有亲亲抱抱、挑逗、亲密接触、湿身、薄纱、内衣、裸背、裸肩或隔着衣服的互动，且没有裸体、半裸、露点或下体私密部位裸露时，nsfw_rating 一律填 sfw；不得依据文字暗示猜测或升级。`;
+  const withNsfwClassification = withCharacterLimit.includes("【NSFW 分级硬约束】")
     ? withCharacterLimit
-    : `${withCharacterLimit}\n\n${nsfwBiasInstruction}`;
+    : `${withCharacterLimit}\n\n${nsfwClassificationInstruction}`;
 
   const lightweightContract = `【轻量场景卡输出协议（最高优先级）】
 - 你的任务是从章节中选择值得画的“瞬间定格”帧，不是输出完整原画工程参数。
@@ -962,7 +960,7 @@ ${SCENES_JSON_START}
 ]
 ${SCENES_JSON_END}`);
 
-  return withBoundaryContract(`${withNsfwBias}
+  return withBoundaryContract(`${withNsfwClassification}
 
 ${lightweightContract}`);
 }
@@ -1303,8 +1301,7 @@ function buildSceneExtractionUserContent({
     `- 不要输出 environment、cinematography、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show。`,
     `- characters 数组最多 3 人；多人场景只保留这一帧真正推动画面的主要人物。若原文超过 3 人，必须裁剪次要人物，只保留动作主体、动作受体、镜头中心人物。每个 character 项必须包含 name、gender、clothing 三个字段。`,
     `- characters[].clothing 必须填写具体可见衣着，优先从正文、相邻上下文和当前场景状态推断，尽量写清上衣和下衣；若正文未直接说明，必须按角色身份、时代、地点、天气和当前动作推断合理衣着；没有外衣或只剩内层衣物时进一步写明内衣状态；明确裸体才填 nude，禁止填 未指明。`,
-    `- 如果本章同时存在 NSFW 与 SFW 场景，名额要向 NSFW 场景倾斜：多选取 NSFW 场景，适当选取 SFW 场景。`,
-    `- SFW 场景只保留少量真正必要的铺垫、反差、情绪停顿或结果镜头，不要让 SFW 数量超过 NSFW。`,
+    `- NSFW 分级条件是当前单帧裸体、半裸、明确露出乳头/乳晕（露点），或下体私密部位裸露（外生殖器、阴部、肛门或臀缝）。仅有亲亲抱抱、挑逗或隔着衣服的互动，且没有这些条件时，nsfw_rating 必须为 sfw；禁止猜测或升级。`,
     `- visual_description 必须是一个瞬间定格场景，控制在 40-80 字；开头或前半句必须明确场景发生地点（室内具体房间、室外具体区域或可识别场所），不能只写人物和动作。`,
     `- core_action 用一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触。`,
     ``,
