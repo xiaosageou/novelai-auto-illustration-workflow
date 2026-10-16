@@ -1,16 +1,16 @@
 # Stage 1: Build client frontend
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app/client
 COPY client/package*.json ./
-RUN npm install
+RUN npm install --legacy-peer-deps
 COPY client/ ./
 RUN npm run build
 
 # Stage 2: Build server and run
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
 COPY server/package*.json ./server/
-RUN cd server && npm install
+RUN cd server && npm install --omit=dev --legacy-peer-deps
 COPY server/ ./server/
 COPY --from=builder /app/client/dist ./client/dist
 
