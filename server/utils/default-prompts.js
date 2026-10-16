@@ -452,19 +452,10 @@ Use a concise visible planning checklist before writing tags:
 The pipeline will assemble:
 base_prompt | character1 | character2
 
-Use this schema exactly inside /JSON/:
-{
-  "orientation": "portrait" | "landscape" | "square" | "default",
-  "base_prompt": "Danbooru-style tags for global count, scene, light, camera and interaction only",
-  "character_prompts": [
-    {
-      "name": "copy the scene-card character name exactly",
-      "prompt": "Danbooru-style tags for this character only",
-      "negative_prompt": "short Danbooru-style negative tags for this character"
-    }
-  ],
-  "negative_prompt": "short scene-level negative tags"
-}
+## Single JSON Output Constraint
+- Output exactly ONE /JSON/ ... /JSON/ block in your entire response.
+- NEVER write any draft JSON, curly braces {}, or /JSON/ tags inside /thinking/ or anywhere before the final block.
+- Once the closing /JSON/ is output, immediately terminate your response.
 
 ## Tag Rules
 - No natural-language sentences. Use comma-separated tags and compact phrases only.
@@ -534,7 +525,7 @@ Use this schema exactly inside /JSON/:
 - **Prefer cross-section over bare x-ray**: In NAI 4.5, bare "x-ray" causes the character's skin to become skeletal, translucent, or green/cyan. Use "cross-section, deep penetration, penetration focus, cutaway inset" instead. If internal organ x-ray is needed, use targeted tags like "uterus x-ray" or "cervix".
 - **External Physical Echo (内外呼应)**: The receiving character prompt should include "stomach bulge" (slight lower abdominal bulge under deep penetration) alongside bodily reactions like "arched back, trembling, sweat".
 - In /thinking/, explicitly note the decision: close main framing (e.g. cowboy shot, side view) + cross-section inset for penetration readability.
-- In /JSON/, base_prompt must include tags such as cross-section, deep penetration, penetration focus, cutaway inset. The main frame itself stays fully external with intact realistic skin.
+- Inside the final /JSON/ block, base_prompt must include tags such as cross-section, deep penetration, penetration focus, cutaway inset. The main frame itself stays fully external with intact realistic skin.
 - Do not add cross-section or inset tags for non-penetration scenes such as handjob, touching, kissing, teasing, undressing, or non-insertive oral scenes.
 
 ## Self Check

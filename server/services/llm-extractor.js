@@ -15,20 +15,150 @@ export const SCENES_JSON_END = '<SCENES_JSON_END>';
 const NAI_PROMPT_TOKEN_LIMIT = 400;
 const llmResponseAbortControllers = new WeakMap();
 
-function extractAdvancedJsonEnvelope(content = '') {
+function isCandidateLikelyAdvancedJson(str) {
+  if (!str || typeof str !== 'string') return false;
+  const trimmed = str.trim();
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace === -1 || lastBrace <= firstBrace) return false;
+  const slice = trimmed.substring(firstBrace, lastBrace + 1);
+  try {
+    const parsed = JSON.parse(slice);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      if (parsed.base_prompt || parsed.prompt || parsed.orientation || Array.isArray(parsed.character_prompts)) {
+        return true;
+      }
+    }
+  } catch {
+    const valid = extractValidJson(slice);
+    if (valid.success && valid.parsed && typeof valid.parsed === 'object' && !Array.isArray(valid.parsed)) {
+      if (valid.parsed.base_prompt || valid.parsed.prompt || valid.parsed.orientation || Array.isArray(valid.parsed.character_prompts)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+export function findLastAdvancedJsonObject(str) {
+  if (!str || typeof str !== 'string') return null;
+  const trimmed = str.trim();
+
+  // 1. 若最外层是一对大括号，优先解析
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    const candidate = trimmed.substring(firstBrace, lastBrace + 1);
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        if (parsed.base_prompt || parsed.prompt || parsed.orientation || Array.isArray(parsed.character_prompts)) {
+          return parsed;
+        }
+      }
+    } catch {}
+  }
+
+  // 2. 从后往前寻找匹配的包含特征字段的对象
+  const rightIndices = [];
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    if (trimmed[i] === '}') rightIndices.push(i);
+  }
+  const leftIndices = [];
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    if (trimmed[i] === '{') leftIndices.push(i);
+  }
+
+  for (const rightIdx of rightIndices) {
+    for (const leftIdx of leftIndices) {
+      if (leftIdx >= rightIdx) continue;
+      const candidate = trimmed.substring(leftIdx, rightIdx + 1);
+      if (!candidate.includes('"base_prompt"') && !candidate.includes('"prompt"') && !candidate.includes('"orientation"')) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(candidate);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          if (parsed.base_prompt || parsed.prompt || parsed.orientation || Array.isArray(parsed.character_prompts)) {
+            return parsed;
+          }
+        }
+      } catch {}
+    }
+  }
+  return null;
+}
+
+export function extractAdvancedJsonEnvelope(content = '') {
   const raw = String(content || '').trim();
-  const slashJsonMatch = raw.match(/\/JSON\/\s*([\s\S]*?)\s*\/JSON\//i);
-  if (slashJsonMatch?.[1]?.trim()) return slashJsonMatch[1].trim();
+  if (!raw) return '';
 
-  const xmlJsonMatch = raw.match(/<\s*JSON\s*>\s*([\s\S]*?)\s*<\s*\/\s*JSON\s*>/i);
-  if (xmlJsonMatch?.[1]?.trim()) return xmlJsonMatch[1].trim();
+  // 1. 如果包含思考闭合标签 </think> 或 </thinking>，优先在思考结束之后的文本中寻找
+  let postThinkText = '';
+  const thinkEndIdx = Math.max(
+    raw.lastIndexOf('</think>'),
+    raw.lastIndexOf('</thinking>')
+  );
+  if (thinkEndIdx !== -1) {
+    postThinkText = raw.substring(thinkEndIdx + 8).trim();
+  }
 
-  return raw
+  // 辅助函数：从给定文本中提取所有候选块并倒序寻找有效 JSON
+  const findValidEnvelopeInText = (text) => {
+    if (!text) return null;
+    const candidates = [];
+    const slashMatches = [...text.matchAll(/\/JSON\/\s*([\s\S]*?)\s*\/JSON\//gi)];
+    for (const m of slashMatches) {
+      if (m[1]?.trim()) candidates.push(m[1].trim());
+    }
+    const xmlMatches = [...text.matchAll(/<\s*JSON\s*>\s*([\s\S]*?)\s*<\s*\/\s*JSON\s*>/gi)];
+    for (const m of xmlMatches) {
+      if (m[1]?.trim()) candidates.push(m[1].trim());
+    }
+
+    // 从后往前寻找符合高级 JSON 结构的候选块
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      if (isCandidateLikelyAdvancedJson(candidates[i])) {
+        return candidates[i];
+      }
+    }
+    // 降级：如果未严格命中 isCandidateLikelyAdvancedJson，返回最后一个包含大括号的候选块
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      if (candidates[i].includes('{') && candidates[i].includes('}')) {
+        return candidates[i];
+      }
+    }
+    return null;
+  };
+
+  // 优先在 postThinkText 中寻找
+  if (postThinkText) {
+    const postThinkFound = findValidEnvelopeInText(postThinkText);
+    if (postThinkFound) return postThinkFound;
+  }
+
+  // 其次在全文中寻找
+  const fullFound = findValidEnvelopeInText(raw);
+  if (fullFound) return fullFound;
+
+  // 如果依然未匹配到 /JSON/ 候选块，彻底剥离所有思考标签后再查找
+  let cleaned = raw
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
     .replace(/\/thinking\/[\s\S]*?\/thinking\//gi, '')
-    .replace(/<\s*thinking\s*>[\s\S]*?<\s*\/\s*thinking\s*>/gi, '')
-    .replace(/<\s*think\s*>[\s\S]*?<\s*\/\s*think\s*>/gi, '')
     .replace(/\/think\/[\s\S]*?\/think\//gi, '')
     .trim();
+
+  // 若剩余内容中包含 /think/ 截断残留，取最后一个 /think/ 之后
+  if (cleaned.includes('/think/')) {
+    const lastIdx = cleaned.lastIndexOf('/think/');
+    cleaned = cleaned.substring(lastIdx + 7).trim();
+  }
+
+  // 剥离孤立的 /JSON/ 标记
+  cleaned = cleaned.replace(/<\/?JSON>/gi, '').replace(/\/JSON\//gi, '').trim();
+
+  return cleaned;
 }
 
 function normalizeInteractionMarkerAction(action = '') {
@@ -2085,7 +2215,7 @@ export class LLMExtractor {
 
     const userMessage = [
       "请为以下中文小说插画场景生成 NovelAI Danbooru 标签生图参数。",
-      "输出格式必须严格分两段：先写 /thinking/ 包裹的简明可见分析清单，再写 /JSON/ 包裹的唯一 JSON 对象。后端只解析 /JSON/ 内部内容。",
+      "输出格式必须严格分两段：先写 /thinking/ 包裹的简明可见分析清单，再写 /JSON/ 包裹的唯一 JSON 对象。全篇只允许输出唯一一个 /JSON/ ... /JSON/ 结构。绝对禁止在 /thinking/ 或思考过程中书写任何大括号 {}、草稿 JSON 或 /JSON/ 标记！输出完唯一的 /JSON/ 块后必须立即终止生成。",
       "你现在负责把轻量场景卡扩展成可生图参数。场景 LLM 只负责选帧；你负责补全环境、镜头、人物外观与负面限制，但不得改写这一帧的核心事件。",
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
       "如果 scene card 里有 core_action，请把它当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
@@ -2142,13 +2272,19 @@ export class LLMExtractor {
         rawContent = rawContent.substring(lastIdx + 7).trim();
       }
 
-      // 1. 优先使用具有强抗脏字符能力的 extractValidJson 提取 JSON
-      const extractRes = extractValidJson(rawContent);
-      let parsed;
-      if (extractRes.success) {
-        parsed = extractRes.parsed;
-      } else {
-        // 退回原有的解析与 robustJsonLoads 兼容逻辑
+      // 1. 优先使用逆向高级对象扫描（防止包含多段 JSON 或草稿对象）
+      let parsed = findLastAdvancedJsonObject(rawContent);
+
+      // 2. 其次使用具有强抗脏字符能力的 extractValidJson 提取 JSON
+      if (!parsed) {
+        const extractRes = extractValidJson(rawContent);
+        if (extractRes.success) {
+          parsed = extractRes.parsed;
+        }
+      }
+
+      // 3. 退回原有的解析与 robustJsonLoads 兼容逻辑
+      if (!parsed) {
         let jsonStr = rawContent;
         const jsonMatch = rawContent.match(/```(?:json)?\s*([\s\S]+?)\s*```/i);
         if (jsonMatch) jsonStr = jsonMatch[1].trim();
@@ -2225,7 +2361,7 @@ export class LLMExtractor {
     try {
       const retryUserMessage = [
         "上一次输出为空、截断或 JSON 结构无效。请重新生成，必须先输出 /thinking/ 包裹的简明分析，再输出 /JSON/ 包裹的完整 JSON 对象。",
-        "不要 Markdown，不要颜文字。/JSON/ 外不要放 JSON 片段。",
+        "全篇只允许输出唯一一个 /JSON/ ... /JSON/ 结构。绝对禁止在 /thinking/ 或思考过程中书写任何大括号 {}、草稿 JSON 或 /JSON/ 标记！不要 Markdown，不要颜文字。/JSON/ 外不要放任何 JSON 片段。",
         "必须包含 orientation、base_prompt、character_prompts、negative_prompt。",
         `若场景可见角色数量 >= 2，则每个 character_prompts 项必须包含 name、prompt、negative_prompt。不要输出 interaction 或 interaction_actions 字段。`,
         `character_prompts 优先包含 ${expectedSceneCharacters.length} 项，按以下顺序且 name 原样复制：${expectedSceneCharacters.map(char => char.name).join("、") || "无角色"}`,
