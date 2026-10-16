@@ -14,6 +14,8 @@ projects/
 !package.json
 !illustrator_config.example.json
 !manifest.json
+!docs/suozhang_r18_full.json
+!docs/suozhang-regular.json
 
 # Local reference projects and legacy root scripts that should not be republished
 Auto-NovelAI-Refactor/
@@ -41,6 +43,8 @@ server/illustrator_config.json
 
 # Large local docs and tutorials
 小白x四次元壁生图教程以及NAI基础知识讲解.md
-docs/
+docs/*
+!docs/suozhang_r18_full.json
+!docs/suozhang-regular.json
 doc/
 
