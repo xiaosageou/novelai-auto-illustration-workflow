@@ -1,10 +1,12 @@
 import { robustJsonLoads, checkTextCompleteness, extractValidJson } from '../utils/json-repair.js';
 import { conservativeCompletionNaiWeights, cleanCharacterDnaTags, isTransientTag, preserveTextForLlm, detectConcatenatedWords, normalizeDanbooruPromptSegment } from '../utils/prompt-cleaner.js';
 import { normalizeSceneCard, buildSceneDescription, getSceneCharacters } from '../utils/scene-structure.js';
+import { findSexPosition, STANDARD_SEX_POSITIONS } from '../utils/sex-positions.js';
 import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL, DEFAULT_REGENERATE_SCENE_PROMPT } from '../utils/default-prompts.js';
 import { getExponentialBackoffDelaySeconds } from '../utils/backoff.js';
 import { estimateV45Tokens } from './prompt-builder.js';
 import { ensureAdvancedPromptContract, withSystemPrefix } from '../utils/advanced-prompt-contract.js';
+import { promptReferenceService } from './prompt-reference-service.js';
 
 export { ensureAdvancedPromptContract, withSystemPrefix } from '../utils/advanced-prompt-contract.js';
 
@@ -933,6 +935,7 @@ function ensureStructuredScenePrompt(prompt) {
   "scene_idx": 1,
   "trigger_sentence": "逐字复制正文中的连续原文短片段，8-30字，能Ctrl+F精准命中",
   "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
+  "sex_position": "性爱/亲密场景从26种标准动作与体位（15种核心体位：传教士位、种付位、四足后入、俯卧后入、正向骑乘、反向骑乘、面对面对坐、背向坐身、站立后入、单腿站立、正向火车便当、逆向火车便当、汤匙侧卧、侧卧提腿、倒栽折叠位；7种亲密侍奉：手交侍奉、口交侍奉、舔阴侍奉、乳交侍奉、足交侍奉、股间素股、69式互侍；4种多人群像：双女侍奉、双男夹击、群芳簇拥、群像围攻）中选或自拟；非性爱亲密场景填 null 或空字符串",
   "visual_description": "一个瞬间定格的单帧画面，40-80 字，开头或前半句必须明确场景发生地点，只描述这一帧已经看得见的状态",
   "characters": [
     { "name": "角色姓名", "gender": "boy 或 girl 或 woman 或 man 或 other", "clothing": "必须填具体服装名；正文未直接写明时按身份、时代、地点、天气和上下文推断；正文明写裸体才填 nude；禁止填 未指明" }
@@ -940,6 +943,7 @@ function ensureStructuredScenePrompt(prompt) {
   "core_action": "一句话概括这一帧谁对谁做什么，必须是静态关系或已发生的接触"
 }
 - 不要输出 environment、cinematography、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show。这些留给后续 Prompt 生成阶段补全。
+- sex_position 约束：如果是性爱、亲密接触或多人群像场景，必须从 26 种标准体位/亲密动作（15种核心插入体位、7种亲密侍奉、4种多人群像）中选择最贴切的一个；没有匹配则自拟；非性爱亲密场景填 null 或 ""。
 - visual_description 必须是单帧定格，开头或前半句必须明确发生地点（如“昏暗卧室中央”“雪夜庭院的石阶前”“地铁车厢内”）；禁止“然后、随后、接着、慢慢、逐渐、准备、开始”等过程词。
 - characters[].clothing 必须写出具体可见衣着，优先从正文、相邻上下文和当前场景状态推断，并尽量明确上衣、下衣及必要时的内衣状态；正文未直接说明时，按角色身份、时代、地点、天气和当前动作推断合理衣着。明确裸体才填 nude；禁止对可见角色填 未指明，默认仍穿着衣物。
 - 正确示例：'昏暗卧室中央，女子跪地抬头看向床边的男人，衣襟凌乱。'
@@ -1010,7 +1014,7 @@ function uniquePhrases(phrases = []) {
 
 const WIDE_FRAMING_TAG_PATTERN = /\b(?:wide(?:[- ]view| shot)?|far shot|long shot|panorama|panoramic(?: view)?|establishing shot|environment-only|full scene vista|distance view)\b/i;
 const CLOSE_FRAMING_TAG_PATTERN = /\b(?:close-up|close up|medium close-up|medium close up|cowboy shot|upper body|from waist up|waist-up|bust shot|tight framing)\b/i;
-const PENETRATION_INSET_TAG_PATTERN = /\b(?:magnified inset|x-ray inset|xray inset|cutaway inset|cross-section|cross section|penetration focus|main scene plus one inset|external view main frame)\b/i;
+const PENETRATION_INSET_TAG_PATTERN = /\b(?:magnified inset|x-ray inset|xray inset|cutaway inset|cross-section|cross section|penetration focus|main scene plus one inset|external view main frame|deep penetration|uterus x-ray|stomach bulge)\b/i;
 
 function isExplicitPenetrationScene(sceneDesc = {}, nsfwRating = 'sfw') {
   if (nsfwRating !== 'nsfw_explicit') return false;
@@ -1297,8 +1301,9 @@ function buildSceneExtractionUserContent({
   parts.push(
     ``,
     `【轻量场景卡字段（必须）】`,
-    `- 每个场景只输出：scene_idx、trigger_sentence、nsfw_rating、visual_description、characters（含 name/gender/clothing）、core_action。`,
+    `- 每个场景只输出：scene_idx、trigger_sentence、nsfw_rating、sex_position、visual_description、characters（含 name/gender/clothing）、core_action。`,
     `- 不要输出 environment、cinematography、interactions、plot_traces、text_elements、visual_entities、must_show、must_not_show。`,
+    `- sex_position：若为性爱、亲密侍奉或多人群像场景，必须从 26 种标准体位与动作（15种核心体位：传教士位、种付位、四足后入、俯卧后入、正向骑乘、反向骑乘、面对面对坐、背向坐身、站立后入、单腿站立、正向火车便当、逆向火车便当、汤匙侧卧、侧卧提腿、倒栽折叠位；7种亲密侍奉：手交侍奉、口交侍奉、舔阴侍奉、乳交侍奉、足交侍奉、股间素股、69式互侍；4种多人群像：双女侍奉、双男夹击、群芳簇拥、群像围攻）中选择，没有则自拟；非性爱亲密场景填 null 或 ""。`,
     `- characters 数组最多 3 人；多人场景只保留这一帧真正推动画面的主要人物。若原文超过 3 人，必须裁剪次要人物，只保留动作主体、动作受体、镜头中心人物。每个 character 项必须包含 name、gender、clothing 三个字段。`,
     `- characters[].clothing 必须填写具体可见衣着，优先从正文、相邻上下文和当前场景状态推断，尽量写清上衣和下衣；若正文未直接说明，必须按角色身份、时代、地点、天气和当前动作推断合理衣着；没有外衣或只剩内层衣物时进一步写明内衣状态；明确裸体才填 nude，禁止填 未指明。`,
     `- NSFW 分级条件是当前单帧裸体、半裸、明确露出乳头/乳晕（露点），或下体私密部位裸露（外生殖器、阴部、肛门或臀缝）。仅有亲亲抱抱、挑逗或隔着衣服的互动，且没有这些条件时，nsfw_rating 必须为 sfw；禁止猜测或升级。`,
@@ -1556,6 +1561,7 @@ export class LLMExtractor {
             `请针对以下章节正文中指定的「触发高潮句」，重新提炼并生成一份轻量场景卡。只保留这一帧值得画的瞬间定格信息。`,
             `【人数硬约束】: 场景最多只允许 3 个实际可见或直接参与互动的人物。若原文涉及更多人，必须裁剪次要人物，只保留推动画面的主要人物；背景路人不要写入 characters。`,
             `【场景卡必填细节】: visual_description 必须在开头或前半句明确发生地点；characters[].clothing 必须填写具体可见衣着，优先根据正文、完整段落和当前场景推断；未直接说明时必须按身份、时代、地点、天气和当前动作补全合理衣着，尽量写清上衣、下衣和必要时的内衣状态；明确裸体才填 nude，禁止填 未指明。`,
+            `【性爱体位与亲密动作要求】: 若涉及性爱/亲密接触/多人群像，sex_position 必须从 26 种标准体位（15种核心体位：传教士位、种付位、四足后入、俯卧后入、正向骑乘、反向骑乘、面对面对坐、背向坐身、站立后入、单腿站立、正向火车便当、逆向火车便当、汤匙侧卧、侧卧提腿、倒栽折叠位；7种亲密侍奉：手交侍奉、口交侍奉、舔阴侍奉、乳交侍奉、足交侍奉、股间素股、69式互侍；4种多人群像：双女侍奉、双男夹击、群芳簇拥、群像围攻）中选择，没有则自拟；非性爱亲密场景填 null 或 ""。`,
             `【瞬间定格规则】: visual_description 必须是单帧画面，只描述已经看得见的状态。禁止写“然后、随后、接着、慢慢、逐渐、准备、开始”等过程动作。正确示例：'门厅入口处，她跪在门边抬头看向来人。' 错误示例：'她先跪下，然后抬头看向来人。'`,
             `【章节名】: ${cleanedTitle}`,
             `【触发句 (trigger_sentence)】: 「${triggerSentence}」`,
@@ -1943,6 +1949,7 @@ export class LLMExtractor {
     return JSON.stringify({
       visual_description: sceneInput.visual_description || sceneInput.scene_desc || buildSceneDescription(sceneInput),
       core_action: sceneInput.core_action || '',
+      sex_position: sceneInput.sex_position || '',
       character_names: Array.isArray(sceneInput.character_names) ? sceneInput.character_names : [],
       environment: sceneInput.environment || '',
       cinematography: sceneInput.cinematography || '',
@@ -1997,16 +2004,60 @@ export class LLMExtractor {
     const isPenetrationScene = isExplicitPenetrationScene(sceneDesc, nsfwRating);
     const nsfwLine = `【NSFW 等级】${nsfwRating}（请严格按照 system prompt 中对该等级的标签规则输出，不得遗漏也不得升级）`;
     const nsfwPerspectiveLine = nsfwRating !== 'sfw'
-      ? "【NSFW 镜头机位】base_prompt 优先使用近景镜头 tag，让主体尽量占满画面，例如 close-up、medium close-up、cowboy shot、upper body、from waist up。尽量避免 wide shot、far shot、long shot 等远景，除非剧情必须展示大环境。再补一个符合场景站位的视角 tag（如 side view、from above、over-the-shoulder shot、pov）。只有接触点不清楚时再加入 foreground/background separation 等空间 tag。保持一套连贯机位，禁止矛盾视角。"
+      ? "【NSFW 镜头与构图】base_prompt 优先使用能看清肢体接触与神态的景别：立绘穿搭与体态平衡用 cowboy shot 或 medium shot，特写与微表情用 close-up、upper body。再补一个明确视角（如 side view、from above、over-the-shoulder shot、pov），并在 base_prompt 中加入 1.3::rim light:: 轮廓光与三层景深（foreground framing 与 background bokeh），保持一套连贯机位，禁止矛盾视角。"
       : '';
     const penetrationInsetLine = nsfwRating === 'nsfw_explicit'
       ? (isPenetrationScene
-        ? "【插入场景放大图规则（强制）】本场景存在明确性器插入。/thinking/ 中必须明确写出“主图近景 + 单个局部放大 x-ray inset”的构图决定。/JSON/ 的 base_prompt 必须包含 magnified inset、x-ray inset、cutaway inset、cross-section、penetration focus 等局部放大标签；主图本体保持正常外视角，不要把整张主图做成 x-ray。"
-        : "【插入场景放大图规则（非插入场景禁止误用）】若场景并非真实插入行为（手交、抚摸、接吻、脱衣、非插入式口交/挑逗），不要加入 inset_image、magnified_inset、xray_inset。")
+        ? [
+            "【插入剖面与透视规则（所长全量实战架构）】本场景存在明确交合插入：",
+            "- /thinking/ 中必须明确构图决策：主图保持正常外视角（如 cowboy shot 或 side view），规划局部剖面 (cross-section)。",
+            "- 【优先使用 cross-section 代替裸 x-ray】：在 base_prompt 必须优先使用 cross-section、deep penetration、penetration focus（或 magnified inset、cutaway inset），绝不要单用 x-ray 避免人物身体变透明或骨骼化；若需内部器官透视使用精准靶向词（如 uterus x-ray、cervix、internal cumshot）。",
+            "- 【体内穿透与体表回显双向联动】：在承受方角色的 character_prompts 中，联动加入 stomach bulge（腹部微隆）与 arched back、trembling，形成体内穿透与体表受力的双向真实呼应。",
+            "- 主图本体必须保持正常外部视角与精致肌肤质感，不要把整张主图做成医用 x-ray。"
+          ].join("\n")
+        : "【插入剖面规则（非插入场景禁止误用）】若场景并非真实插入行为（手交、抚摸、接吻、脱衣、非插入式口交/挑逗），不要加入 cross-section、inset_image、magnified_inset、xray_inset、stomach bulge。")
       : '';
+    const rawSexPosition = (typeof sceneDesc === 'object' ? (sceneDesc.sex_position || sceneDesc.sexPosition) : '') || '';
+    const matchedSexPos = findSexPosition(
+      rawSexPosition ||
+      (typeof sceneDesc === 'object' ? `${sceneDesc.visual_description || ''} ${sceneDesc.core_action || ''} ${sceneDesc.interactions || ''}` : '')
+    );
+    let sexPositionLine = '';
+    if (matchedSexPos) {
+      const positionName = rawSexPosition || matchedSexPos.name;
+      const isGroup = /threesome|group|harem|gangbang/i.test(matchedSexPos.id) || /双|群|多/.test(positionName);
+      sexPositionLine = [
+        `【性爱体位与参考 Prompt（最高参考优先级）】检测到体位：${positionName}`,
+        `该体位的标准参考提示词模组为：`,
+        `  ${matchedSexPos.prompt}`,
+        `【体位融合要求】`,
+        `- 在构图、机位视角、四肢骨骼受力与肢体接触细节中重点参考此模组。`,
+        `- 将机位/视角/全局环境交互（如 from side, cowboy shot, from below 等）合理融入 base_prompt。`,
+        isGroup ? `- 【多人群像特规】在 base_prompt 明确写入人物数量标签（如 2girls, 1boy 或 1girl, 2boys），并在画面构图上规划左右夹攻、前后环绕或簇拥站位，避免人物融体重叠。` : null,
+        `- 将具体角色的身体姿态、骨骼受力、手部抓取与神态反应（如 on back, spread legs, arched back, grabbing hips, trembling, sweat 等）合理融入对应角色的 character_prompts。`,
+        `- 结合本场景的角色 DNA 与剧情设定自然融合，保持 tags 简练，严格控制在 410 tokens 以内。`
+      ].filter(Boolean).join('\n');
+    } else if (rawSexPosition) {
+      sexPositionLine = [
+        `【性爱体位（最高参考优先级）】检测到体位：${rawSexPosition}`,
+        `请在规划生图参数时重点刻画此体位的解剖学四肢姿态、机位视角、受力点与接触交互。将全局机位融入 base_prompt，将角色各自的肢体动作与反应融入 character_prompts。`
+      ].join('\n');
+    }
     const plotTracesLine = plotTraces
       ? `【剧情痕迹（必须转换为对应角色段 tags）】${plotTraces} — 例如 messy hair, tears, sweat, blood stains 等；不要写自然语言句子。`
       : '';
+
+    // 检索所长真机参考 Prompt（Few-Shot RAG）
+    let referenceExamplesLine = '';
+    try {
+      const retrieved = promptReferenceService.findReferences(sceneDesc, { limit: 2 });
+      if (retrieved && retrieved.length > 0) {
+        referenceExamplesLine = promptReferenceService.formatReferencesForLlm(retrieved);
+        onProgressLog?.(`[真机参考检索] 命中 ${retrieved.length} 条所长实机参考范例（${retrieved.map(r => r.title || r.category).join(' / ')}）`);
+      }
+    } catch (refErr) {
+      console.warn('[LLM Extractor] 检索真机参考范例异常:', refErr.message);
+    }
 
     const tagModeEnforcementLine = [
       "【Danbooru 标签模式 — 强制规则】",
@@ -2015,11 +2066,21 @@ export class LLMExtractor {
       "3. character_prompts[].prompt 必须以 girl, / boy, / woman, / man, / other, 开头，禁止出现 1girl、1boy、solo、no humans 等人数标签。",
       "4. Danbooru tag 指短视觉标签，不是英文句子。优先使用 lower_snake_case 或常见短标签，如 white_dress、looking_at_viewer、from_behind、cowboy shot。",
       "5. 遇到单个标签难以准确表达的概念时，先拆成多个可见标签组合，不要退回自然语言整句。例如“从背后抱住”应优先写成 from_behind、hug、arms_around_waist，而不是一句英文描述。",
-      "6. 互动必须尽量使用 source#action、target#action、mutual#action 标清主动方和承受方，而且这些方向标签只能放在对应角色的 character_prompts[].prompt 中，must not appear in base_prompt。每一个方向性互动必须恰好由一组 source#action 与对应的 target#action 成对出现，整张图最多 3 对；两个角色共同、互相完成同一动作时，两人的 prompt 都使用相同的 mutual#action，不能改写成 source#/target#，且该 mutual 对也计入最多 3 对。",
+      "6. 互动必须尽量使用 source#action、target#action、mutual#action 标清主动方和承受方（仅放在 character_prompts 中，不得出现在 base_prompt）。每一个方向性互动必须恰好由一组 source#action 与对应的 target#action 成对出现，整张图最多 3 对；主动方重点刻画接触点与抓取控制（如 waist grab, arms around neck, interlocked fingers），承受方必须配合体感生理反馈（如 blush, trembling, heavy breathing, looking up/away）；两个角色共同、互相完成同一动作时，两人的 prompt 都使用相同的 mutual#action，不能改写成 source#/target#，且该 mutual 对也计入最多 3 对。",
       "7. Token 预算必须前置控制：总正向 tags 不超过 410 tokens。优先删除氛围形容词、重复概念、次要配饰和未被当前画面选中的 DNA tag；不得删除人物数量和核心互动。",
       "8. 衣着状态必须忠实于场景卡 characters[].clothing：有具体服装名则用对应 tags（如 white_dress、school_uniform）；是 nude 则用 completely_nude；是 未指明 时，把角色 DNA 仅当作候选参考，自行判断哪些服装或外貌 tag 对当前画面可见且必要。不得整段照抄 DNA，也不得自行编造细节。",
       "9. 除非场景卡明确表示已经露出、强调 crotch bulge、或明确写出 penis/erection 状态，否则角色只要仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，或者 clothing 仍是 未指明 / unspecified / unknown，就不要擅自加入 penis、erection、erect_penis、large_penis、penis_outline、big_penis 等生殖器状态 tags，也不要从 DNA 参考继承这类私密体征。",
       "10. 后端不会补写角色 DNA、位置、互动/性行为体位、近景镜头或插入局部放大。在 /thinking/ 中，每个角色必须先写一行 `DNA selection: keep [tag,...]; drop [tag,...]`，逐项决定候选 DNA 的去留；随后只把 keep 中确有必要的 tag 写入 /JSON/。不得因 DNA 中出现就自动写入 prompt。"
+    ].join("\n");
+
+    const interactionEngineeringLine = [
+      "【高张力互动与多角色协同工程法则（最高优先级执行）】",
+      "若场景中存在两人或两人以上，必须严格按以下五层法则编排互动标签：",
+      "1. 【空间方位与咬合锚点 (Spatial Anchors)】：base_prompt 必须明确角色相对坐标与咬合姿势，杜绝融体漂移。例如：side by side, on the left, on the right, face-to-face, back-to-back, from behind, sitting on lap, straddling, sandwiched, flanking。",
+      "2. 【微观接触点具象化 (Concrete Contact Points)】：严禁用笼统动词（如单纯写 hug, kiss, touching）。必须拆解为解剖学接触点：如亲吻写成 french kiss, open mouth, tongues entwined, saliva trail；拥抱写清 arms around neck, arms around waist, head on shoulder；抓取与控制写清 waist grab, ankle grab, pinned against wall, holding wrist, interlocked fingers。",
+      "3. 【视线与注意力对齐 (Gaze & Attention Vectors)】：视线是角色的隐形引力线。必须为互动双方指定视线交互：对视写 looking at each other, eye contact, looking at another；上下位写 looking down (攻/俯视) 与 looking up, head tilted (受/仰视)；羞怯抗拒写 looking away, eyes averted；背向互动写 turning head, looking back over shoulder。",
+      "4. 【受体生理与体感实时反馈闭环 (Physiological Feedback Loop)】：任何施加在角色上的动作，承受方 (target#) 必须挂载生理受力与情绪反馈，绝不能像静态木偶。承受方必须补齐对应体征：blush, flushed face, trembling, heavy breathing, parted lips, sweat, arched back, head back, tears in eyes 等。",
+      "5. 【协同复合与防切片 (Cooperative & Anti-Multi-View)】：多人协作动作优先使用协同标签（如 cooperative fellatio, sandwiched, two-footed footjob, symmetrical pose）；base_prompt 或 negative_prompt 必须压制多分镜：-1.5::multiple views, split screen::。"
     ].join("\n");
 
     const userMessage = [
@@ -2037,7 +2098,7 @@ export class LLMExtractor {
       "Danbooru 标签的判断标准：它应该像 white_dress、long_hair、looking_at_viewer、from_behind、cowboy shot 这样的短视觉标签，而不是完整英文句子。若一个概念没有把握对应单标签，就拆成多个可见标签，不要写解释性 prose。",
       "除非场景卡明确表示已经露出或明确点出 penis/erection 状态，否则只要角色仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，或者 clothing 仍是 未指明 / unspecified / unknown，就不要写 penis、erection、erect_penis、large_penis、penis_outline、big_penis 等标签，也不要从 DNA 参考继承这类私密体征。",
       "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局描述（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪 tag，优先使用 restrained、clear 的表情 tags，禁止把所有角色都写成 calm_expression、expressionless 或 natural_expression。禁止无端生成 bared_teeth, clenched_teeth, sharp_teeth, fangs, crazy_grin, distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。禁止自然语言句子，并用正常空格分隔 tags，禁止粘连单词。",
-      "镜头默认优先近景，让角色和接触点更大更清楚。除非场景卡明确要求展示大环境或远距离关系，否则不要使用 wide shot、far shot、long shot、panorama。",
+      "【电影级构图与景别科学分流】立绘穿搭与双人体态优先 cowboy shot (七分身) 或 medium shot (半身)，兼顾服装细节与精致五官；强烈情绪与微表情使用 close-up / portrait；宏大战场或环境探索使用 wide shot, scenery focus 且必须搭配 solo focus 或 small [char] 防止人物被吞没；动势突袭或失衡惊悚使用 dutch angle (倾斜角) 与冲向镜头时的 foreshortening (透视缩短)；在 base_prompt 构筑三层纵深（前景框架遮挡 + 中景主体 + 背景虚化 bokeh），并加入 1.3::rim light:: 轮廓光将角色从背景中立体剥离。负面词必须包含 -1.5::multiple views:: 防切片。",
       "瞬间定格示例：正确是 'A Girl Kneeling By The Door, Looking Up At The Visitor.'；错误是 'A Girl Kneels Down, Then Looks Up At The Visitor.'。你的 prompt 只能表达前者这种已经定格的画面。",
       "NSFW 场景的角色表情必须针对当前情境生成 Danbooru tags；根据角色实际状态选择一个主情绪，禁止所有角色复用同一副表情，也禁止无依据的 ahegao、crazy grin 或 distorted face。",
       "背景不是硬性要求。根据原文与构图需要选择详细环境、简洁背景或纯色背景；近景、动作特写和角色主导画面可以使用 simple background, plain background, white background, black background, gradient background, or backgroundless。不要为了凑背景短语挤占主体动作与角色细节。",
@@ -2045,9 +2106,12 @@ export class LLMExtractor {
       getSceneCharacters(sceneDesc).length >= 3
         ? "三人及以上复杂互动必须用 tags 构建清晰动作关系：每个直接身体接触都要通过 source#/target#/mutual# 标明主动方、承受方和动作。为每个角色分配互不冲突的 left/center/right 与 foreground/midground/background 位置 tag。"
         : '',
+      interactionEngineeringLine,
       nsfwLine,
       nsfwPerspectiveLine,
       penetrationInsetLine,
+      sexPositionLine,
+      referenceExamplesLine,
       plotTracesLine,
       tagModeEnforcementLine,
       "",
@@ -2158,6 +2222,7 @@ export class LLMExtractor {
         `character_prompts 优先包含 ${expectedSceneCharacters.length} 项，按以下顺序且 name 原样复制：${expectedSceneCharacters.map(char => char.name).join("、") || "无角色"}`,
         "禁止只返回旧式 prompt 字段。base_prompt 中不得包含角色外貌、服装、表情或个人姿势。",
         nsfwPerspectiveLine,
+        sexPositionLine,
         "务必完整闭合 JSON；若内容较长，优先减少次要细节，不得截断。",
         "【场景】",
         scenePayload,

@@ -8,6 +8,7 @@ import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
 import { isNaiLogMessage } from './logClassification.js';
 import { mergeProjectProgressSnapshot } from './projectProgressState.js';
 import { placeReaderScenesByParagraph } from './readerScenePlacement.js';
+import ComicWorkbench from './ComicWorkbench.jsx';
 import {
   SCENE_CHARACTER_DETAIL_FIELDS,
   buildCharacterReferenceSummary,
@@ -1208,6 +1209,7 @@ function App() {
     return {
       trigger_sentence: String(scene.trigger_sentence || ''),
       nsfw_rating: String(scene.nsfw_rating || 'sfw'),
+      sex_position: String(scene.sex_position || ''),
       visual_description: String(scene.visual_description || scene.scene_desc || ''),
       core_action: String(scene.core_action || ''),
       environment: String(scene.environment || ''),
@@ -1272,6 +1274,7 @@ function App() {
   const serializeSceneDraft = (draft = {}) => ({
     trigger_sentence: String(draft.trigger_sentence || '').trim(),
     nsfw_rating: String(draft.nsfw_rating || 'sfw').trim() || 'sfw',
+    sex_position: String(draft.sex_position || '').trim(),
     visual_description: String(draft.visual_description || '').trim(),
     core_action: String(draft.core_action || '').trim(),
     environment: String(draft.environment || '').trim(),
@@ -1687,6 +1690,7 @@ function App() {
     <div className={[
       'app-container',
       workspaceTab === 'reader' && projectDetails ? 'reader-mode' : '',
+      workspaceTab === 'comics' && projectDetails ? 'comic-mode' : '',
       isProjectSidebarCollapsed ? 'project-sidebar-collapsed' : ''
     ].filter(Boolean).join(' ')}>
       {isProjectSidebarCollapsed && !projectDetails && (
@@ -1874,7 +1878,7 @@ function App() {
                 <button className="btn-secondary" onClick={() => setIsConfigOpen(true)}>
                   <Settings size={16} /> 配置
                 </button>
-                {pipelineRunning ? (
+                {workspaceTab !== 'comics' && (pipelineRunning ? (
                   <button className="btn-secondary" style={{ color: 'var(--color-orange)' }} onClick={stopPipeline}>
                     <Square size={16} /> 暂停
                   </button>
@@ -1882,14 +1886,17 @@ function App() {
                   <button className="btn-primary" onClick={startPipeline}>
                     <Play size={16} /> 启动
                   </button>
-                )}
-                <button className="btn-secondary" onClick={exportEPUB}>
+                ))}
+                {workspaceTab !== 'comics' && <button className="btn-secondary" onClick={exportEPUB}>
                   <Download size={16} /> 编译 EPUB
-                </button>
+                </button>}
               </div>
             </div>
 
             <div className="workspace-tabs" role="tablist" aria-label="项目工作区">
+              <button className={workspaceTab === 'comics' ? 'active' : ''} onClick={() => setWorkspaceTab('comics')}>
+                <Clapperboard size={15} /> 漫画工作台
+              </button>
               <button
                 className={workspaceTab === 'scenes' ? 'active' : ''}
                 onClick={() => setWorkspaceTab('scenes')}
@@ -1903,6 +1910,8 @@ function App() {
                 <FileText size={15} /> 正文阅读
               </button>
             </div>
+
+            {workspaceTab === 'comics' && <ComicWorkbench key={activeProject} apiBase={API_BASE} projectName={activeProject} />}
 
             {/* 章节与正文卡片容器 */}
             <div style={{ display: workspaceTab === 'scenes' ? 'grid' : 'none', gridTemplateColumns: '200px 1fr', gap: '16px', flex: 1, overflow: 'hidden' }}>
@@ -2114,6 +2123,11 @@ function App() {
 
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '10px' }}>
                                   <span className="tag-badge scene" style={{ margin: 0 }}>{scene.nsfw_rating || 'sfw'}</span>
+                                  {scene.sex_position && (
+                                    <span className="tag-badge scene" style={{ margin: 0, color: '#f472b6', borderColor: 'rgba(244,114,182,0.4)', fontWeight: 600 }}>
+                                      体位: {scene.sex_position}
+                                    </span>
+                                  )}
                                   <span className="tag-badge scene" style={{ margin: 0 }}>{sceneCharacterCount} 人</span>
                                   {scene.image_path && <span className="tag-badge scene" style={{ margin: 0 }}>有图</span>}
                                   {hasPrompt && (
@@ -2556,7 +2570,7 @@ function App() {
               )}
 
               <div style={{ overflowY: 'auto', paddingRight: '4px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <div style={{ ...sceneEditorSectionStyle, gridTemplateColumns: '1fr 150px 120px 120px', gap: '10px' }}>
+                <div style={{ ...sceneEditorSectionStyle, gridTemplateColumns: '1fr 130px 160px 100px 100px', gap: '10px' }}>
                   <label style={sceneEditorLabelStyle}>
                     Trigger Sentence
                     <input style={sceneEditorInputStyle} value={sceneEditor.draft.trigger_sentence} onChange={(e) => updateSceneDraft(draft => ({ ...draft, trigger_sentence: e.target.value }))} />
@@ -2569,6 +2583,44 @@ function App() {
                       <option value="nsfw_moderate">nsfw_moderate</option>
                       <option value="nsfw_explicit">nsfw_explicit</option>
                     </select>
+                  </label>
+                  <label style={sceneEditorLabelStyle}>
+                    Sex Position
+                    <input
+                      list="standard-sex-positions-datalist"
+                      style={sceneEditorInputStyle}
+                      placeholder="体位/动作(选或自拟)"
+                      value={sceneEditor.draft.sex_position || ''}
+                      onChange={(e) => updateSceneDraft(draft => ({ ...draft, sex_position: e.target.value }))}
+                    />
+                    <datalist id="standard-sex-positions-datalist">
+                      <option value="传教士位" />
+                      <option value="种付位" />
+                      <option value="四足后入" />
+                      <option value="俯卧后入" />
+                      <option value="正向骑乘" />
+                      <option value="反向骑乘" />
+                      <option value="面对面对坐" />
+                      <option value="背向坐身" />
+                      <option value="站立后入" />
+                      <option value="单腿站立" />
+                      <option value="正向火车便当" />
+                      <option value="逆向火车便当" />
+                      <option value="汤匙侧卧" />
+                      <option value="侧卧提腿" />
+                      <option value="倒栽折叠位" />
+                      <option value="手交侍奉" />
+                      <option value="口交侍奉" />
+                      <option value="舔阴侍奉" />
+                      <option value="乳交侍奉" />
+                      <option value="足交侍奉" />
+                      <option value="股间素股" />
+                      <option value="69式互侍" />
+                      <option value="双女侍奉" />
+                      <option value="双男夹击" />
+                      <option value="群芳簇拥" />
+                      <option value="群像围攻" />
+                    </datalist>
                   </label>
                   <label style={sceneEditorLabelStyle}>
                     Width

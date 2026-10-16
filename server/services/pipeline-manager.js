@@ -1059,7 +1059,7 @@ export class PipelineManager {
       vibeStrengths: vibeBundle ? vibeBundle.encodings.map(() => Number(this.config.vibeStrength) || 0.45) : null,
       vibeInfoExtracted: vibeBundle ? vibeBundle.informationExtracted.map(value => Number.isFinite(value) ? value : (Number(this.config.vibeInfoExtracted) || 1.0)) : null,
       vibeNormalizeStrengths: this.config.vibeNormalizeStrengths !== false,
-      seed: null,
+      seed: Number.isInteger(scene.render_seed) ? scene.render_seed : null,
       signal: null,
       onRetry: (msg) => this.writeLog(`  [场景 ${scene.scene_idx}] ${msg}`, "warning")
     });
@@ -1537,7 +1537,7 @@ export class PipelineManager {
           ? vibeBundle.informationExtracted.map(value => Number.isFinite(value) ? value : (Number(this.config.vibeInfoExtracted) || 1.0))
           : null,
         vibeNormalizeStrengths: this.config.vibeNormalizeStrengths !== false,
-        seed: null,
+        seed: Number.isInteger(scene.render_seed) ? scene.render_seed : null,
         signal: null,
         onRetry: (msg) => this.writeLog(`  [场景 ${scene.scene_idx}] ${msg}`, "warning")
       });
@@ -1770,6 +1770,7 @@ export class PipelineManager {
     const lightweightFieldsChanged = (
       comparableText(updates.trigger_sentence) !== comparableText(currentScene.trigger_sentence) ||
       comparableText(updates.nsfw_rating) !== comparableText(currentScene.nsfw_rating) ||
+      comparableText(updates.sex_position) !== comparableText(currentScene.sex_position) ||
       comparableText(updates.visual_description) !== comparableText(currentScene.visual_description || currentScene.scene_desc) ||
       comparableText(updates.core_action) !== comparableText(currentScene.core_action) ||
       stringifyComparable(comparableStringList(updates.character_names)) !== stringifyComparable(comparableStringList(currentScene.character_names))

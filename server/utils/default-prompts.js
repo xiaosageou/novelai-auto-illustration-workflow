@@ -135,6 +135,41 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 - 普通肢体抚摸、接吻、脱衣、普通裸露、非穿透式动作等场景禁止规划放大图或 x-ray。
 - 若属于穿透场景，请在 cinematography、visual_entities、must_show 中明确体现：主图、单个 inset、以及 inset 内的 x-ray 接触点。
 
+【性爱体位与亲密动作规则 (sex_position)】
+- 当场景为性爱、亲密接触或多人群像时（如 nsfw_mild、nsfw_moderate 或 nsfw_explicit 涉及亲密行为），必须输出具体的动作/体位 sex_position。
+- 优先从以下 26 种标准体位/亲密动作中选择最贴切的名称：
+  [核心体位 15 种]
+  1. 传教士位（仰卧正身）
+  2. 种付位（双腿折叠朝天）
+  3. 四足后入（跪趴狗爬）
+  4. 俯卧后入（趴平在床压背）
+  5. 正向骑乘（女上男下面对跨坐）
+  6. 反向骑乘（背对男方跨坐）
+  7. 面对面对坐（怀抱对坐/树袋熊）
+  8. 背向坐身（椅上或桌边背向坐身）
+  9. 站立后入（倚墙或弯腰站立后入）
+  10. 单腿站立（单腿架起站立）
+  11. 正向火车便当（悬空抱起对插）
+  12. 逆向火车便当（背向悬空抱起）
+  13. 汤匙侧卧（双人侧卧后入）
+  14. 侧卧提腿（侧卧一字马抬腿）
+  15. 倒栽折叠位（倒立桩击位）
+  [亲密侍奉 7 种]
+  16. 手交侍奉（手部握抚撸动）
+  17. 口交侍奉（跪姿口部含吮）
+  18. 舔阴侍奉（仰卧展腿口舌承欢）
+  19. 乳交侍奉（双乳夹紧摩擦）
+  20. 足交侍奉（玉足踩弄挑逗）
+  21. 股间素股（大腿内侧夹磨）
+  22. 69式互侍（双向倒转互侍）
+  [多人群像 4 种]
+  23. 双女侍奉（2女1男双飞环绕）
+  24. 双男夹击（1女2男前后夹心）
+  25. 群芳簇拥（多女簇拥男主后宫）
+  26. 群像围攻（多男包围女主群像）
+- 若场景中的具体动作不在上述 26 种内，允许自行填写贴切自拟名称。
+- 若本场景非亲密/性爱场景（如纯聊天、战斗、日常、普通散步等），sex_position 填 null 或 ""。
+
 ---
 
 请严格以以下合规的 JSON 数组格式返回，不要有任何解释或 Markdown 代码块：
@@ -143,6 +178,7 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
     "scene_idx": 1,
     "trigger_sentence": "逐字复制正文中的连续原文短片段，8-30字，能Ctrl+F精准命中",
     "nsfw_rating": "sfw | nsfw_mild | nsfw_moderate | nsfw_explicit 四选一",
+    "sex_position": "性爱/亲密场景从26种标准体位与动作（传教士位、种付位、四足后入、俯卧后入、正向骑乘、反向骑乘、面对面对坐、背向坐身、站立后入、单腿站立、正向火车便当、逆向火车便当、汤匙侧卧、侧卧提腿、倒栽折叠位、手交侍奉、口交侍奉、舔阴侍奉、乳交侍奉、足交侍奉、股间素股、69式互侍、双女侍奉、双男夹击、群芳簇拥、群像围攻）中选或自拟；非性爱亲密场景填 null 或空字符串",
     "visual_description": "一个瞬间定格的单帧画面，40-80字，开头或前半句必须明确场景发生地点，只描述这一帧已经看得见的状态",
     "characters": [
       {
@@ -166,7 +202,8 @@ export const DEFAULT_EXTRACT_SCENES_PROMPT = `<sandbox mode="cinematic_storyboar
 - 每个 nsfw_rating 是否是 sfw / nsfw_mild / nsfw_moderate / nsfw_explicit 四选一？
 - 若 nsfw_rating 为 nsfw_moderate 或 nsfw_explicit，visual_description 中是否已包含极其直白的裸露/身体描写细节，绝对禁止隐喻和意境规避？
 - core_action 是否只概括这一帧的核心互动，而不是讲述前后过程？
-- 每个 characters 项的 clothing 字段是否都填写了具体可见衣着：正文明写服装则如实填写，未直接写明时是否已按身份、时代、地点、天气和上下文推断；无外衣时是否补明内衣状态；明确裸体才填 nude，且没有填“未指明”？`;
+- 每个 characters 项的 clothing 字段是否都填写了具体可见衣着：正文明写服装则如实填写，未直接写明时是否已按身份、时代、地点、天气和上下文推断；无外衣时是否补明内衣状态；明确裸体才填 nude，且没有填“未指明”？
+- 若涉及性爱/亲密接触，sex_position 是否已从 26 种标准体位中选择或填入贴切自拟体位；非性爱场景是否为 null 或空字符串？`;
 
 // ═══════════════════════════════════════════════════════════
 // Prompt 2 · 全书角色 DNA 提取（小说切片 → 角色外观词典）
@@ -458,7 +495,7 @@ Use this schema exactly inside /JSON/:
 - Original/NPC characters need enough selected visual detail to be recognizable in this frame; this does not require a full DNA profile.
 - Scene environment tags stay in base_prompt, not character prompts.
 
-## Interaction Tags
+## Interaction Tags & Multi-Character Dynamics (五层高张力交互系统)
 - For directional interactions, mark roles in the relevant character prompt:
   source#action = active doer
   target#action = receiver
@@ -470,17 +507,35 @@ Use this schema exactly inside /JSON/:
 - Do not assign the same directional role to both characters.
 - Keep character order left-to-right, then top-to-bottom.
 
+### Five-Layer Interaction Engineering (所长全量交互精髓)
+1. **Spatial Anchors (空间方位与咬合锚点)**: base_prompt must establish clear relative coordinates to prevent character melting: side by side, on the left, on the right, face-to-face, back-to-back, from behind, sitting on lap, straddling, sandwiched.
+2. **Concrete Contact Points (微观接触点具象化)**: Avoid bare generic verbs (e.g. hug, kiss, touching). Disassemble into exact anatomical contact points:
+   - Kissing: french kiss, open mouth, tongues entwined, saliva, saliva trail.
+   - Embracing: arms around neck, arms around waist, head on shoulder, interlocked fingers.
+   - Control & Grasping: waist grab, ankle grab, pinned against wall, holding wrist.
+3. **Gaze & Attention Vectors (视线张力与对齐)**:
+   - Mutual gaze: looking at each other, eye contact, looking at another.
+   - Dominant vs Submissive: looking down (dominant/upper) vs looking up, head tilted (submissive/lower).
+   - Shyness/Aversion: looking away, eyes averted.
+   - Turning gaze: turning head, looking back over shoulder.
+4. **Physiological Feedback Loop (受体生理与体感闭环)**: The receiver (target#) must exhibit active physical strain and emotional feedback; never render them as static mannequins:
+   - Respiration: heavy breathing, parted lips, panting.
+   - Bodily strain: arched back, head back, trembling, twitching.
+   - Thermal & Skin: blush, flushed face, sweat, steaming body.
+5. **Cooperative Tagging (协同复合与防切片)**: Use collective tags for group actions: cooperative fellatio, sandwiched, two-footed footjob, symmetrical pose. Suppress split comic panels with -1.5::multiple views, split screen:: in base_prompt or negative_prompt.
+
 ## Camera And Focus
 - Prefer close framing that keeps the subjects large and readable: close-up, medium close-up, cowboy shot, upper body, from waist up.
 - Avoid far framing by default: wide shot, far shot, long shot, panorama, or environment-only distance views unless the scene card clearly requires them.
 - Add camera/focus tags only when they clarify the image: pov, portrait, cowboy shot, close-up, lower body, head out of frame, eye focus, breast focus, foot focus.
 
-## Penetration Inset
-- For actual genital penetration scenes, the composition must use a close main frame plus one localized magnified inset.
-- The inset may use x-ray, cutaway, or cross-section tags, but the main frame itself must stay external.
-- In /thinking/, explicitly note the decision: close main framing + single x-ray inset for penetration readability.
-- In /JSON/, base_prompt must include the inset plan with tags such as magnified inset, x-ray inset, cutaway inset, cross-section, penetration focus.
-- Do not add inset/x-ray tags for non-penetration scenes such as handjob, touching, kissing, teasing, undressing, or non-insertive oral scenes.
+## Penetration Inset & Cross-Section (所长剖面与透视实战)
+- For actual genital penetration scenes, the composition must use a close main frame plus a localized cross-section or cutaway inset.
+- **Prefer cross-section over bare x-ray**: In NAI 4.5, bare "x-ray" causes the character's skin to become skeletal, translucent, or green/cyan. Use "cross-section, deep penetration, penetration focus, cutaway inset" instead. If internal organ x-ray is needed, use targeted tags like "uterus x-ray" or "cervix".
+- **External Physical Echo (内外呼应)**: The receiving character prompt should include "stomach bulge" (slight lower abdominal bulge under deep penetration) alongside bodily reactions like "arched back, trembling, sweat".
+- In /thinking/, explicitly note the decision: close main framing (e.g. cowboy shot, side view) + cross-section inset for penetration readability.
+- In /JSON/, base_prompt must include tags such as cross-section, deep penetration, penetration focus, cutaway inset. The main frame itself stays fully external with intact realistic skin.
+- Do not add cross-section or inset tags for non-penetration scenes such as handjob, touching, kissing, teasing, undressing, or non-insertive oral scenes.
 
 ## Self Check
 Before final output, verify in the /thinking/ block:

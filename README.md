@@ -84,6 +84,37 @@ cd ..
 - `pipeline_progress.json` 是项目运行状态的主记录文件
 - 后端默认对 NovelAI 频控按 35 秒节奏排队
 
+## Agent 操作
+
+项目提供本机 Agent 接口 `/api/agent/capabilities`、`/api/agent/call` 和 `/api/agent/jobs/:actionId`，与网页共享现有流水线和重绘队列。
+
+项目级 Skill 位于 `.agents/skills/nai-project-agent/SKILL.md`，包含操作流程、参数协议和调用脚本：
+
+```powershell
+node .agents/skills/nai-project-agent/scripts/nai-agent.mjs capabilities
+node .agents/skills/nai-project-agent/scripts/nai-agent.mjs call projects.list --args projects-list.json
+```
+
+`projects-list.json` 内容为 `{}`。脚本默认端口 5001；直接运行后端的默认端口 5000 时加 `--base-url http://127.0.0.1:5000`。
+
+支持读取小说/角色/场景、Agent 编写场景与最终 Prompt、生图/重绘/续跑/停止，以及提交绑定图片和上下文的视觉 QC 报告。写操作使用稳定 actionId 防止重复提交；异步回执不代表图片已生成。服务重启后的未完成任务需核查，不自动重投。
+
+QC 由外部 Agent 实际看图后提交；项目不内置自动视觉模型 worker。
+
+## 漫画生产
+
+Agent 使用 `comics.*` 创建 EP、逐格分镜与对白，记录原文出处、镜头、人物和剧情状态，再保存 Prompt 并调用现有 NovelAI 队列。每格最多四次生成提交，候选 PNG 和预检历史独立保留。漫画场景的修改、重绘与章节重跑由漫画接口管理。
+
+在网页选择「漫画工作台」，可查看候选原图、原文与十二轴预检，定位说话角色，逐格批准、退修或写坐标批注。预检 PASS 之后才可人工批准，不要求审阅人姓名或额外确认勾选。
+
+漫画工作台也可直接创作：新建漫画话 → 选择小说章节、原文范围和格数（1–80）→ 生成分镜草稿 → 编辑并采用 → 补齐提示词 / 生成缺失画格。可手动加格、编辑单格分镜与对白、编辑生图输入、让 LLM 重写本格提示词或生成另一张候选。分镜使用现有「场景」LLM 配置，提示词使用「NAI 标签」LLM 配置；生图沿用现有 NovelAI 队列、限流和冷却。生成按钮会消耗已配置模型的额度。
+
+分镜草稿不会自动采用或生图；批量任务按顺序运行，进度自动刷新，停止后等待当前远程调用结束，并保留返回的候选。服务重启不自动重投任务。生成图片后仍须由外部 Agent 实际看图提交预检，再由用户批准；页面生成不等于视觉 QC 通过。
+
+全格批准后组装条漫：对白/旁白放在画格间，带说话人标识，输出可编辑 SVG、PNG 切片及手机阅读预览。排版终审通过后才可导出 ZIP，其中包含图像、分镜、生成输入、QC、人工记录和校验清单。修改分镜、原文、参考、DNA 或布局后，受影响审核需要重做。
+
+完整操作见 `.agents/skills/nai-project-agent/references/comic-workflow.md`。数据在 `projects/<项目名>/comic/`，交付格式为 `nai-comic-handoff/1.0`。本版提供原生条漫组装；外部 `D:/codex/comic` Skill 的原生导入适配器尚未实现。当前排版也不提供图内智能气泡尾巴或拖拽编辑。
+
 ## 常用命令
 
 ```powershell
@@ -97,12 +128,14 @@ node index.js
 
 ## 测试与检查
 
-当前仓库内已有后端测试目录 `server/test/`，但未统一接入 `npm test`。提交前至少建议执行：
+后端测试目录 `server/test/` 已接入 `npm test`，Agent 接口可单独运行 `npm run test:agent`，漫画流程可运行 `npm run test:comic`。集成测试使用带 SIMULATED 标记的图片和报告，不调用收费模型。提交前可执行：
 
 ```powershell
 node --check server\index.js
 node --check server\services\pipeline-manager.js
 node --check server\services\nai-client.js
+cd server
+npm test
 ```
 
 ## 注意事项

@@ -52,7 +52,7 @@ const NSFW部位特写画质增强提示词 = 'adult character only, target anat
 const 部位特写反拼贴负面提示词 = 'multiple views, split screen, panel layout, comic panel, comic page, manga panel, collage, contact sheet, character sheet, duplicate anatomy, mirrored anatomy, multiple organs, extra organs, extra nipples';
 const 默认NovelAI负面提示词 = 'artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, logo, too many watermarks, negative space, blank page, gigantic breasts';
 const 默认表情稳定负面提示词 = 'bared teeth, clenched teeth, crazy grin, distorted mouth, grimace';
-const 插入局部放大正向提示词 = 'single inset image, magnified inset, penetration focus, x-ray inset, cutaway inset, external view main frame, main scene plus one inset, genital penetration visible in inset only';
+const 插入局部放大正向提示词 = 'cross-section, single inset image, magnified inset, penetration focus, deep penetration, cutaway inset, external view main frame, main scene plus one inset, genital penetration visible in inset only';
 const 插入局部放大豁免负面词 = new Set([
   'comic panel',
   'comic page',

@@ -1,0 +1,1163 @@
+import { state, ADULT_CONFIRMATION_STORAGE_KEY, RECENT_STORAGE_KEY, LAST_BROWSE_STORAGE_KEY, NSFW_STORAGE_KEY, R18G_STORAGE_KEY, DENSITY_STORAGE_KEY, SEARCH_SCOPE_STORAGE_KEY, normalizeSearchScope } from './app/state.js';
+import { $, esc, safeJsonParse, updateSearchClear, prefersReducedMotion } from './app/utils.js';
+import { setupSiteAnalytics, recordSiteEvent, beginSiteSearchObservation, cancelSiteSearchObservation } from './app/site-analytics.js';
+import { setLoading, showSkeleton, hideSkeleton, replaceSkeleton } from './app/feedback.js';
+import { isCodexLocked, firstUnlockedCodex, showNsfwLockedHint, isEntryAccessBlocked, isR18gPath } from './app/access.js';
+import { loadBootstrapData, fetchCodex, findCodexMeta, notifyCodexDataStatus, codexUpdateFilters, entryMatchesUpdateFilter, resolveUpdateFilter } from './app/data.js';
+import { sortCategoryEntries } from './app/category-order.js';
+import { parseSearchFilter, parseSearchQuery, matchSearchPlan, rankSearchResults, splitSearchPhrases } from './app/search.js';
+import { findRelatedDirectories, listSearchDirectories } from './app/search-directories.js';
+import { renderRelatedDirectories, renderSearchFilters, renderSearchStatus } from './app/search-ui.js';
+import { hasEntryImage, primeResourceHints, isLocalOrigin } from './app/media.js';
+import { favKey, isFav, setFavoritesActions, toggleFav } from './app/favorites.js';
+import { setupFavoritesBackup, subscribeFavoritesChanges, emitFavoritesChanged } from './app/favorites-backup.js';
+import { libraryKeys } from './app/favorites-library-core.js';
+import { ensureLibrary, librarySnapshot, setLibraryStoreActions, setupLibraryStore, subscribeLibrary } from './app/favorites-library-store.js';
+import { setupFavoritesView, setFavoritesViewActions, syncFavoritesView, renderFavoritesRail, renderFavoritesHeader, filterFavoritesScope, filterFavoritesEntries, decorateFavoriteCard, refreshFavoriteBadges, folderBadges, openOrganize, invalidateOrganizeRequest, restoreFavoriteObjects, refreshOpenOrganize, toggleFavoritesFolders } from './app/favorites-view.js';
+import { buildFavoritesCodex, FAVORITES_CODEX_ID } from './app/fav-codex.js';
+import { buildSiteSearchCodex, SITE_SEARCH_CODEX_ID } from './app/site-search.js';
+import { renderList, clearMasonry, updateVirtualCards, setMasonryActions, settleCardEntry } from './app/masonry.js';
+import { openLightbox, closeLightbox } from './app/lightbox.js';
+import { copyEntry } from './app/copy.js';
+import { openReportDialog } from './app/report.js';
+import { captureAtlasRoute, configureAtlasHistory, hasActiveSearchRoute, initializeAtlasHistory, readUrlState, syncUrlState, openEntryDeepLink, setRouterActions } from './app/router.js';
+import { normalizeRoutePath, normalizeCodexRoutePath } from './app/codex-route-compat.js';
+import { encodePathCode, pathFromCode } from './app/path-code.js';
+import { setupCodexPicker, setupAbout, setupTreeSpy, updateCodexPickerState, renderTree, renderCodexHeader, renderBannerIdentity, updateRailActive, updateResultBar, updateEmptyState, setCodexUiActions } from './app/codex-ui.js';
+import { canAnimateSwitch, beginCodexSwitch, cancelCodexSwitch } from './app/codex-switch.js';
+import { normalizeRecentEntries, normalizeLastBrowse, restoreBrowseScroll, scheduleBrowseStateSave, suppressBrowseStateSave, setHistoryActions, renderHistoryPanel } from './app/history.js';
+import { bindUI, applyDensity, setUiActions, updateSearchScopeControl } from './app/ui.js';
+import { readPreference, writePreference } from './app/preferences-storage.js';
+import { setUpdatesActions, loadUpdates, markBatchBookRead, bookPreviews } from './app/updates.js';
+import { maybeShowOnboarding } from './app/onboarding.js';
+import { startIntro, beginIntroReveal, markIntroDataReady, introSettled, setIntroFeatured, setIntroActions } from './app/intro.js';
+import { pinFeatured, isFeaturedEntry, featuredArtistName } from './app/featured.js';
+import { setupResumePrompt } from './app/resume-prompt.js';
+import { isHistoryRestoreToken } from './app/browser-history.js';
+import { setupTagRelay } from './app/tag-relay.js';
+import { loadContentBlocking, isContentBlocked } from './app/content-blocking.js';
+import { setupContentBlocking, hideCard, setBlockingUiActions, updateBlockingSummary } from './app/content-blocking-ui.js';
+
+let codexLoadSeq = 0;
+let pendingCodexLoad = null;
+let favoritesBackupBound = false;
+let favoritesFolderHistoryActive = false;
+let favoritesRefreshSeq = 0;
+let favoritesBuiltKeys = new Set();
+let favoritesPreviewEntries = [];
+let favoritesPreviewStamp = '';
+const favoriteItemsStamp = () => libraryKeys(librarySnapshot()).join('\n');
+async function prepareFavoritesEntries() {
+  const stamp = favoriteItemsStamp();
+  const entries = (await buildFavoritesCodex()).entries;
+  if (stamp !== favoriteItemsStamp()) return prepareFavoritesEntries();
+  favoritesPreviewEntries = entries;
+  favoritesPreviewStamp = stamp;
+}
+const favoritesFolderCode = () => state.favFolder === '_unsorted' ? '_unsorted'
+  : encodePathCode([librarySnapshot().folders.find(folder => folder.id === state.favFolder)?.name].filter(Boolean));
+const resolveFavoriteFolder = code => code === '_unsorted' ? code
+  : librarySnapshot().folders.find(folder => encodePathCode([folder.name]) === code)?.id || '';
+let searchDirectoryOptionCache = { directories: null, sourceView: false, options: [] };
+const codexPickerTitle = c => c?.selectorTitle || c?.title || '';
+const setOnlyFavControl = checked => {
+  state.onlyFav = Boolean(checked);
+  const onlyFav = $('#onlyFav');
+  if (onlyFav) onlyFav.checked = state.onlyFav;
+};
+const virtualView = () => state.favoritesView || state.siteSearchView;
+const searchFilterValues = route => Array.isArray(route?.searchFilters)
+  ? route.searchFilters.map(value => String(value ?? ''))
+  : [];
+const hasActiveSearchState = () => Boolean(state.query.trim() || state.searchFilterValues.length);
+const compileSearchState = (rawQuery = state.query, filters = state.searchFilterValues) => {
+  const plan = parseSearchQuery(rawQuery, filters);
+  state.query = plan.canCanonicalize ? plan.canonicalQuery : String(rawQuery || '');
+  state.searchDraft = state.query;
+  state.searchFilters = [...plan.filters];
+  state.searchFilterValues = [...plan.filterValues];
+  state.searchIssues = [...plan.issues];
+  state.searchPlan = plan;
+  return plan;
+};
+const requestedUpdateFilter = route => String(route?.updateFilter || (route?.onlyNew ? 'latest' : ''));
+const hasOwnRouteField = (route, key) => Object.prototype.hasOwnProperty.call(route || {}, key);
+const canonicalListContext = route => {
+  const value = {
+    ...(route || {}),
+    entry: '',
+    imageIndex: 0,
+    updateFilter: resolveUpdateFilter(state.codex, requestedUpdateFilter(route)),
+  };
+  delete value.onlyImaged;
+  delete value.onlyNew;
+  return JSON.stringify(Object.fromEntries(
+    Object.entries(value).sort(([left], [right]) => left.localeCompare(right)),
+  ));
+};
+const historyRouteNeedsCanonicalization = (route, normalizedRoute) => Boolean(
+  hasOwnRouteField(route, 'onlyImaged')
+  || hasOwnRouteField(route, 'onlyNew')
+  || requestedUpdateFilter(route) !== String(normalizedRoute?.updateFilter || '')
+  || String(route?.q || '').trim() !== String(normalizedRoute?.q || '').trim()
+  || JSON.stringify(searchFilterValues(route)) !== JSON.stringify(searchFilterValues(normalizedRoute))
+  // 旧 id 只用于判定并册前的目录来源；一旦迁移完成，历史记录与地址栏都写回正式 id。
+  || Boolean(route?.codex && route.codex !== normalizedRoute?.codex)
+  || Boolean(route?.favorites && (
+    String(route.folderCode || '') !== String(normalizedRoute?.folderCode || '')
+    || String(route.favSource || '') !== String(normalizedRoute?.favSource || '')
+    || String(route.favSort || 'recent') !== String(normalizedRoute?.favSort || 'recent')
+  ))
+);
+const announceCodexLoaded = codex => {
+  document.dispatchEvent(new CustomEvent('codex:loaded', { detail: { codex } }));
+};
+const historyModeFor = (options, fallback = 'push') => options.historyMode || fallback;
+const urlSearchScope = urlState => {
+  if (!urlState) return state.searchScope;
+  if (urlState.scope) return normalizeSearchScope(urlState.scope);
+  return hasActiveSearchRoute(urlState) ? 'codex' : state.searchScope;  // 旧搜索链接继续按当前法典搜索解释
+};
+const applyUrlSearchScope = urlState => {
+  if (!urlState) return;
+  state.searchScope = urlSearchScope(urlState);
+  updateSearchScopeControl();
+};
+const siteSearchStillWanted = options => Boolean(
+  hasActiveSearchRoute(options.urlState)
+  || (state.searchScope === 'site' && hasActiveSearchState()),
+);
+
+function renderCodexView(codex, seq, {
+  options,
+  parentScrollY,
+  primeCodexes = [codex],
+  enterView,
+  selectedCodexId,
+  buttonCodex,
+  buttonFallback,
+  metaText,
+  resolveUrlState,
+  applyViewUrlState,
+  resolveQuery,
+  resolveFilters = urlState => searchFilterValues(urlState),
+  keepIdentity = false,
+}) {
+  if (seq !== codexLoadSeq || isCodexLocked(codex)) return;
+  primeResourceHints({ codexes: primeCodexes });
+  enterView(codex);
+  state.codex = codex;
+  const c = state.codex;
+  const selectId = selectedCodexId(c);
+  const codexSelect = $('#codexSelect');
+  if (codexSelect && selectId) codexSelect.value = selectId;
+  $('#codexTitle').textContent = c.title;
+  $('#codexMeta').textContent = metaText(c);
+  const codexBtnText = $('#codexBtnText');
+  if (codexBtnText) codexBtnText.textContent = codexPickerTitle(buttonCodex(c)) || buttonFallback(c);
+  updateCodexPickerState();
+  const urlState = resolveUrlState(c);
+  applyViewUrlState(urlState, c);
+  favoritesFolderHistoryActive = false;
+  // 短码要等法典树到手才能反解；旧的 path= 参数还在的话优先用它，免得老链接改语义。
+  const requestedPath = urlState?.path?.length
+    ? urlState.path
+    : pathFromCode(c.tree, urlState?.pathCode || '');
+  const nextPath = normalizeCodexRoutePath(c, requestedPath, urlState?.codex || c.id);
+  state.activePath = state.favoritesView || (!state.allowR18g && isR18gPath(nextPath)) ? [] : nextPath;
+  state.query = resolveQuery(urlState);
+  state.searchFilterValues = resolveFilters(urlState);
+  compileSearchState();
+  state.seenAnimated.clear();
+  state.recentRandomIds = [];
+  $('#search').value = state.query;
+  updateSearchClear();
+  syncFavoritesView();
+  renderTree();
+  if (!state.favoritesView) renderCodexHeader({ keepIdentity });
+  if (options.saveBrowse === false) suppressBrowseStateSave(2000);
+  applyFilter({ resetScroll: true, onSearchSettled: options.onSearchSettled });
+  syncUrlState({
+    historyMode: historyModeFor(options),
+    transition: options.transition || 'route',
+    sessionId: options.sessionId,
+    consumeLayer: Boolean(options.consumeLayer),
+    parentScrollY,
+    entry: urlState?.entry || '',
+    saveBrowse: options.saveBrowse !== false,
+  });
+  if (urlState?.entry && options.autoOpenEntry !== false) {
+    window.setTimeout(() => openEntryDeepLink(urlState.entry), 180);
+  }
+  setLoading('');
+  notifyCodexDataStatus(c);
+  announceCodexLoaded(c);
+}
+
+async function runCodexViewTransition(seq, render, { wasSwitching, transition }) {
+  /* 换法典用同文档 View Transition 做整页交叉淡化（数据已就绪，回调内纯同步渲染，不冻结页面）；
+     首次进站没有旧画面、减少动效、老浏览器 → 直接渲染 */
+  if (wasSwitching && transition !== 'none' && !prefersReducedMotion() && typeof document.startViewTransition === 'function') {
+    /* 先等选择菜单/面板退场再开始变形——切换动效别被浮层挡住白播一场。
+       ⚠ 这个数必须大于最慢的浮层退场时长：.codex-menu / .search-filter-panel / .updates-popover
+       都是 `display .22s allow-discrete`（styles.css），退场期间浮层仍然占屏。原来的 170ms
+       是浮层还只有 ~180ms 时定的，2026-09-05 浮层改成 220ms 后就赶不上了——旧快照会把
+       整块法典面板一起拍进去，跟着整场过渡当残影飘。220 + 60 留余量：实测只留 20ms
+       余量时仍有边界个例赶不上。改 CSS 里那三个 .22s 时，这里要跟着改。 */
+    await new Promise(r => setTimeout(r, 280));
+    if (seq !== codexLoadSeq) return;
+    /* vt-codex 只存活于本次过渡：横幅独立变形等换法典专属动画全挂它名下 */
+    const h = document.documentElement;
+    h.classList.add('vt-codex');
+    const vt = document.startViewTransition(render);
+    vt.finished.catch(() => {}).finally(() => h.classList.remove('vt-codex'));
+    await vt.updateCallbackDone;
+  } else {
+    await render();
+  }
+}
+
+export async function init() {
+  setupSiteAnalytics();
+  const initSkeletonToken = 'init';
+  try {
+    /* 开场脚本先起跑，不等任���网络请求：牌堆切牌就是数据加载期的等待画面 */
+    startIntro();
+    configureAtlasHistory();
+    showSkeleton(initSkeletonToken, { delay: 0 });
+    setLoading('');
+    state.recentEntries = normalizeRecentEntries(safeJsonParse(readPreference(RECENT_STORAGE_KEY), []));
+    state.lastBrowse = normalizeLastBrowse(safeJsonParse(readPreference(LAST_BROWSE_STORAGE_KEY), null));
+    state.allowNsfw = readPreference(NSFW_STORAGE_KEY) === '1';
+    // 旧主站 key=1 已代表用户完成过成人确认；单向迁移确认事实，
+    // 使其不再依附于之后可随时关闭的主站展示偏好。
+    if (state.allowNsfw) writePreference(ADULT_CONFIRMATION_STORAGE_KEY, '1', { announce: false });
+    document.body.classList.toggle('nsfw-unlocked', state.allowNsfw);
+    state.allowR18g = state.allowNsfw && readPreference(R18G_STORAGE_KEY) === '1';
+    document.body.classList.toggle('r18g-unlocked', state.allowR18g);
+    /* ⚠ 必须排在分级开关恢复之后：建栏时会立刻渲染一次「最近复制」，而 snapshotLocked 读的是
+       内存里的 state.allowNsfw / allowR18g。它原先在模块体里跑，早于这里，首屏那一版整列都会
+       被误判成锁定——之前只是被 store 里那次无条件的 pageshow 重载恰好盖住了。 */
+    await setupTagRelay();
+    applyDensity(readPreference(DENSITY_STORAGE_KEY), { render: false, persist: false });
+    state.searchScope = normalizeSearchScope(readPreference(SEARCH_SCOPE_STORAGE_KEY));
+    const { codexes, media, about } = await loadBootstrapData();
+    state.codexes = codexes;
+    await ensureLibrary();
+    state.favs = new Set(libraryKeys(librarySnapshot()));
+    setupLibraryStore();
+    state.media = { ...state.media, ...media };
+    state.about = about;
+    primeResourceHints({ media: state.media, codexes: state.codexes });
+    const sel = $('#codexSelect');
+    sel.innerHTML = codexes.map(c => `<option value="${c.id}">${esc(codexPickerTitle(c))}</option>`).join('');
+    sel.onchange = () => loadCodex(sel.value);
+    setupCodexPicker();
+    setupAbout();
+    setupTreeSpy();
+    bindUI();
+    setupContentBlocking();
+    setupFavoritesView();
+    bindFavoritesBackup();
+    state.pendingUrlState = readUrlState();
+    const wantsFavorites = state.pendingUrlState.favorites || state.pendingUrlState.codex === FAVORITES_CODEX_ID;
+    const wantsSiteSearch = !wantsFavorites && state.pendingUrlState.scope === 'site' && hasActiveSearchRoute(state.pendingUrlState);
+    const initialMeta = findCodexMeta(state.pendingUrlState.codex);
+    const initialId = initialMeta && !isCodexLocked(initialMeta)
+      ? initialMeta.id
+      : firstUnlockedCodex()?.id || codexes[0]?.id;
+    if (initialMeta && isCodexLocked(initialMeta)) showNsfwLockedHint();
+    if (codexes.length) {
+      hideSkeleton(initSkeletonToken);
+      /* ⚠ 必须在首次渲染之前：开场靠 html.intro-run 给**新插入**的横幅/胶囊/卡片换一套入场动画，
+         节点建好之后再打标就赶不上了 */
+      beginIntroReveal();
+      const initialUrlState = wantsFavorites
+        ? null
+        : (wantsSiteSearch ? { ...state.pendingUrlState, q: '', searchFilters: [] } : state.pendingUrlState);
+      await loadCodex(initialId, { urlState: initialUrlState, historyMode: 'none', saveBrowse: false });
+      if (wantsFavorites) {
+        await openFavoritesView({ urlState: state.pendingUrlState, historyMode: 'none', saveBrowse: false });
+      } else if (wantsSiteSearch) {
+        await openSiteSearchView({ urlState: state.pendingUrlState, historyMode: 'none', saveBrowse: false });
+      }
+      /* 首屏真把今日画师放在第一格才让开场的名字行定住；被屏蔽、深链进别处等情况一律让它淡出 */
+      setIntroFeatured(isFeaturedEntry(state.list[0], state.codex) ? featuredArtistName(state.list[0]) : null);
+      markIntroDataReady();
+      initializeAtlasHistory(captureAtlasRoute(state.pendingUrlState.entry || ''));
+      await introSettled();   // 开场落幕再弹引导；没播开场时立即 resolve
+      const onboardingShown = maybeShowOnboarding();
+      setupResumePrompt({ route: state.pendingUrlState, onboardingShown });
+    } else {
+      markIntroDataReady();
+      hideSkeleton(initSkeletonToken);
+      setLoading('还没有可显示的法典数据');
+      const codexBtnText = $('#codexBtnText');
+      if (codexBtnText) codexBtnText.textContent = '暂无法典';
+      initializeAtlasHistory(captureAtlasRoute(''));
+    }
+    // 本地编辑器的能力探测与是否已有法典无关：空仓库也必须能创建第一本。
+    maybeLoadEditMode();
+  } catch (ex) {
+    console.error(ex);
+    markIntroDataReady();
+    hideSkeleton(initSkeletonToken);
+    setLoading('加载失败，刷新页面重试');
+  }
+}
+
+function bindFavoritesBackup() {
+  setupFavoritesBackup({ getCodexes: () => state.codexes });
+  if (favoritesBackupBound) return;
+  favoritesBackupBound = true;
+  subscribeFavoritesChanges('atlas', syncAtlasFavoritesFromStorage);
+}
+
+/* 本地编辑模式探测：只在本机 origin 下、且 /__edit__/ping 有响应（= edit_server 在服务本页）
+   才动态加载编辑模块；线上与普通预览该路径 404，编辑代码零加载。失败一律静默。 */
+function maybeLoadEditMode() {
+  if (!isLocalOrigin()) return;
+  // ⚠ 瀑布流有持续微动效，页面几乎不会真正 idle，requestIdleCallback 必须带 timeout 兜底才���触发
+  // 独立本地版则不应先短暂露出共创入口/空状态，启动后立即接管为编辑器。
+  const schedule = document.body.classList.contains('local-edition')
+    ? cb => cb()
+    : window.requestIdleCallback
+      ? cb => window.requestIdleCallback(cb, { timeout: 2000 })
+      : cb => setTimeout(cb, 1500);
+  schedule(async () => {
+    try {
+      const res = await fetch('/__edit__/ping', { cache: 'no-store' });
+      if (!res.ok) return;
+      const info = await res.json();
+      if (!info?.ok) return;
+      const mod = await import('./app/edit.js');
+      mod.initEditMode(info, { loadCodex, applyFilter, captureRoute: captureAtlasRoute });
+    } catch { /* 无编辑服务 = 能力不存在 */ }
+  });
+}
+
+async function syncAtlasFavoritesFromStorage(detail = {}) {
+  /* ⚠ 点星标（reason:'toggle'）不能走下面的整份重建：toggleFav 自己已经改好 state.favs、
+     用 setFavoriteButtonState / syncRenderedFavoriteButtons 做了外科式更新，收藏视图也由它
+     经 refreshFavoritesView 处理（还带 deferViewRefresh 供灯箱延后）。这里再 applyFilter /
+     openFavoritesView 一次，等于每点一颗星就把整条虚拟瀑布流销毁重建，顺带把 deferViewRefresh
+     整个架空。中转站侧栏收藏列另有自己的订阅（只置脏、切页签才重建），不依赖这���路径。 */
+  if (['toggle', 'library', 'storage'].includes(detail?.reason)) return;
+  state.favs = new Set(libraryKeys(librarySnapshot()));
+  if (!state.codex) return;
+  if (state.favoritesView) {
+    await refreshFavoritesView({ transition: 'none' });
+    syncUrlState({ historyMode: 'replace', saveBrowse: false });
+    return;
+  }
+  applyFilter({ transition: 'none' });
+}
+
+const codexMetaText = c => `${c.author ? c.author + ' · ' : ''}${c.version} · ${c.entryCount} 条`;
+
+/* 普通法典视图的渲染参数：原路与换书接力共用 */
+const codexViewArgs = (options, parentScrollY) => ({
+  options,
+  parentScrollY,
+  enterView: c => {
+    state.favoritesView = false;
+    state.siteSearchView = false;
+    state.browseCodex = c;
+    state.searchReturnPath = [];
+    setOnlyFavControl(false);
+  },
+  selectedCodexId: c => c.id,
+  buttonCodex: c => findCodexMeta(c.id),
+  buttonFallback: c => c.title,
+  metaText: codexMetaText,
+  resolveUrlState: c => options.urlState
+    && (!options.urlState.codex || options.urlState.codex === c.id || (c.aliases || []).includes(options.urlState.codex))
+    ? options.urlState
+    : null,
+  applyViewUrlState: (urlState, c) => {
+    state.updateFilter = resolveUpdateFilter(c, requestedUpdateFilter(urlState));
+    applyUrlSearchScope(urlState);
+  },
+  resolveQuery: urlState => urlState?.q || '',
+});
+
+/* 侧栏��题与顶栏按钮：接力时用 meta 先换，加载失败时换回仍在显示的那本 */
+function showCodexIdentity(c) {
+  $('#codexTitle').textContent = c.title;
+  $('#codexMeta').textContent = codexMetaText(c);
+  const codexBtnText = $('#codexBtnText');
+  if (codexBtnText) codexBtnText.textContent = codexPickerTitle(findCodexMeta(c.id)) || c.title;
+}
+
+export async function loadCodex(id, options = {}) {
+  if (!options.onSearchSettled) cancelSiteSearchObservation();
+  const parentScrollY = options.parentScrollY ?? Math.max(0, window.scrollY || 0);
+  if (id === FAVORITES_CODEX_ID) return openFavoritesView(options);
+  if (id === SITE_SEARCH_CODEX_ID) return openSiteSearchView(options);
+  const meta = findCodexMeta(id) || { id };
+  if (isCodexLocked(meta)) {
+    showNsfwLockedHint();
+    const fallback = firstUnlockedCodex();
+    if (fallback && fallback.id !== meta.id) {
+      return loadCodex(fallback.id, { ...options, urlState: null, historyMode: 'replace' });
+    }
+    setLoading('在设置中开启「显示 NSFW 内容」后可查看这本法典');
+    return;
+  }
+  invalidateOrganizeRequest();
+  const seq = ++codexLoadSeq;
+  pendingCodexLoad = { seq, meta };
+  if (state.codex && options.transition !== 'none' && canAnimateSwitch()) {
+    return switchCodexAnimated(meta, seq, options, parentScrollY);
+  }
+  cancelCodexSwitch();
+  showSkeleton(seq);
+  setLoading('');
+  clearMasonry();
+  try {
+    const codex = await fetchCodex(meta);
+    if (seq !== codexLoadSeq || isCodexLocked(meta) || isCodexLocked(codex)) return;
+    const wasSwitching = Boolean(state.codex);
+    const render = () => renderCodexView(codex, seq, codexViewArgs(options, parentScrollY));
+    await runCodexViewTransition(seq, () => replaceSkeleton(seq, render), { wasSwitching, transition: options.transition });
+  } catch (ex) {
+    if (seq === codexLoadSeq) {
+      console.error(ex);
+      setLoading('加载失败，刷新页面重试');
+    }
+  } finally {
+    if (pendingCodexLoad?.seq === seq) pendingCodexLoad = null;
+    hideSkeleton(seq);
+  }
+}
+
+/* 换书接力：点下即起飞、旧内容加噪 → 回顶换身份 → 数据到了显影落地；编排与时长在 app/codex-switch.js。
+   与原路的区别：不先清空瀑布流、不出骨架屏、不再固定空等菜单退场，取数据与过渡同时起跑。 */
+async function switchCodexAnimated(meta, seq, options, parentScrollY) {
+  const isCurrent = () => seq === codexLoadSeq && !isCodexLocked(meta);
+  setLoading('');
+  const loading = fetchCodex(meta);
+  const sw = beginCodexSwitch({
+    origin: options.origin,
+    isCurrent,
+    snapshotIdentity: snapshotCodexIdentity,
+    arrive: ({ awaitingCover }) => {
+      // 回顶这一下属于过渡，别被���成旧书的浏览位置
+      suppressBrowseStateSave(1500);
+      renderBannerIdentity(meta, { awaitingCover });
+      showCodexIdentity(meta);
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    },
+  });
+  try {
+    const codex = await loading;
+    if (!isCurrent() || isCodexLocked(codex)) {
+      if (seq === codexLoadSeq) sw.abort();
+      return;
+    }
+    await sw.land(() => {
+      /* 等数据时从「随机」等入口打开的旧书灯箱，落地前收起：灯箱里的收藏按当前法典记键，
+         留着它会在新书落地后把旧书词条记到新书名下（PR #37 审查） */
+      if (state.lightbox?.entry) closeLightbox({ historyMode: 'replace', immediate: true });
+      renderCodexView(codex, seq, { ...codexViewArgs(options, parentScrollY), keepIdentity: true });
+    }, codex);
+  } catch (ex) {
+    if (!isCurrent()) return;
+    console.error(ex);
+    sw.abort();   // 横幅、标题、按钮退回仍在显示的那本（snapshotCodexIdentity）
+    setLoading('加载失败，刷新页面重试');
+  } finally {
+    if (pendingCodexLoad?.seq === seq) pendingCodexLoad = null;
+  }
+}
+
+function refreshAccessView({ revoked = false } = {}) {
+  if (revoked && pendingCodexLoad?.seq === codexLoadSeq && isCodexLocked(pendingCodexLoad.meta)) {
+    const seq = pendingCodexLoad.seq;
+    pendingCodexLoad = null;
+    codexLoadSeq += 1;
+    cancelCodexSwitch();
+    void replaceSkeleton(seq, () => {});
+    setLoading('');
+  }
+  if (!state.codex) return;
+  // 异步收藏/搜索重建之前也必须同步撤掉失权词条，不能等待新数据落地。
+  renderTree();
+  if (!state.favoritesView) renderCodexHeader();
+  applyFilter({ resetScroll: true });
+  if (isCodexLocked(state.codex)) {
+    const fallback = firstUnlockedCodex();
+    if (fallback) void loadCodex(fallback.id, { historyMode: 'replace', transition: 'none' });
+  } else if (state.siteSearchView) {
+    void openSiteSearchView({ historyMode: 'replace' });
+  } else if (state.favoritesView) {
+    void openFavoritesView({ historyMode: 'replace' });
+  }
+}
+
+/* 换身份之前记下屏幕上的那本，返回退回函数：换书没落地就被撤销（加载失败、收藏墙 / 全站搜索接管）时，
+   横幅按实际状态重画，侧栏标题与顶栏按钮退回原字样，隐藏的原生选择框也对回去——
+   不然再点同一本会被当成「没换书」只关菜单。 */
+function snapshotCodexIdentity() {
+  const title = $('#codexTitle')?.textContent ?? '';
+  const meta = $('#codexMeta')?.textContent ?? '';
+  const button = $('#codexBtnText')?.textContent ?? '';
+  return () => {
+    if (state.codex && !state.favoritesView) renderCodexHeader();
+    $('#codexTitle').textContent = title;
+    $('#codexMeta').textContent = meta;
+    const codexBtnText = $('#codexBtnText');
+    if (codexBtnText) codexBtnText.textContent = button;
+    const codexSelect = $('#codexSelect');
+    if (codexSelect && state.codex && !virtualView()) codexSelect.value = state.codex.id;
+    updateCodexPickerState();
+  };
+}
+
+export async function openFavoritesView(options = {}) {
+  if (!options.onSearchSettled) cancelSiteSearchObservation();
+  const parentScrollY = options.parentScrollY ?? Math.max(0, window.scrollY || 0);
+  cancelCodexSwitch();
+  const baseCodex = state.codex && !virtualView()
+    ? state.codex
+    : state.browseCodex;
+  if (baseCodex) state.browseCodex = baseCodex;
+  else {
+    const fallback = firstUnlockedCodex();
+    if (fallback) {
+      await loadCodex(fallback.id, { historyMode: 'replace', saveBrowse: false });
+    }
+  }
+
+  invalidateOrganizeRequest();
+  const seq = ++codexLoadSeq;
+  showSkeleton(seq);
+  setLoading('');
+  clearMasonry();
+  try {
+    const builtKeys = new Set(state.favs);   // buildFavoritesCodex 同步读取 state.favs 后才进入 await
+    const codex = await buildFavoritesCodex();
+    if (seq !== codexLoadSeq) return;
+    favoritesBuiltKeys = builtKeys;
+    const wasSwitching = Boolean(state.codex);
+    const render = () => renderCodexView(codex, seq, {
+      options,
+      parentScrollY,
+      enterView: () => {
+        state.favoritesView = true;
+        state.siteSearchView = false;
+        state.updateFilter = '';
+        state.searchReturnPath = [];
+        setOnlyFavControl(true);
+      },
+      selectedCodexId: () => state.browseCodex?.id || '',
+      // 选择器是「当前在看什么」：收藏视图显示我的收藏；展开列表仍高亮返回时回到的那本书。
+      buttonCodex: () => null,
+      buttonFallback: () => '我的收藏',
+      metaText: c => `${c.version} · ${c.entryCount} 条`,
+      resolveUrlState: () => options.urlState
+        && (options.urlState.favorites || options.urlState.codex === FAVORITES_CODEX_ID)
+        ? options.urlState
+        : null,
+      applyViewUrlState: urlState => {
+        applyUrlSearchScope(urlState);
+        state.favFolder = resolveFavoriteFolder(urlState?.folderCode || '');
+        state.favSource = urlState?.favSource || '';
+        state.favSort = ['recent', 'oldest', 'title'].includes(urlState?.favSort) ? urlState.favSort : 'recent';
+      },
+      resolveQuery: urlState => urlState?.q || '',
+    });
+    await runCodexViewTransition(seq, () => replaceSkeleton(seq, render), { wasSwitching, transition: options.transition });
+  } catch (ex) {
+    if (seq === codexLoadSeq) {
+      console.error(ex);
+      setLoading('加载失败，刷新页面重试');
+    }
+  } finally {
+    hideSkeleton(seq);
+  }
+}
+
+export async function openSiteSearchView(options = {}) {
+  if (!options.onSearchSettled) cancelSiteSearchObservation();
+  const parentScrollY = options.parentScrollY ?? Math.max(0, window.scrollY || 0);
+  cancelCodexSwitch();
+  const baseCodex = state.codex && !virtualView()
+    ? state.codex
+    : state.browseCodex;
+  if (baseCodex) state.browseCodex = baseCodex;
+  else {
+    const fallback = firstUnlockedCodex();
+    if (fallback) {
+      await loadCodex(fallback.id, { historyMode: 'replace', saveBrowse: false });
+    }
+  }
+  if (!state.browseCodex) return;
+  if (!state.siteSearchView) state.searchReturnPath = state.activePath.slice();
+
+  invalidateOrganizeRequest();
+  const seq = ++codexLoadSeq;
+  showSkeleton(seq);
+  setLoading('');
+  clearMasonry();
+  try {
+    const codex = await buildSiteSearchCodex();
+    if (seq !== codexLoadSeq) return;
+    if (!siteSearchStillWanted(options)) return;
+    const wasSwitching = Boolean(state.codex);
+    const render = () => siteSearchStillWanted(options) && renderCodexView(codex, seq, {
+      options,
+      parentScrollY,
+      primeCodexes: state.codexes,
+      enterView: () => {
+        state.favoritesView = false;
+        state.siteSearchView = true;
+        state.updateFilter = '';
+        setOnlyFavControl(false);
+      },
+      selectedCodexId: () => state.browseCodex?.id || '',
+      buttonCodex: () => findCodexMeta(state.browseCodex?.id) || state.browseCodex,
+      buttonFallback: () => '选择法典',
+      metaText: c => `${c.version} · ${c.entryCount} 条`,
+      resolveUrlState: () => options.urlState && options.urlState.scope === 'site'
+        ? options.urlState
+        : null,
+      applyViewUrlState: () => {
+        state.searchScope = 'site';
+        updateSearchScopeControl();
+      },
+      resolveQuery: urlState => urlState?.q ?? state.query,
+      resolveFilters: urlState => urlState ? searchFilterValues(urlState) : [...state.searchFilterValues],
+    });
+    await runCodexViewTransition(seq, () => replaceSkeleton(seq, render), { wasSwitching, transition: options.transition });
+  } catch (ex) {
+    if (seq === codexLoadSeq) {
+      console.error(ex);
+      recordSiteEvent('frontend_error', 'search_data');
+      setLoading('全站搜索加载失败，刷新页面重试');
+    }
+  } finally {
+    hideSkeleton(seq);
+  }
+}
+
+export function exitSiteSearchView(options = {}) {
+  if (!options.onSearchSettled) cancelSiteSearchObservation();
+  const parentScrollY = options.parentScrollY ?? Math.max(0, window.scrollY || 0);
+  if (!state.siteSearchView) {
+    applyFilter(options);
+    return;
+  }
+  const codex = state.browseCodex || firstUnlockedCodex();
+  if (!codex) return;
+  state.siteSearchView = false;
+  state.favoritesView = false;
+  state.updateFilter = '';
+  state.codex = codex;
+  const c = state.codex;
+  const codexSelect = $('#codexSelect');
+  if (codexSelect) codexSelect.value = c.id;
+  $('#codexTitle').textContent = c.title;
+  $('#codexMeta').textContent = `${c.author ? c.author + ' · ' : ''}${c.version} · ${c.entryCount} 条`;
+  const codexBtnText = $('#codexBtnText');
+  if (codexBtnText) codexBtnText.textContent = codexPickerTitle(findCodexMeta(c.id)) || c.title;
+  updateCodexPickerState();
+  state.activePath = normalizeRoutePath(c.tree, state.searchReturnPath);
+  state.searchReturnPath = [];
+  state.seenAnimated.clear();
+  state.recentRandomIds = [];
+  renderTree();
+  renderCodexHeader();
+  applyFilter(options);
+  syncUrlState({
+    historyMode: historyModeFor(options),
+    transition: options.transition || 'route',
+    consumeLayer: Boolean(options.consumeLayer),
+    parentScrollY,
+    saveBrowse: options.saveBrowse !== false,
+  });
+}
+
+export async function openRelatedDirectory(item, options = {}) {
+  const codexId = String(item?.codexId || '').trim();
+  const path = Array.isArray(item?.path) ? item.path.map(part => String(part || '').trim()).filter(Boolean) : [];
+  if (!codexId || !path.length) return;
+  if (!writePreference(SEARCH_SCOPE_STORAGE_KEY, 'codex')) return;
+  state.query = '';
+  state.searchDraft = '';
+  state.searchFilters = [];
+  state.searchFilterValues = [];
+  state.searchIssues = [];
+  state.searchPlan = parseSearchQuery('');
+  state.relatedDirectories = [];
+  state.relatedDirectoryCount = 0;
+  state.searchScope = 'codex';
+  state.updateFilter = '';
+  setOnlyFavControl(false);
+  updateSearchScopeControl();
+  await loadCodex(codexId, {
+    urlState: { codex: codexId, path, q: '', searchFilters: [], scope: 'codex' },
+    historyMode: options.historyMode || 'push',
+    transition: 'route',
+    consumeLayer: options.consumeLayer !== false,
+    parentScrollY: options.parentScrollY ?? Math.max(0, window.scrollY || 0),
+  });
+  requestAnimationFrame(() => {
+    const result = $('#resultInfo');
+    if (!result) return;
+    result.tabIndex = -1;
+    result.focus({ preventScroll: true });
+  });
+}
+
+async function applyObservedSearch(options = {}) {
+  const onSearchSettled = beginSiteSearchObservation();
+  return applySearch({ ...options, onSearchSettled });
+}
+
+export async function applySearch(options = {}) {
+  if (!options.onSearchSettled) cancelSiteSearchObservation();
+  const parentScrollY = options.parentScrollY ?? Math.max(0, window.scrollY || 0);
+  if (state.favoritesView) {
+    applyFilter(options);
+    syncUrlState({ historyMode: historyModeFor(options, 'replace'), transition: options.transition, sessionId: options.sessionId, parentScrollY, saveBrowse: options.saveBrowse !== false });
+    return;
+  }
+  if (state.searchScope === 'site' && hasActiveSearchState()) {
+    if (!state.siteSearchView) await openSiteSearchView(options);
+    else {
+      applyFilter(options);
+      syncUrlState({ historyMode: historyModeFor(options, 'replace'), transition: options.transition, sessionId: options.sessionId, parentScrollY, saveBrowse: options.saveBrowse !== false });
+    }
+    return;
+  }
+  if (state.siteSearchView) {
+    exitSiteSearchView(options);
+    return;
+  }
+  applyFilter(options);
+  syncUrlState({ historyMode: historyModeFor(options, 'replace'), transition: options.transition, sessionId: options.sessionId, parentScrollY, saveBrowse: options.saveBrowse !== false });
+}
+
+function searchDirectoryOptions(directories) {
+  const sourceView = Boolean(virtualView());
+  if (searchDirectoryOptionCache.directories === directories
+    && searchDirectoryOptionCache.sourceView === sourceView) {
+    return searchDirectoryOptionCache.options;
+  }
+  const options = directories.map(item => ({
+    ...item,
+    value: item.id,
+    label: sourceView ? `${item.codexTitle} · ${item.breadcrumb}` : item.breadcrumb,
+  }));
+  searchDirectoryOptionCache = { directories, sourceView, options };
+  return options;
+}
+
+function searchFilterViewModels(directoryOptions) {
+  return state.searchFilterValues.map(rawValue => {
+    const parsed = parseSearchFilter(rawValue);
+    if (!parsed.filter) {
+      const raw = String(rawValue ?? '');
+      return {
+        field: 'invalid',
+        invalid: true,
+        issue: parsed.issues[0],
+        label: `无效条件：${raw || '（空值）'}`,
+        value: raw,
+      };
+    }
+    const filter = { ...parsed.filter };
+    if (filter.field === 'directory') {
+      const option = directoryOptions.find(item => item.codexId === filter.codexId && item.pathCode === filter.pathCode);
+      if (option) filter.valueLabel = option.label;
+    }
+    return filter;
+  });
+}
+
+function renderSearchExperience(plan, directoryOptions) {
+  const active = Boolean(plan?.hasActiveSearch);
+  renderSearchFilters({
+    filters: searchFilterViewModels(directoryOptions),
+    queryConditions: plan?.queryConditions,
+    issues: state.searchIssues,
+    activeCount: (plan?.queryConditions?.length || 0) + state.searchFilterValues.length,
+    hasActiveSearch: active,
+    directoryOptions,
+  });
+  renderRelatedDirectories(state.relatedDirectories, { totalCount: state.relatedDirectoryCount });
+  if (plan?.hasErrors) {
+    renderSearchStatus({
+      kind: 'error',
+      message: '查询条件有误。',
+      detail: state.searchIssues.map(issue => issue.message).filter(Boolean).join('；'),
+      actions: [{ id: 'clear-all', label: '清空整个搜索', primary: true }],
+    });
+  } else if (active && state.list.length === 0) {
+    const count = state.relatedDirectoryCount;
+    const actions = [];
+    if (splitSearchPhrases(plan)) actions.push({ id: 'split-phrases', label: '拆词搜索' });
+    if (state.searchFilterValues.length) actions.push({ id: 'clear-filters', label: '清除筛选条件' });
+    actions.push({ id: 'clear-all', label: '清空整个搜索', primary: true });
+    if (state.searchScope === 'codex' && !state.siteSearchView) actions.push({ id: 'scope-site', label: '切换到全站搜索' });
+    renderSearchStatus({
+      kind: 'empty',
+      message: `0 条图片结果，找到 ${count} 个相关目录。`,
+      detail: count ? '可打开下方相关目录，或调整搜索条件。' : '调整关键词或减少筛选条件。',
+      actions,
+    });
+  } else {
+    renderSearchStatus(null);
+  }
+}
+
+export function applyFilter(options = {}) {
+  if (!options.onSearchSettled) cancelSiteSearchObservation();
+  const plan = compileSearchState();
+  const sourceEntries = isCodexLocked(state.codex) ? [] : state.codex?.entries || [];
+  const visibleEntries = sourceEntries.filter(entry => !isEntryAccessBlocked(entry));
+  // 目录节点与查询词无关，按法典 entries 引用和权限态缓存；一轮过滤内同时复用于
+  // 精确目录构造器与相关目录，避免全站 3 万余词条每次输入都重复扫两遍。
+  const directoryNodes = listSearchDirectories({ entries: sourceEntries, codex: state.codex, sourceView: virtualView() });
+  const directoryOptions = searchDirectoryOptions(directoryNodes);
+  const unavailableDirectory = plan.filters.find(filter => filter.field === 'directory'
+    && !directoryOptions.some(item => item.codexId === filter.codexId && item.pathCode === filter.pathCode));
+  if (unavailableDirectory) {
+    const issue = { code: 'directory_unavailable', message: '所选目录不存在、已改名或当前无权访问' };
+    plan.issues = [...plan.issues, issue];
+    plan.hasErrors = true;
+    state.searchIssues = [...plan.issues];
+  }
+  let list = visibleEntries;
+  const byActivePath = l => {
+    const p = state.activePath;
+    return p.length ? l.filter(e => p.every((seg, i) => e.path[i] === seg)) : l;
+  };
+  if (plan.hasActiveSearch) {
+    list = list.filter(e => matchSearchPlan(e, plan));
+  }
+  // 普通本书/收藏搜索沿用既有语义：搜索整本，而不是被搜索前浏览过的目录暗中收窄。
+  // 只有全站搜索允许搜索词与当前来源目录并存；严格目录交集由 dir: 筛选承担。
+  if (!state.favoritesView && state.activePath.length && (state.siteSearchView || !plan.hasActiveSearch)) list = byActivePath(list);
+  const updateFilter = codexUpdateFilters(state.codex).find(filter => filter.id === state.updateFilter);
+  if (updateFilter) list = list.filter(entry => entryMatchesUpdateFilter(entry, updateFilter));
+  // 先定当前夹/来源候选，再求屏蔽差量；其它夹子的隐藏项不能污染这里的空态。
+  if (state.favoritesView) list = filterFavoritesScope(list);
+  const unblocked = list.filter(entry => !isContentBlocked(entry));
+  const blockedCount = list.length - unblocked.length;
+  const ordered = !state.favoritesView && !state.siteSearchView
+    ? sortCategoryEntries(unblocked, state.codex?.tree, state.codex?.categoryOrder)
+    : unblocked;
+  state.list = state.favoritesView ? filterFavoritesEntries(ordered) : rankSearchResults(ordered, plan);
+  // 今日画师只在那本书的「全部」视图置顶：有目录、搜索 / 筛选、更新筛选、收藏或全站搜索时保持原顺序
+  if (!state.favoritesView && !state.siteSearchView && !plan.hasActiveSearch && !state.activePath.length && !updateFilter) {
+    state.list = pinFeatured(state.list, state.codex);
+  }
+  const relatedDirectories = !plan.hasErrors && plan.positiveTerms.length
+    ? findRelatedDirectories({
+      codex: state.codex,
+      siteSearchView: virtualView(),
+      directories: directoryNodes,
+      positiveTerms: plan.positiveTerms,
+      queryText: plan.text,
+    })
+    : [];
+  state.relatedDirectories = relatedDirectories;
+  state.relatedDirectoryCount = Number(relatedDirectories.totalCount) || relatedDirectories.length;
+  renderSearchExperience(plan, directoryOptions);
+  updateResultBar();
+  if (state.favoritesView) {
+    syncFavoritesView();
+    renderFavoritesRail();
+    renderFavoritesHeader();
+    refreshFavoriteBadges();
+  }
+  renderList(options);
+  updateBlockingSummary(blockedCount);
+  options.onSearchSettled?.({
+    active: plan.hasActiveSearch, valid: !plan.hasErrors,
+    hasResults: state.list.length > 0,
+    scope: state.favoritesView ? 'favorites' : state.siteSearchView ? 'site' : 'codex',
+  });
+}
+
+/* 取消、撤销和远端恢复后从活法典重新合成，不能在旧 entries 上做破坏性过滤：
+   已取消的项可能立刻被撤销补回。请求代次阻止过期结果覆盖已切换的视图。 */
+async function refreshFavoritesView(options = {}) {
+  if (!options.onSearchSettled) cancelSiteSearchObservation();
+  if (!state.favoritesView || !state.codex) { applyFilter(options); return; }
+  /* 取消收藏、移出、撤销都不会引入合成时没有的条目：现有条目对象仍在 state.codex 里，
+     只需重算列表，走「不想看」同一条原地移除/插回路径，后面的卡补上来、滚动位置不动。
+     整份重建会换掉条目对象、清空瀑布流，页面高度瞬间塌陷，浏览器把滚动夹回顶��。
+     只有真出现新收藏键（别页新增、导入）才重建。 */
+  const seq = ++favoritesRefreshSeq;
+  if ([...state.favs].every(key => favoritesBuiltKeys.has(key))) {
+    applyFilter({ ...options, transition: 'blocking' });
+    return;
+  }
+  const viewSeq = codexLoadSeq;
+  const builtKeys = new Set(state.favs);
+  const c = await buildFavoritesCodex();
+  if (seq !== favoritesRefreshSeq || viewSeq !== codexLoadSeq || !state.favoritesView) return;
+  favoritesBuiltKeys = builtKeys;
+  state.codex = c;
+  state.activePath = [];
+  const meta = $('#codexMeta');
+  if (meta) meta.textContent = `${c.version} · ${c.entryCount} 条`;
+  syncFavoritesView();
+  applyFilter(options);
+}
+
+async function applyAtlasHistoryRoute(route = {}, context = {}) {
+  const currentRestore = () => context.token === undefined || isHistoryRestoreToken(context.token);
+  const requestedMeta = findCodexMeta(route.codex);
+  const requestedId = requestedMeta?.id || route.codex;
+  const targetLocked = Boolean(requestedMeta && isCodexLocked(requestedMeta));
+  const targetUnknown = Boolean(route.codex && !requestedMeta);
+  const browseMeta = findCodexMeta(state.browseCodex?.id);
+  const fallbackId = (browseMeta && !isCodexLocked(browseMeta) ? browseMeta.id : '') || firstUnlockedCodex()?.id || state.codex?.id;
+  const targetId = targetLocked || targetUnknown ? fallbackId : (requestedId || fallbackId);
+  if (!targetId) return;
+  const targetEntry = String(route.entry || '');
+  /* 快速路径仅限“详情覆盖在同一列表之上”的返回：画师栏跳词条/恢复上次浏览推的
+     detail 记录可能同时切换法典、目录或清空搜索，列表上下文不一致时必须走
+     下面的完整恢复，否则底层列表会停留在错误状态。 */
+  const closingOwnDetail = Boolean(
+    !targetEntry &&
+    state.lightbox.entry &&
+    context.departing?.transition === 'detail' &&
+    context.departing?.parentId === context.target?.id &&
+    canonicalListContext(context.departing?.route) === canonicalListContext(route),
+  );
+  if (closingOwnDetail) {
+    state.searchHistorySessionId = String(context.target?.sessionId || '');
+    closeLightbox({ historyMode: 'none' });
+    const normalizedRoute = captureAtlasRoute('');
+    return historyRouteNeedsCanonicalization(route, normalizedRoute)
+      ? normalizedRoute
+      : undefined;
+  }
+  /* 前进重新打开同一列表上的详情，也不能重建列表/按深链跳目录。
+     否则 resetScroll 与随后历史滚动恢复会把背景先拉到顶部再弹回，
+     并让智能顶栏误把程序滚动当成用户下滑。 */
+  const reopeningOwnDetail = Boolean(
+    targetEntry && !targetLocked && !targetUnknown &&
+    context.target?.transition === 'detail' &&
+    context.target?.parentId === context.departing?.id &&
+    canonicalListContext(context.departing?.route) === canonicalListContext(route) &&
+    canonicalListContext(captureAtlasRoute('')) === canonicalListContext(route),
+  );
+  if (reopeningOwnDetail) {
+    const matches = state.list.filter(entry => entry.id === targetEntry);
+    if (matches.length === 1 && !isEntryAccessBlocked(matches[0]) && !isContentBlocked(matches[0])) {
+      const entry = matches[0];
+      const node = state.nodes.get(state.list.indexOf(entry));
+      openLightbox(entry, Math.max(0, Number(route.imageIndex) || 0), node?.querySelector('.card-img') || null, {
+        allowEmpty: true, historyMode: 'none', recordRecent: false,
+      });
+      state.searchHistorySessionId = String(context.target?.sessionId || '');
+      const normalizedRoute = captureAtlasRoute();
+      return historyRouteNeedsCanonicalization(route, normalizedRoute) ? normalizedRoute : undefined;
+    }
+  }
+  const urlState = {
+    codex: targetLocked || targetUnknown ? targetId : (route.codex || targetId),
+    favorites: Boolean(route.favorites),
+    folderCode: String(route.folderCode || ''),
+    favSource: String(route.favSource || ''),
+    favSort: route.favSort || 'recent',
+    scope: route.siteSearch ? 'site' : (route.scope || 'codex'),
+    path: Array.isArray(route.path) ? route.path : [],
+    q: String(route.q || ''),
+    searchFilters: searchFilterValues(route),
+    entry: '',
+    updateFilter: requestedUpdateFilter(route),
+  };
+  state.suppressUrlSync = true;
+  state.searchHistorySessionId = String(context.target?.sessionId || '');
+  suppressBrowseStateSave(2000);
+  try {
+    state.searchReturnPath = Array.isArray(route.searchReturnPath) ? [...route.searchReturnPath] : [];
+    let effectiveTargetEntry = targetEntry;
+
+    if (route.favorites) {
+      if (!state.browseCodex || state.browseCodex.id !== targetId || (!state.favoritesView && state.codex?.id !== targetId)) {
+        await loadCodex(targetId, { historyMode: 'none', saveBrowse: false });
+        if (!currentRestore()) return;
+      }
+      await openFavoritesView({ urlState, historyMode: 'none', saveBrowse: false });
+      if (!currentRestore()) return;
+    } else if (route.siteSearch) {
+      if (!state.browseCodex || state.browseCodex.id !== targetId || (!state.siteSearchView && state.codex?.id !== targetId)) {
+        await loadCodex(targetId, { historyMode: 'none', saveBrowse: false });
+        if (!currentRestore()) return;
+      }
+      await openSiteSearchView({ urlState, historyMode: 'none', saveBrowse: false });
+      if (!currentRestore()) return;
+    } else if (!state.codex || state.codex.id !== targetId || state.favoritesView || state.siteSearchView) {
+      await loadCodex(targetId, { urlState, historyMode: 'none', saveBrowse: false });
+      if (!currentRestore()) return;
+    } else {
+      state.updateFilter = resolveUpdateFilter(state.codex, requestedUpdateFilter(route));
+      state.searchScope = route.scope === 'site' ? 'site' : 'codex';
+      updateSearchScopeControl();
+      const nextPath = normalizeCodexRoutePath(state.codex, urlState.path, urlState.codex);
+      state.activePath = !state.allowR18g && isR18gPath(nextPath) ? [] : nextPath;
+      state.query = urlState.q;
+      state.searchFilterValues = searchFilterValues(urlState);
+      compileSearchState();
+      const search = $('#search');
+      if (search) search.value = state.query;
+      updateSearchClear();
+      renderTree();
+      applyFilter({ resetScroll: true, transition: 'none' });
+    }
+
+    if (!currentRestore()) return;
+    if (state.lightbox.entry && state.lightbox.entry.id !== targetEntry) {
+      closeLightbox({ historyMode: 'none', immediate: true });
+    }
+    const lightboxOpen = $('#lightbox')?.classList.contains('is-open');
+    if (targetEntry && (state.lightbox.entry?.id !== targetEntry || !lightboxOpen)) {
+      const openedEntryId = openEntryDeepLink(targetEntry, { imageIndex: Math.max(0, Number(route.imageIndex) || 0) });
+      if (!openedEntryId) {
+        return targetLocked
+          ? captureAtlasRoute('')
+          : { ...route, entry: '', imageIndex: 0 };
+      }
+      effectiveTargetEntry = String(openedEntryId);
+    }
+    state.searchReturnPath = route.searchReturnPath?.length
+      ? normalizeCodexRoutePath(state.browseCodex || state.codex, route.searchReturnPath, urlState.codex)
+      : [];
+    const normalizedRoute = captureAtlasRoute(effectiveTargetEntry);
+    const pathChanged = !targetEntry && JSON.stringify(normalizedRoute.path) !== JSON.stringify(urlState.path);
+    if (
+      targetLocked
+      || targetUnknown
+      || pathChanged
+      || effectiveTargetEntry !== targetEntry
+      || historyRouteNeedsCanonicalization(route, normalizedRoute)
+    ) {
+      return normalizedRoute;
+    }
+  } finally {
+    if (currentRestore()) state.suppressUrlSync = false;
+  }
+}
+
+setRouterActions({
+  onUrlSync: scheduleBrowseStateSave,
+  renderTree,
+  applyFilter,
+  openLightbox,
+  updateVirtualCards,
+  applyHistoryRoute: applyAtlasHistoryRoute,
+  restoreHistoryScroll: restoreBrowseScroll,
+});
+
+setCodexUiActions({
+  loadCodex,
+  applyFilter,
+  applySearch,
+  syncUrlState,
+  openLightbox,
+  updateVirtualCards,
+});
+
+setHistoryActions({
+  loadCodex,
+  openFavoritesView,
+  openSiteSearchView,
+  openEntryDeepLink,
+  renderTree,
+  applyFilter,
+  updateVirtualCards,
+});
+
+setFavoritesActions({ applyFilter, refreshFavoritesView, openOrganize,
+  restoreRemoved: (doc, snapshot) => restoreFavoriteObjects(doc, snapshot, 'items'),
+});
+
+setFavoritesViewActions({
+  applyFilter, refreshFavoritesView, entryKey: favKey,
+  prepareEntries: prepareFavoritesEntries,
+  getEntries: () => state.favoritesView ? state.codex?.entries || [] : favoritesPreviewEntries,
+  updateRoute: options => {
+    if (options.historyMode === 'folder') {
+      const historyMode = favoritesFolderHistoryActive ? 'replace' : 'push';
+      favoritesFolderHistoryActive = true;
+      syncUrlState({ ...options, historyMode, transition: 'filter', saveBrowse: false });
+    } else syncUrlState({ ...options, saveBrowse: false });
+  },
+});
+setRouterActions({ favoritesFolderCode });
+
+setLibraryStoreActions({
+  getCodexes: () => state.codexes,
+  emitFavoritesChanged,
+  openBackup: () => document.querySelector('[data-favorites-backup-open]')?.click(),
+});
+subscribeLibrary((snapshot, detail) => {
+  state.favs = new Set(libraryKeys(snapshot));
+  // 归属/夹名变化不会使活词条失效；面板开着时只有新增/替换素材才需要补回源。
+  if (!state.favoritesView && $('#favoritesOrganize') && !$('#favoritesOrganize').hidden
+      && favoritesPreviewStamp !== favoriteItemsStamp()) {
+    void prepareFavoritesEntries().then(refreshOpenOrganize).catch(error => console.warn('[favorites] 整理来源刷新失败', error));
+  }
+  if (['storage', 'pageshow'].includes(detail?.source)) void syncAtlasFavoritesFromStorage({ reason: 'remote' });
+});
+
+setMasonryActions({
+  openLightbox,
+  copyEntry,
+  toggleFav,
+  hideCard,
+  decorateFavoriteCard,
+  favoriteBadgeHeight: entry => state.favoritesView && folderBadges(entry).length ? 24 : 0,
+  reportEntry: (entry, opts = {}) => openReportDialog({ entry, ...opts }),
+});
+
+setIntroActions({ settleCardEntry });
+
+setUiActions({ loadCodex, toggleFavoritesFolders, openFavoritesView, openSiteSearchView, exitSiteSearchView, applyFilter, applySearch: applyObservedSearch, cancelSearchObservation: cancelSiteSearchObservation, openRelatedDirectory, refreshAccessView });
+
+/* 更新时间线的行点击：换书 + 落到该批次的筛选，等于替用户按了一次结果栏里的
+   「NEW x.xx更新」。换书时把批次当作路由状态交给 loadCodex（换书本身会重置 updateFilter），
+   首次渲染就落在这一批——换书接力只落地一次，不会刚显影完又整屏换一遍。同一本书直接改筛选。 */
+async function openUpdateBatch({ codexId, batchId, consumeLayer = false }) {
+  if (!codexId || !batchId) return;
+  const sameCodex = state.codex?.id === codexId && !state.favoritesView && !state.siteSearchView;
+  if (!sameCodex) {
+    await loadCodex(codexId, {
+      historyMode: 'push', transition: 'route', consumeLayer, urlState: { codex: codexId, updateFilter: batchId },
+    });
+    return;
+  }
+  state.updateFilter = batchId;
+  applyFilter({ resetScroll: true, transition: 'filter' });
+  syncUrlState({ historyMode: 'push', transition: 'route', consumeLayer });
+}
+setUpdatesActions({ openBatch: openUpdateBatch });
+/* 法典选择器卷头的「最近新增」走同一条跳转，并和顶栏一样把这一批记为已读 */
+setCodexUiActions({
+  loadUpdates,
+  bookPreviews,
+  isContentBlocked,
+  openUpdateBatch: options => {
+    markBatchBookRead(options.batchId, options.codexId);
+    return openUpdateBatch(options);
+  },
+});
+
+setBlockingUiActions({ refresh: () => {
+  if (state.lightbox?.entry && isContentBlocked(state.lightbox.entry)) {
+    closeLightbox({ historyMode: 'replace', immediate: true });
+  }
+  applyFilter({ transition: 'blocking' });
+  if ($('#historyPanel') && !$('#historyPanel').hidden) renderHistoryPanel();
+} });
+
+loadContentBlocking();
+init();

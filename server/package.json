@@ -5,7 +5,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "test": "node --test test/*.test.js",
+    "test:agent": "node --test test/agent-api.test.js",
+    "test:comic": "node --test test/comic-api.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

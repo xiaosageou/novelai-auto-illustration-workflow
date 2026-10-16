@@ -13,6 +13,8 @@ import { readJson, writeJsonAtomic } from './utils/db.js';
 import { parseFile } from './utils/file-parser.js';
 import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL } from './utils/default-prompts.js';
 import { normalizeAdvancedPromptForConfig } from './utils/advanced-prompt-contract.js';
+import { createAgentRouter } from './services/agent-api.js';
+import { createComicLegacyGuard } from './services/comic-service.js';
 
 const BASE_DIR = process.cwd();
 const CONFIG_PATH = path.join(BASE_DIR, 'illustrator_config.json');
@@ -282,6 +284,7 @@ async function processRedrawQueue(projectName, pipeline, queue, { interleaved = 
         remaining: queue.items.length
       });
 
+      let generationError = null;
       try {
         if (job.mode === 'nai_only') {
           await pipeline.redrawSceneWithSavedPrompt(job.effectiveKey, job.sceneIdx, { interleaved });
@@ -297,6 +300,7 @@ async function processRedrawQueue(projectName, pipeline, queue, { interleaved = 
           pipelineRunning: pipeline.isRunning
         });
       } catch (error) {
+        generationError = error;
         console.error(`[Server] 队列重绘异常: ${error.message}`);
         broadcastSSE('redraw_queue', {
           projectName,
@@ -308,6 +312,8 @@ async function processRedrawQueue(projectName, pipeline, queue, { interleaved = 
           pipelineRunning: pipeline.isRunning
         });
       } finally {
+        try { await job.onFinished?.(generationError); }
+        catch { console.error('[Agent] 任务回执保存失败；需要核查生成结果。'); }
         queue.current = null;
       }
     }
@@ -316,7 +322,7 @@ async function processRedrawQueue(projectName, pipeline, queue, { interleaved = 
   }
 }
 
-function enqueueRedraw(projectName, pipeline, chapterKey, effectiveKey, sceneIdx, mode = 'refresh_prompt') {
+function enqueueRedraw(projectName, pipeline, chapterKey, effectiveKey, sceneIdx, mode = 'refresh_prompt', agentOptions = {}) {
   const queue = getRedrawQueue(projectName);
   const key = redrawJobKey(effectiveKey, sceneIdx, mode);
   const result = enqueueUniqueJob(queue, {
@@ -327,7 +333,8 @@ function enqueueRedraw(projectName, pipeline, chapterKey, effectiveKey, sceneIdx
       chapterKey,
       effectiveKey,
       sceneIdx: Number(sceneIdx),
-      mode
+      mode,
+      ...agentOptions
     })
   });
 
@@ -860,6 +867,8 @@ app.delete('/api/projects/:projectName/characters/:characterName/dna-versions/:v
   }
 });
 
+app.use('/api/projects/:projectName', createComicLegacyGuard(getPipeline));
+
 // 启动生图流水线
 app.post('/api/projects/:projectName/pipeline/start', async (req, res) => {
   try {
@@ -891,6 +900,7 @@ app.post('/api/projects/:projectName/pipeline/stop', async (req, res) => {
     const { projectName } = req.params;
     const pipeline = await getPipeline(projectName);
     pipeline.isRunning = false;
+    agentRouter.stopComicProduction(projectName);
     res.json({ success: true, message: "已向流水线发送停止指令" });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1206,6 +1216,35 @@ app.get('/api/events', (req, res) => {
     console.log(`[SSE] 客户端连接已关闭，当前活跃链接数: ${sseClients.size}`);
   });
 });
+
+// Agent facade uses the same managers and queues as the web UI.
+const agentRouter = createAgentRouter({
+  baseDir: BASE_DIR,
+  getPipeline,
+  enqueueRedraw,
+  notify: broadcastSSE,
+  queueState(projectName) {
+    const redraw = getRedrawQueue(projectName);
+    const chapters = getChapterQueue(projectName);
+    const selected = getSelectedScenesQueue(projectName);
+    return {
+      busy: Boolean(redraw.running || redraw.current || redraw.items.length || chapters.running || chapters.current || chapters.items.length || selected.running || selected.items.length),
+      redrawQueue: { running: redraw.running, pending: redraw.items.length, current: redraw.current ? { chapterKey: redraw.current.chapterKey, sceneIdx: redraw.current.sceneIdx } : null },
+      chapterQueue: { running: chapters.running, pending: chapters.items.length },
+      selectedScenesQueue: { running: selected.running, pending: selected.items.length },
+      cooldown: globalCooldownManager.getState()
+    };
+  },
+  stopQueues(projectName) {
+    const queues = [getRedrawQueue(projectName), getChapterQueue(projectName), getSelectedScenesQueue(projectName)];
+    const actionIds = queues.flatMap(q => q.items.map(j => j.agentActionId).filter(Boolean));
+    const removed = queues.reduce((sum, q) => sum + q.items.length, 0);
+    for (const q of queues) q.items = [];
+    return { removed, actionIds };
+  }
+});
+app.use('/api/agent', agentRouter);
+app.use('/api/comic', agentRouter.humanRouter);
 
 // 启动监听
 app.listen(PORT, () => {

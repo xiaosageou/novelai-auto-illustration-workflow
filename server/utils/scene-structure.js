@@ -1,3 +1,5 @@
+import { findSexPosition } from './sex-positions.js';
+
 function cleanText(value) {
   return String(value || '').trim();
 }
@@ -5,6 +7,11 @@ function cleanText(value) {
 const MAX_VISIBLE_SCENE_CHARACTERS = 4;
 
 function hasVisiblePrivateExposure(rawScene = {}) {
+  const rawSexPos = cleanText(rawScene.sex_position || rawScene.sexPosition);
+  if (rawSexPos && findSexPosition(rawSexPos)) {
+    return true;
+  }
+
   const text = [
     rawScene.visual_description,
     rawScene.scene_desc,
@@ -13,6 +20,7 @@ function hasVisiblePrivateExposure(rawScene = {}) {
     rawScene.interactions,
     rawScene.must_show,
     rawScene.mustShow,
+    rawSexPos,
     ...(Array.isArray(rawScene.characters) ? rawScene.characters.map(character => character?.clothing) : [])
   ].map(cleanText).join(' ');
 
@@ -237,6 +245,7 @@ export function serializeSceneForMatching(scene = {}) {
     scene.scene_desc,
     scene.visual_description,
     scene.core_action,
+    scene.sex_position,
     scene.environment,
     scene.cinematography,
     chars,
@@ -275,9 +284,19 @@ export function normalizeSceneCard(rawScene = {}) {
       && limitedCharacterNames.has(interaction.target)
     ));
 
+  const rawSexPosition = cleanText(rawScene.sex_position || rawScene.sexPosition || '');
+  let normalizedSexPosition = rawSexPosition;
+  if (rawSexPosition) {
+    const matched = findSexPosition(rawSexPosition);
+    if (matched) {
+      normalizedSexPosition = matched.name;
+    }
+  }
+
   const normalized = {
     scene_idx: Number(rawScene.scene_idx) || Number(rawScene.scene_id) || 1,
     trigger_sentence: cleanText(rawScene.trigger_sentence),
+    sex_position: normalizedSexPosition,
     // 分级以裸体、半裸、露点或下体私密部位裸露为门槛，避免模型仅因亲密或隔衣文本误标 NSFW。
     nsfw_rating: VALID_NSFW.has(rawNsfw) && hasVisiblePrivateExposure(rawScene) ? rawNsfw : 'sfw',
     visual_description: cleanText(rawScene.visual_description || rawScene.scene_desc),
