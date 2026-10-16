@@ -2544,7 +2544,7 @@ function App() {
       {/* 角色 DNA 切片更新提示 */}
       {dnaUpdatePrompt && (
         <div className="modal-overlay">
-          <div className="modal-content glass-panel" style={{ maxWidth: '520px' }}>
+          <div className="modal-content" style={{ maxWidth: '520px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
               <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><User size={20} /> 更新角色 DNA</h2>
               <button className="btn-secondary" style={{ padding: '6px' }} onClick={() => setDnaUpdatePrompt(null)}>
@@ -2573,7 +2573,7 @@ function App() {
 
       {sceneEditor && (
         <div className="modal-overlay">
-          <div className="modal-content glass-panel" style={{ maxWidth: '1100px', width: '100%', maxHeight: '92vh', display: 'flex', flexDirection: 'column', background: 'linear-gradient(180deg, rgba(24, 28, 56, 0.98), rgba(18, 22, 46, 0.98))', border: '1px solid rgba(148, 163, 184, 0.14)' }}>
+          <div className="modal-content" style={{ maxWidth: '1100px', width: '100%', maxHeight: '92vh', display: 'flex', flexDirection: 'column', background: 'linear-gradient(180deg, rgba(24, 28, 56, 0.98), rgba(18, 22, 46, 0.98))', border: '1px solid rgba(148, 163, 184, 0.14)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexShrink: 0 }}>
               <div>
                 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Pencil size={18} /> 场景 #{sceneEditor.sceneIdx}</h2>
@@ -2970,7 +2970,7 @@ function App() {
       {/* 4. 全局配置弹窗 */}
       {isConfigOpen && (
         <div className="modal-overlay">
-          <div className="modal-content glass-panel" style={{ maxWidth: configTab === 'prompts' ? '800px' : '920px', width: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+          <div className="modal-content" style={{ maxWidth: configTab === 'prompts' ? '800px' : '920px', width: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexShrink: 0 }}>
               <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Settings size={20} /> 全局 API 配置</h2>
               <button className="btn-secondary" style={{ padding: '6px' }} onClick={() => setIsConfigOpen(false)}>
@@ -3689,7 +3689,7 @@ function App() {
       {/* 5. 创建项目弹窗 */}
       {isNewProjectOpen && (
         <div className="modal-overlay">
-          <div className="modal-content glass-panel" style={{ maxWidth: '600px' }}>
+          <div className="modal-content" style={{ maxWidth: '600px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
               <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Plus size={20} /> 创建新项目</h2>
               <button className="btn-secondary" style={{ padding: '6px' }} onClick={() => setIsNewProjectOpen(false)}>
@@ -3756,7 +3756,7 @@ function App() {
       {/* 删除项目确认弹窗 */}
       {deleteProjectPrompt && (
         <div className="modal-overlay">
-          <div className="modal-content glass-panel" style={{ maxWidth: '460px' }}>
+          <div className="modal-content" style={{ maxWidth: '460px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
               <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><X size={20} /> 删除项目</h2>
               <button className="btn-secondary" style={{ padding: '6px' }} onClick={() => setDeleteProjectPrompt(null)}>

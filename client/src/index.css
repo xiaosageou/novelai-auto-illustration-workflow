@@ -37,17 +37,25 @@
 
 body {
   background-color: var(--bg-dark);
-  background-image: 
-    radial-gradient(at 10% 10%, rgba(138, 43, 226, 0.1) 0px, transparent 50%),
-    radial-gradient(at 90% 90%, rgba(0, 191, 255, 0.08) 0px, transparent 50%),
-    radial-gradient(at 50% 50%, rgba(236, 72, 153, 0.05) 0px, transparent 50%);
-  background-attachment: fixed;
   color: var(--text-primary);
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
   height: 100vh;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: 
+    radial-gradient(at 10% 10%, rgba(138, 43, 226, 0.09) 0px, transparent 50%),
+    radial-gradient(at 90% 90%, rgba(0, 191, 255, 0.07) 0px, transparent 50%),
+    radial-gradient(at 50% 50%, rgba(236, 72, 153, 0.04) 0px, transparent 50%);
+  pointer-events: none;
+  z-index: -1;
+  transform: translateZ(0);
 }
 
 /* 滚动条美化 */
@@ -76,12 +84,12 @@ h1, h2, h3, h4 {
 /* 毛玻璃容器 */
 .glass-panel {
   background: var(--bg-glass);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--border-light);
   border-radius: 16px;
   box-shadow: var(--shadow-card);
-  transition: var(--transition-smooth);
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .glass-panel:hover {
@@ -549,25 +557,37 @@ h1, h2, h3, h4 {
   border-color: rgba(249, 115, 22, 0.35);
 }
 
-/* 弹窗遮罩 */
+/* 弹窗遮罩：使用轻量纯色半透明，彻底移除全屏高斯模糊，消除 GPU 负载飙升 */
 .modal-overlay {
   position: fixed;
   top: 0;
   left: 0;
   width: 100vw;
   height: 100vh;
-  background: rgba(5, 5, 10, 0.85);
-  backdrop-filter: blur(8px);
+  background: rgba(4, 5, 14, 0.82);
   z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
+  contain: strict;
 }
 
 .modal-content {
   width: 90%;
   max-width: 500px;
   padding: 24px;
+  background: #101226 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(168, 85, 247, 0.2);
+  contain: content;
+}
+
+.modal-content form {
+  contain: content;
+  overscroll-behavior: contain;
 }
 
 .llm-routing-panel {
