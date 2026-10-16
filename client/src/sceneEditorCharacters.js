@@ -143,6 +143,7 @@ export function buildCharacterReferenceSummary(characterRecord = {}) {
   if (gender) fragments.push(gender);
 
   const orderedKeys = [
+    '年龄标签',
     '外貌标签',
     '身材标签',
     '发型标签',

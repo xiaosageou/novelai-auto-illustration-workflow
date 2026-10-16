@@ -1539,8 +1539,11 @@ export class PipelineManager {
     const scenes = currentProgress.scenes;
     const scene = scenes.find(s => s.scene_idx === parseInt(sceneIdx));
     if (!scene) throw new Error(`找不到场景索引: ${sceneIdx}`);
-    if (!String(scene.final_prompt || '').trim()) {
-      throw new Error("该场景没有已保存的最终 Prompt，请先执行一次普通重绘");
+
+    const pp = scene.prepared_prompt || {};
+    const finalPrompt = String(scene.final_prompt || pp.finalPositive || '').trim();
+    if (!finalPrompt) {
+      throw new Error("该场景没有已就绪或已保存的 Prompt，请先生成 Prompt");
     }
 
     scene.status = 'PENDING';
@@ -1558,18 +1561,21 @@ export class PipelineManager {
     this.isRunning = true;
     try {
       const naiModel = this.config.nai_model || "nai-diffusion-4-5-full";
-      const characterPrompts = Array.isArray(scene.character_prompts) ? scene.character_prompts : [];
-      const negativeCharacterPrompts = Array.isArray(scene.negative_character_prompts)
+      const characterPrompts = Array.isArray(scene.character_prompts) && scene.character_prompts.length > 0
+        ? scene.character_prompts
+        : (Array.isArray(pp.characterPrompts) ? pp.characterPrompts : []);
+      const negativeCharacterPrompts = Array.isArray(scene.negative_character_prompts) && scene.negative_character_prompts.length > 0
         ? scene.negative_character_prompts
-        : [];
-      const characterCenters = Array.isArray(scene.character_centers) ? scene.character_centers : [];
-      const basePrompt = String(scene.base_prompt || scene.final_prompt).trim();
-      const finalPrompt = String(scene.final_prompt).trim();
-      const finalNegative = String(scene.final_negative || '').trim();
-      const width = Number(scene.width) || 1024;
-      const height = Number(scene.height) || 1024;
+        : (Array.isArray(pp.negativeCharacterPrompts) ? pp.negativeCharacterPrompts : []);
+      const characterCenters = Array.isArray(scene.character_centers) && scene.character_centers.length > 0
+        ? scene.character_centers
+        : (Array.isArray(pp.characterCenters) ? pp.characterCenters : []);
+      const basePrompt = String(scene.base_prompt || pp.basePrompt || finalPrompt).trim();
+      const finalNegative = String(scene.final_negative || pp.finalNegative || '').trim();
+      const width = Number(scene.width || pp.width) || 1024;
+      const height = Number(scene.height || pp.height) || 1024;
 
-      this.writeLog(`[Pipeline] 开始仅 NAI 重绘: 章节「${chap.chapter}」场景 #${sceneIdx}`);
+      this.writeLog(`[Pipeline] 开始仅 NAI 生图: 章节「${chap.chapter}」场景 #${sceneIdx}`);
       this.uiCooldownCallback?.();
       const vibeBundle = await this.getVibeBundleForModel(naiModel);
       const result = await this.naiClient.generateImage(finalPrompt, {
@@ -1603,6 +1609,15 @@ export class PipelineManager {
 
       scene.status = 'SUCCESS';
       scene.image_path = `illustrations/${imgName}`;
+      scene.final_prompt = finalPrompt;
+      scene.final_negative = finalNegative;
+      scene.base_prompt = basePrompt;
+      scene.character_prompts = characterPrompts;
+      scene.negative_character_prompts = negativeCharacterPrompts;
+      scene.character_centers = characterCenters;
+      scene.width = width;
+      scene.height = height;
+
       this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
       await this.projectProgress.save();
       this.uiProgressCallback?.({
@@ -1612,9 +1627,16 @@ export class PipelineManager {
         totalScenes: scenes.length,
         imagePath: `/projects/${this.projectName}/illustrations/${imgName}`
       });
-      this.writeLog(`[Pipeline] 仅 NAI 重绘成功: 章节「${chap.chapter}」场景 #${sceneIdx}`);
+      this.writeLog(`[Pipeline] 仅 NAI 生图成功: 章节「${chap.chapter}」场景 #${sceneIdx}`);
       return { chapter: chap.chapter, chapterKey: chapKey, sceneIdx: scene.scene_idx };
     } catch (err) {
+      if (this.isPausedByUser || err.name === 'AbortError') {
+        scene.status = pp.finalPositive ? 'PROMPT_READY' : 'PENDING';
+        this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
+        await this.projectProgress.save();
+        this.writeLog(`[Pipeline] 仅 NAI 生图已暂停: 章节「${chap.chapter}」场景 #${sceneIdx}`);
+        return null;
+      }
       scene.status = 'FAILED';
       this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
       await this.projectProgress.save();

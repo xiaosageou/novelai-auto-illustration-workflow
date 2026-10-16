@@ -940,6 +940,95 @@ app.post('/api/projects/:projectName/pipeline/stop', async (req, res) => {
   }
 });
 
+// 批量仅生图（将已就绪 Prompt 但未出图的场景全部推入 NAI 生图队列）
+app.post('/api/projects/:projectName/pipeline/render-ready', async (req, res) => {
+  try {
+    const { projectName } = req.params;
+    const { chapterKey = null } = req.body || {};
+    const pipeline = await getPipeline(projectName);
+
+    if (pipeline.isRunning) {
+      return res.status(400).json({ error: "流水线已在运行中，请先暂停后再排队生图" });
+    }
+
+    await pipeline.initialize();
+    const completedChapters = pipeline.projectProgress.getCompletedChapters();
+    let candidateChapterKeys = [];
+
+    if (chapterKey) {
+      const targetNormalized = pipeline.projectProgress.normalizeKey(chapterKey);
+      const foundKey = Object.keys(completedChapters).find(k =>
+        pipeline.projectProgress.normalizeKey(k) === targetNormalized
+      ) || pipeline.projectProgress.getEffectiveChapKeyByRaw(chapterKey);
+      candidateChapterKeys = [foundKey];
+    } else {
+      if (Array.isArray(pipeline.chapters)) {
+        for (const c of pipeline.chapters) {
+          const ck = pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+          if (completedChapters[ck]) {
+            candidateChapterKeys.push(ck);
+          }
+        }
+      }
+      for (const k of Object.keys(completedChapters)) {
+        if (!candidateChapterKeys.includes(k)) {
+          candidateChapterKeys.push(k);
+        }
+      }
+    }
+
+    const queuedScenes = [];
+    for (const chapKey of candidateChapterKeys) {
+      const chapterData = completedChapters[chapKey];
+      if (!chapterData || !Array.isArray(chapterData.scenes)) continue;
+
+      for (const scene of chapterData.scenes) {
+        const hasPrompt = Boolean(
+          scene.final_prompt?.trim() ||
+          scene.prepared_prompt?.finalPositive?.trim() ||
+          scene.prepared_prompt?.basePrompt?.trim()
+        );
+        const needsRender = !scene.image_path || scene.image_path === 'failed' || scene.status !== 'SUCCESS';
+
+        if (hasPrompt && needsRender) {
+          const queued = enqueueRedraw(projectName, pipeline, chapKey, chapKey, scene.scene_idx, 'nai_only');
+          queuedScenes.push({
+            chapterKey: chapKey,
+            sceneIdx: scene.scene_idx,
+            duplicate: queued.duplicate,
+            position: queued.position
+          });
+        }
+      }
+    }
+
+    if (queuedScenes.length === 0) {
+      return res.json({
+        success: true,
+        message: "没有找到待生图的就绪场景",
+        count: 0,
+        queued: []
+      });
+    }
+
+    const addedCount = queuedScenes.filter(s => !s.duplicate).length;
+    broadcastSSE('log', {
+      text: `🎨 已将 ${addedCount} 个就绪场景加入 NAI 生图队列${chapterKey ? `（章节: ${chapterKey}）` : ''}...`,
+      type: 'info'
+    });
+
+    res.json({
+      success: true,
+      message: `已将 ${addedCount} 个场景排入生图队列`,
+      count: addedCount,
+      total: queuedScenes.length,
+      queued: queuedScenes
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 启动单章强制生图流水线
 app.post('/api/projects/:projectName/chapters/:chapterKey/generate', async (req, res) => {
   try {

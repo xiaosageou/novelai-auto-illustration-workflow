@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { 
   Settings, Plus, BookOpen, User, Play, Square, Download, 
   RefreshCw, CheckCircle2, Sparkles, X, FileText, Clapperboard, Timer,
-  Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil
+  Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil, Image as ImageIcon
 } from 'lucide-react';
 import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
 import { isNaiLogMessage } from './logClassification.js';
@@ -981,6 +981,62 @@ function App() {
     }
   };
 
+  const isSceneReadyForRender = (scene) => {
+    if (!scene) return false;
+    const hasPrompt = Boolean(
+      scene.final_prompt?.trim() ||
+      scene.prepared_prompt?.finalPositive?.trim() ||
+      scene.prepared_prompt?.basePrompt?.trim()
+    );
+    const needsRender = !scene.image_path || scene.image_path === 'failed' || scene.status !== 'SUCCESS';
+    return hasPrompt && needsRender;
+  };
+
+  const getReadyScenesCount = (targetChapterKey = null) => {
+    const completedChapters = projectDetails?.progress?.completed_chapters || {};
+    if (!targetChapterKey) {
+      let count = 0;
+      for (const chap of Object.values(completedChapters)) {
+        if (Array.isArray(chap.scenes)) {
+          for (const s of chap.scenes) {
+            if (isSceneReadyForRender(s)) count++;
+          }
+        }
+      }
+      return count;
+    }
+
+    const targetNorm = targetChapterKey.replace(/[\s_]+/g, '').toLowerCase();
+    for (const [key, chap] of Object.entries(completedChapters)) {
+      if (key.replace(/[\s_]+/g, '').toLowerCase() === targetNorm) {
+        return (chap.scenes || []).filter(isSceneReadyForRender).length;
+      }
+    }
+    const directChap = completedChapters[targetChapterKey];
+    return directChap?.scenes ? directChap.scenes.filter(isSceneReadyForRender).length : 0;
+  };
+
+  const startRenderReadyScenes = async (targetChapterKey = null) => {
+    if (!activeProject) return;
+    try {
+      addLog(targetChapterKey ? `🎨 正在将章节「${targetChapterKey}」就绪场景加入生图队列...` : '🎨 正在将所有就绪场景加入生图队列...');
+      const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/pipeline/render-ready`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chapterKey: targetChapterKey })
+      });
+      const data = await res.json();
+      if (data.success) {
+        addLog(`✅ ${data.message}`);
+        fetchProjectDetails(activeProject);
+      } else {
+        addLog(`❌ 加入生图队列失败: ${data.error || data.message || '未知错误'}`, 'error');
+      }
+    } catch (err) {
+      addLog(`❌ 请求异常: ${err.message}`, 'error');
+    }
+  };
+
   const deleteScene = async (chap, sceneIdx) => {
     if (!activeProject || !chap) return;
     const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
@@ -1150,10 +1206,12 @@ function App() {
   };
 
   const progressInfo = getProgress();
+  const readyScenesCount = getReadyScenesCount();
   const characters = projectDetails?.progress?.global_characters || {};
   const characterDnaVersions = projectDetails?.progress?.character_dna_versions || {};
   const dnaFeatureOrder = [
     '外貌标签',
+    '年龄标签',
     '身材标签',
     '胸部标签',
     'NSFW标签',
@@ -1161,7 +1219,6 @@ function App() {
     '发色标签',
     '眼睛标签',
     '肤色标签',
-    '年龄感标签',
     '服装基底标签',
     '特殊特征标签'
   ];
@@ -1174,7 +1231,11 @@ function App() {
 
   const featuresToEditorState = (features = {}) => (
     dnaFeatureOrder.reduce((acc, key) => {
-      acc[key] = normalizeFeatureText(features?.[key]);
+      let val = features?.[key];
+      if (key === '年龄标签' && (val === undefined || val === null || (Array.isArray(val) && val.length === 0) || val === '')) {
+        val = features?.['年龄感标签'] || 'adult';
+      }
+      acc[key] = normalizeFeatureText(val);
       return acc;
     }, emptyCharacterFeatures())
   );
@@ -1418,7 +1479,15 @@ function App() {
   const renderDnaFeatures = (features) => {
     if (!features || typeof features !== 'object') return null;
     const entries = dnaFeatureOrder
-      .map(key => [key, Array.isArray(features[key]) ? features[key].filter(Boolean) : []])
+      .map(key => {
+        let tags = Array.isArray(features[key]) ? features[key].filter(Boolean) : [];
+        if (key === '年龄标签' && tags.length === 0) {
+          tags = Array.isArray(features['年龄感标签'])
+            ? features['年龄感标签'].filter(Boolean)
+            : (features['年龄标签'] ? [String(features['年龄标签'])] : ['adult']);
+        }
+        return [key, tags];
+      })
       .filter(([, tags]) => tags.length > 0);
     if (entries.length === 0) return null;
 
@@ -1497,7 +1566,7 @@ function App() {
               }))}
               rows={2}
               spellCheck={false}
-              placeholder="用逗号分隔"
+              placeholder={label === '年龄标签' ? '知道几岁写确定的岁数(如 18yo, 20yo)，不知道写 adult (默认 adult)' : '用逗号分隔'}
               style={{
                 width: '100%',
                 background: 'rgba(255,255,255,0.03)',
@@ -1928,9 +1997,26 @@ function App() {
                     <Square size={16} /> 暂停
                   </button>
                 ) : (
-                  <button className="btn-primary" onClick={startPipeline}>
-                    <Play size={16} /> 启动
-                  </button>
+                  <>
+                    <button className="btn-primary" onClick={startPipeline}>
+                      <Play size={16} /> 启动
+                    </button>
+                    <button
+                      className="btn-secondary"
+                      onClick={() => startRenderReadyScenes()}
+                      disabled={readyScenesCount === 0}
+                      title="仅排队生成所有已就绪 Prompt 且未出图的场景"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        borderColor: readyScenesCount > 0 ? 'rgba(168, 85, 247, 0.65)' : undefined,
+                        color: readyScenesCount > 0 ? '#c084fc' : undefined
+                      }}
+                    >
+                      <ImageIcon size={16} /> 仅生图 ({readyScenesCount})
+                    </button>
+                  </>
                 ))}
                 {workspaceTab !== 'comics' && <button className="btn-secondary" onClick={exportEPUB}>
                   <Download size={16} /> 编译 EPUB
@@ -2009,21 +2095,38 @@ function App() {
                           所属分卷: {selectedChapter.volume} | 全章字数: {selectedChapter.wordCount} 字
                         </div>
                       </div>
-                      <button 
-                        className="btn-secondary" 
-                        disabled={isSingleChapterGenerateDisabled({ pipelineRunning, chapterQueueState: selectedChapterQueueState })}
-                        onClick={() => generateSingleChapter(selectedChapter)}
-                        style={{ display: 'flex', alignItems: 'center', gap: '4px', borderColor: 'var(--color-pink)' }}
-                      >
-                        <Play size={14} style={{ color: 'var(--color-pink)' }} />
-                        {selectedChapterQueueState === 'queued'
-                          ? '单章排队中'
-                          : selectedChapterQueueState === 'running'
-                            ? '单章执行中'
-                            : isSceneExtractionFailed
-                              ? '重试场景提炼'
-                              : '单章重画'}
-                      </button>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button 
+                          className="btn-secondary" 
+                          disabled={isSingleChapterGenerateDisabled({ pipelineRunning, chapterQueueState: selectedChapterQueueState })}
+                          onClick={() => generateSingleChapter(selectedChapter)}
+                          style={{ display: 'flex', alignItems: 'center', gap: '4px', borderColor: 'var(--color-pink)' }}
+                        >
+                          <Play size={14} style={{ color: 'var(--color-pink)' }} />
+                          {selectedChapterQueueState === 'queued'
+                            ? '单章排队中'
+                            : selectedChapterQueueState === 'running'
+                              ? '单章执行中'
+                              : isSceneExtractionFailed
+                                ? '重试场景提炼'
+                                : '单章重画'}
+                        </button>
+                        {(() => {
+                          const chapterReadyCount = getReadyScenesCount(selectedChapterKey);
+                          if (chapterReadyCount === 0) return null;
+                          return (
+                            <button
+                              className="btn-secondary"
+                              disabled={pipelineRunning}
+                              onClick={() => startRenderReadyScenes(selectedChapterKey)}
+                              style={{ display: 'flex', alignItems: 'center', gap: '4px', borderColor: 'rgba(168, 85, 247, 0.65)', color: '#c084fc' }}
+                              title="仅使用已就绪 Prompt 排队生成本章未出图的场景"
+                            >
+                              <ImageIcon size={14} /> 本章仅生图 ({chapterReadyCount})
+                            </button>
+                          );
+                        })()}
+                      </div>
                     </div>
                       );
                     })()}

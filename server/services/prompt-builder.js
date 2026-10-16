@@ -713,6 +713,7 @@ export function 构建角色锚点注入提示词(anchor, options) {
   // 头像构图：仅抽取面部、发型、发色、眼睛、肤色和年龄等面部特征标签，剔除衣服和道具
   if (composition === '头像') {
     const tokensFromFeatures = 从结构化特征挑选([
+      '年龄标签',
       '外貌标签',
       '发型标签',
       '发色标签',
@@ -735,7 +736,7 @@ export function 构建角色锚点注入提示词(anchor, options) {
       const allow = /(breast|breasts|bust|cup|cleavage|nipple|nipples|areola|chest|skin|complexion|pale|fair|tan|young|adult|teen)/i;
       const deny = /(face|eyes?|hair|lips?|mouth|nose|dress|robe|hanfu|armor|outfit|clothing|upper body|waist|portrait|full body)/i;
 
-      const tokens = 从结构化特征挑选(['胸部标签', 'NSFW标签', '肤色标签', '年龄感标签'], 14)
+      const tokens = 从结构化特征挑选(['胸部标签', 'NSFW标签', '肤色标签', '年龄标签', '年龄感标签'], 14)
         .filter((token) => allow.test(token) && !deny.test(token));
       if (tokens.length > 0) return tokens.join(', ');
 
@@ -745,7 +746,7 @@ export function 构建角色锚点注入提示词(anchor, options) {
     const allow = /(skin|complexion|pale|fair|tan|young|adult|teen)/i;
     const deny = /(face|eyes?|hair|dress|robe|hanfu|armor|outfit|clothing|upper body|waist|portrait|full body|standing|sitting|kneeling|feet)/i;
 
-    const safe = 从结构化特征挑选(['肤色标签', '年龄感标签'], 8)
+    const safe = 从结构化特征挑选(['肤色标签', '年龄标签', '年龄感标签'], 8)
       .filter((token) => allow.test(token) && !deny.test(token));
     if (safe.length > 0) return safe.join(', ');
 
@@ -755,6 +756,7 @@ export function 构建角色锚点注入提示词(anchor, options) {
   // 半身/立绘/场景：保留稳定外貌，但当前服装、裸体和披发状态优先于 DNA 常驻设定。
   if (features) {
     const keys = [
+      '年龄标签',
       '外貌标签',
       '身材标签',
       '胸部标签',

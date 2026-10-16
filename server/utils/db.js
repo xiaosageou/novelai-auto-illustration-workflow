@@ -4,8 +4,10 @@ import { removeNonEnglishPromptTokens } from './prompt-cleaner.js';
 
 const DNA_FEATURE_KEYS = [
   "外貌标签",
+  "年龄标签",
   "身材标签",
   "胸部标签",
+  "NSFW标签",
   "发型标签",
   "发色标签",
   "眼睛标签",

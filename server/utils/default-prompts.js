@@ -236,7 +236,7 @@ export const DEFAULT_CHARACTER_DNA_PROMPT = `<sandbox mode="professional_art_dir
 6. 发色标签 (如：blonde hair, silver hair, black hair, brown hair 等发色)
 7. 眼睛标签 (如：blue eyes, red eyes, green eyes, golden eyes 等瞳色瞳孔特征)
 8. 肤色标签 (如：pale skin, fair skin, tan skin, white skin 等肤色)
-9. 年龄感标签 (如：young girl, teen, young man, mature, elderly 等年龄段特征)
+9. 年龄标签 (知道几岁就写确定的岁数，如 18yo, 20yo, 25yo 等；不知道具体岁数就写成年 adult；默认成年 adult)
 10. 服装基底标签 (如：maid outfit, white dress, chinese robe, armor, school uniform 等最常驻、最核心的一套服装基底)
 11. 特殊特征标签 (如：cat ears, cat tail, halo, wings, glasses, scar, tattoo 等长期可见的特殊特征)
 
@@ -269,7 +269,7 @@ export const DEFAULT_CHARACTER_DNA_PROMPT = `<sandbox mode="professional_art_dir
       "发色标签": ["silver_hair"],
       "眼睛标签": ["red_eyes"],
       "肤色标签": ["pale_skin"],
-      "年龄感标签": ["young_girl"],
+      "年龄标签": ["adult"],
       "服装基底标签": ["white_dress"],
       "特殊特征标签": []
     },

@@ -1934,75 +1934,7 @@ export class LLMExtractor {
       const rawList = robustJsonLoads(rawContent);
 
       // 对大模型提取出的角色 DNA 进行后处理二次净化，滤除任何瞬时/场景状态标签
-      return rawList.map(char => {
-        if (!char || !char.name) return char;
-
-        const cleanFeatures = {};
-        if (char.features) {
-          for (const [key, val] of Object.entries(char.features)) {
-            if (Array.isArray(val)) {
-              cleanFeatures[key] = val
-                .map(t => t.trim())
-                .filter(t => t.length > 0 && !isTransientTag(t));
-            } else {
-              cleanFeatures[key] = val;
-            }
-          }
-        }
-
-        // 重新拼装出最干净、最常驻的外貌特征拼接串
-        const allFeatureTags = [];
-        const orderedKeys = ["外貌标签", "身材标签", "胸部标签", "NSFW标签", "发型标签", "发色标签", "眼睛标签", "肤色标签", "年龄感标签", "服装基底标签", "特殊特征标签"];
-        for (const key of orderedKeys) {
-          if (Array.isArray(cleanFeatures[key])) {
-            allFeatureTags.push(...cleanFeatures[key]);
-          }
-        }
-
-        const tagsStr = cleanCharacterDnaTags(char.tags || "");
-        const mergedTags = cleanCharacterDnaTags([...tagsStr.split(/[,，]/), ...allFeatureTags]);
-        const evidence = Array.isArray(char.evidence)
-          ? char.evidence.map(item => {
-              if (typeof item === 'string') {
-                return { quote: preserveTextForLlm(item), attribute: "", tags: [] };
-              }
-              return {
-                quote: preserveTextForLlm(item?.quote || item?.原文 || ""),
-                attribute: preserveTextForLlm(item?.attribute || item?.字段 || ""),
-                tags: Array.isArray(item?.tags) ? item.tags.map(t => String(t || '').trim()).filter(Boolean) : []
-              };
-            }).filter(item => item.quote || item.attribute || item.tags.length > 0)
-          : [];
-
-        const confidence = Number(char.confidence ?? char.confidence_score ?? 0);
-
-        return {
-          name: char.name,
-          aliases: Array.isArray(char.aliases) ? char.aliases.map(a => String(a || '').trim()).filter(Boolean) : [],
-          gender: String(char.gender || '').trim(),
-          role_type: String(char.role_type || char.role || '').trim(),
-          tags: mergedTags,
-          features: cleanFeatures,
-          height_class: String(char.height_class || '').trim(),
-          body_proportion: String(char.body_proportion || '').trim(),
-          evidence,
-          confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
-          source_chapters: Array.isArray(char.source_chapters) ? char.source_chapters : sourceChapters,
-          source_text_summary: String(char.source_text_summary || '').trim(),
-          appearance_versions: Array.isArray(char.appearance_versions)
-            ? char.appearance_versions
-              .filter(version => version && typeof version === 'object')
-              .map(version => ({
-                start_chapter: String(version.start_chapter || '').trim(),
-                tags: cleanCharacterDnaTags(version.tags || ''),
-                features: version.features && typeof version.features === 'object' ? version.features : cleanFeatures,
-                evidence: Array.isArray(version.evidence) ? version.evidence : evidence,
-                confidence: Number.isFinite(Number(version.confidence)) ? Math.max(0, Math.min(1, Number(version.confidence))) : confidence,
-                persistent_change: version.persistent_change === true
-              }))
-            : []
-        };
-      });
+      return rawList.map(char => sanitizeCharacterDnaEntry(char, { defaultSourceChapters: sourceChapters }));
     } catch (error) {
       console.error("[LLM Extractor] 提取角色 DNA 异常:", error);
       return [];
@@ -2626,4 +2558,86 @@ export class LLMExtractor {
       throw new Error(`词组转化过程中发生异常: ${e.message}`);
     }
   }
+}
+
+/**
+ * 对大模型提取出的单角色 DNA 进行后处理二次净化，滤除任何瞬时/场景状态标签
+ */
+export function sanitizeCharacterDnaEntry(char, { defaultSourceChapters = [] } = {}) {
+  if (!char || !char.name) return char;
+
+  const cleanFeatures = {};
+  if (char.features) {
+    for (const [key, val] of Object.entries(char.features)) {
+      if (Array.isArray(val)) {
+        cleanFeatures[key] = val
+          .map(t => t.trim())
+          .filter(t => t.length > 0 && !isTransientTag(t));
+      } else {
+        cleanFeatures[key] = val;
+      }
+    }
+  }
+
+  // 年龄标签规范化与默认成年 (adult) 兜底：知道几岁就写确定的岁数，不知道就写成年 (adult)
+  const rawAgeTags = (cleanFeatures['年龄标签'] || cleanFeatures['年龄感标签'] || [])
+    .filter(Boolean);
+  const resolvedAgeTags = rawAgeTags.length > 0 ? rawAgeTags : ['adult'];
+  cleanFeatures['年龄标签'] = resolvedAgeTags;
+  if (!cleanFeatures['年龄感标签']) {
+    cleanFeatures['年龄感标签'] = resolvedAgeTags;
+  }
+
+  // 重新拼装出最干净、最常驻的外貌特征拼接串
+  const allFeatureTags = [];
+  const orderedKeys = ["年龄标签", "外貌标签", "身材标签", "胸部标签", "NSFW标签", "发型标签", "发色标签", "眼睛标签", "肤色标签", "服装基底标签", "特殊特征标签"];
+  for (const key of orderedKeys) {
+    if (Array.isArray(cleanFeatures[key])) {
+      allFeatureTags.push(...cleanFeatures[key]);
+    }
+  }
+
+  const tagsStr = cleanCharacterDnaTags(char.tags || "");
+  const mergedTags = cleanCharacterDnaTags([...tagsStr.split(/[,，]/), ...allFeatureTags]);
+  const evidence = Array.isArray(char.evidence)
+    ? char.evidence.map(item => {
+        if (typeof item === 'string') {
+          return { quote: preserveTextForLlm(item), attribute: "", tags: [] };
+        }
+        return {
+          quote: preserveTextForLlm(item?.quote || item?.原文 || ""),
+          attribute: preserveTextForLlm(item?.attribute || item?.字段 || ""),
+          tags: Array.isArray(item?.tags) ? item.tags.map(t => String(t || '').trim()).filter(Boolean) : []
+        };
+      }).filter(item => item.quote || item.attribute || item.tags.length > 0)
+    : [];
+
+  const confidence = Number(char.confidence ?? char.confidence_score ?? 0);
+
+  return {
+    name: char.name,
+    aliases: Array.isArray(char.aliases) ? char.aliases.map(a => String(a || '').trim()).filter(Boolean) : [],
+    gender: String(char.gender || '').trim(),
+    role_type: String(char.role_type || char.role || '').trim(),
+    tags: mergedTags,
+    features: cleanFeatures,
+    height_class: String(char.height_class || '').trim(),
+    body_proportion: String(char.body_proportion || '').trim(),
+    evidence,
+    confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
+    source_chapters: Array.isArray(char.source_chapters) ? char.source_chapters : defaultSourceChapters,
+    source_text_summary: String(char.source_text_summary || '').trim(),
+    appearance_versions: Array.isArray(char.appearance_versions)
+      ? char.appearance_versions
+        .filter(version => version && typeof version === 'object')
+        .map(version => ({
+          start_chapter: String(version.start_chapter || '').trim(),
+          tags: cleanCharacterDnaTags(version.tags || ''),
+          features: version.features && typeof version.features === 'object' ? version.features : cleanFeatures,
+          evidence: Array.isArray(version.evidence) ? version.evidence : evidence,
+          confidence: Number.isFinite(Number(version.confidence)) ? Math.max(0, Math.min(1, Number(version.confidence))) : confidence,
+          persistent_change: version.persistent_change === true
+        }))
+      : []
+  };
 }
