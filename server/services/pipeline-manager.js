@@ -588,12 +588,53 @@ export class PipelineManager {
   }
 
   /**
+   * 瞬时硬刹车：秒级中止所有在途 LLM/NAI 请求与排队任务，安全保存数据
+   */
+  async stop() {
+    this.writeLog("[Pipeline] 收到停止/暂停指令，正在执行瞬时硬刹车...", "warning");
+    this.isRunning = false;
+    this.isPausedByUser = true;
+
+    if (this.abortController) {
+      try {
+        this.abortController.abort(new Error("Pipeline paused by user"));
+      } catch {}
+      this.abortController = null;
+    }
+
+    // 1. 中止 LLM 网络请求
+    this.sceneExtractor?.abortAll?.();
+    this.naiTagsExtractor?.abortAll?.();
+
+    // 2. 中止 NAI 网络请求及 Cooldown 冷却
+    this.naiClient?.abortAll?.();
+    globalCooldownManager.interruptCooldown();
+
+    // 3. 清空当前活跃生图队列
+    if (this.activeSceneQueue) {
+      this.activeSceneQueue.clear();
+    }
+
+    // 4. 安全落盘已处理状态
+    try {
+      await this.projectProgress?.save();
+    } catch (saveErr) {
+      console.warn("[Pipeline] 暂停时保存进度警告:", saveErr.message);
+    }
+
+    this.writeLog("[Pipeline] 流水线已成功暂停，所有在途网络任务已秒级切断。");
+    return { success: true, message: "流水线已快速暂停" };
+  }
+
+  /**
    * 批量流水线核心循环。
    * - 单章模式（targetChapterKey 非空）：LLM 生成 Prompt + NAI 线性生图，两条流水线解耦。
    * - 批量模式：LLM 2 并发生成 Prompt（完成即持久化）+ NAI 线性生图，两条流水线解耦。
    */
   async processPipeline(targetChapterKey = null, options = {}) {
     this.isRunning = true;
+    this.isPausedByUser = false;
+    this.abortController = new AbortController();
     await this.initialize();
     this.chapterIndexMap = new Map(this.chapters.map((c, index) => [
       this.projectProgress.getEffectiveChapKey(c.volume, c.chapter),
@@ -758,6 +799,9 @@ export class PipelineManager {
         );
       } catch (error) {
         lastError = error;
+        if (this.isPausedByUser || this.abortController?.signal?.aborted || error?.name === 'AbortError') {
+          break;
+        }
         if (attempt < 3) {
           this.writeLog(
             `  [场景 ${scene.scene_idx}] 第 ${attempt}/3 次执行失败，将完整重试场景流程: ${error.message}`,
@@ -767,6 +811,10 @@ export class PipelineManager {
       }
     }
 
+    if (this.isPausedByUser || this.abortController?.signal?.aborted) {
+      this.writeLog(`  [场景 ${scene.scene_idx}] 流水线已暂停，当前场景安全中断。`);
+      return false;
+    }
     const finalErrorMessage = `场景 ${scene.scene_idx} 连续 3 次执行失败: ${lastError?.message || "未知错误"}`;
     this.writeLog(`  [场景 ${scene.scene_idx}] ${finalErrorMessage}，已跳过当前场景继续流水线。`, "warning");
     scene.status = 'FAILED';
@@ -891,7 +939,10 @@ export class PipelineManager {
       sceneCountOptions: {
         cjkDivisor: this.config.cjk_scene_divisor,
         englishDivisor: this.config.english_scene_divisor
-      }
+      },
+      maxScenesPerRequest: this.config.max_scenes_per_request || 5,
+      shouldAbort: () => !this.isRunning,
+      signal: this.abortController?.signal || null
     });
 
     this.writeLog(`${logPrefix} 章节「${chap.chapter}」成功提炼 ${scenes.length} 幅插画场景。`);
@@ -1060,7 +1111,7 @@ export class PipelineManager {
       vibeInfoExtracted: vibeBundle ? vibeBundle.informationExtracted.map(value => Number.isFinite(value) ? value : (Number(this.config.vibeInfoExtracted) || 1.0)) : null,
       vibeNormalizeStrengths: this.config.vibeNormalizeStrengths !== false,
       seed: Number.isInteger(scene.render_seed) ? scene.render_seed : null,
-      signal: null,
+      signal: this.abortController?.signal || null,
       onRetry: (msg) => this.writeLog(`  [场景 ${scene.scene_idx}] ${msg}`, "warning")
     });
 
@@ -1363,6 +1414,10 @@ export class PipelineManager {
       }
 
       if (!success) {
+        if (!this.isRunning) {
+          this.writeLog(`  [场景 ${scene.scene_idx}] 因流水线暂停已中断，保留当前就绪状态以便随时恢复。`);
+          break;
+        }
         scene.status = 'FAILED';
         this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
         await this.projectProgress.save();

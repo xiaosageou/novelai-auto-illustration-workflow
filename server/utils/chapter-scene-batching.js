@@ -82,7 +82,7 @@ function splitTextForSceneCount(text) {
   return findNearestSentenceBoundary(normalized, Math.floor(normalized.length / 2));
 }
 
-function buildBatchPlan(text, sceneCount, { splitThreshold = 10000, maxScenesPerRequest = 10 } = {}) {
+function buildBatchPlan(text, sceneCount, { splitThreshold = 10000, maxScenesPerRequest = 5 } = {}) {
   const normalized = normalizeTextBlock(text);
   if (!normalized) return [];
 
@@ -169,8 +169,10 @@ export async function extractChapterScenesInBatches({
   onBatchFailed = null,
   requestedSceneCount = null,
   sceneCountOptions = {},
-  maxScenesPerRequest = 10,
-  splitThreshold = 10000
+  maxScenesPerRequest = 5,
+  splitThreshold = 10000,
+  shouldAbort = null,
+  signal = null
 }) {
   const chapterText = normalizeTextBlock(text);
   if (!chapterText) {
@@ -197,6 +199,10 @@ export async function extractChapterScenesInBatches({
   const mergedScenes = [];
 
   for (let index = 0; index < batchPlan.length; index++) {
+    if (shouldAbort?.() || signal?.aborted) {
+      onProgressLog?.(`[LLM] 章节「${chapterTitle}」提炼已检测到暂停指令，已中止剩余批次。`);
+      break;
+    }
     const batchTitle = `${chapterTitle}（${index + 1}/${batchPlan.length}）`;
     const batchText = batchPlan[index].text;
     const batchSceneCount = batchPlan[index].sceneCount || 1;
@@ -220,6 +226,11 @@ export async function extractChapterScenesInBatches({
       await onBatchExtracted?.(batchScenes, batchInfo);
       mergedScenes.push(...batchScenes);
     } catch (error) {
+      const isAborted = shouldAbort?.() || signal?.aborted || error?.name === 'AbortError' || /abort/i.test(error?.message || '');
+      if (isAborted) {
+        onProgressLog?.(`[LLM] 章节「${chapterTitle}」提炼已中断（用户暂停）。`);
+        break;
+      }
       const failureMessage = `章节「${chapterTitle}」第 ${index + 1}/${batchPlan.length} 段提炼失败：${error.message}`;
       onProgressLog?.(`[LLM] ${failureMessage}；已记录该段，继续处理其余分段。`, 'error');
       await onBatchFailed?.(error, batchInfo);

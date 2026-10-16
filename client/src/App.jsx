@@ -22,6 +22,33 @@ import {
 
 const API_BASE = import.meta.env.DEV ? "http://localhost:5001" : "";
 
+export const BUILTIN_ARTIST_PRESETS = [
+  {
+    id: 'default_commercial',
+    name: '默认商插 · 韩系现代立绘',
+    desc: 'youngjoo kjy + nardack + rella · 高质感骨骼五官、通透发丝与仙气质感',
+    prompt: '4::masterpiece, best quality ::, 2::official art, year2024, year2025 ::, 2.25::artist:youngjoo kjy ::, 1.45::artist:nardack ::, 1.25::artist:rella ::, 1.05::artist:qiandaiyiyu ::, 1.05::artist:atdan ::, 0.85::artist:void_0 ::, 0.65::artist:stu_dts ::, 0.75::artist:wo_jiushi_kanbudong ::, 0.75::artist:nixeu ::, -3::3D ::, 1.35::rim lighting, deep shadows, volumetric lighting, high contrast, cinematic lighting ::, no text'
+  },
+  {
+    id: 'recipe_a_soft',
+    name: '配方 A · 日系私密通透',
+    desc: 'mignon + quasarcake + kedama milk · 软萌通透、纯爱日常、细腻轻纱丝袜与温润肤质',
+    prompt: '0.6::mignon, artist:quasarcake, artist:houkisei, artist:kedama milk, 40hara::, piromizu, [ke-ta], [modare], year 2024, year 2025, fine fabric emphasis, clean lineart, soft shading'
+  },
+  {
+    id: 'recipe_b_dark_fantasy',
+    name: '配方 B · 深邃厚重西幻',
+    desc: 'raita + misaka 12003 + dino · 深沉暗色调、厚重笔触、强明暗对比（chiaroscuro）',
+    prompt: '-3::artist collaboration::, 1.2::misaka_12003-gou::, 0.8::dino_(dinoartforame), wanke, liduke::, 1.3::artist:raita::, artist:ningen_mame, artist:nixeu, dnd, fantasy, dramatic lighting, chiaroscuro, cinematic shadows'
+  },
+  {
+    id: 'recipe_c_cinematic_action',
+    name: '配方 C · 商业大片动势',
+    desc: 'yoneyama mai + hyulla + mx2j · 米山舞动态构图、高饱和炫彩与电影级色散',
+    prompt: '1.05::artist:yoneyama mai::, 0.95::hyulla::, 0.85::momokumo::, 0.8::mx2j::, 0.8::freng::, 0.9::artist:blue gk::, chromatic aberration, light diffusion, vibrant colors, dynamic pose, year 2025, year 2026'
+  }
+];
+
 function AutoResizeTextarea({ style, value, onChange, minRows = 2, ...props }) {
   const textareaRef = useRef(null);
 
@@ -91,6 +118,7 @@ function App() {
     noiseSchedule: "karras",
     cjk_scene_divisor: 600,
     english_scene_divisor: 350,
+    max_scenes_per_request: 5,
     proxy_url: "",
     useVibeTransfer: false,
     vibeBundlePath: "2026-06-04.naiv4vibebundle",
@@ -99,9 +127,11 @@ function App() {
     vibeNormalizeStrengths: true,
     nai_url: "https://image.novelai.net",
     artistStylePrompt: "",
+    artist_presets: [],
     system_prompt_advanced_prompt: "",
     system_prompt_advanced_prompt_nl: ""
   });
+  const [newArtistPresetName, setNewArtistPresetName] = useState('');
 
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState("");
@@ -416,6 +446,17 @@ function App() {
       }
     });
 
+    eventSource.addEventListener('pipeline_stopped', (e) => {
+      const data = JSON.parse(e.data);
+      if (data.projectName !== activeProject) return;
+      setPipelineRunning(false);
+      setLoadingScenes({});
+      setChapterQueueStates({});
+      addLog("⏸️ 流水线已成功暂停，所有在途任务已秒级切断。");
+      fetchStatus(activeProject);
+      fetchProjectDetails(activeProject);
+    });
+
     eventSource.addEventListener('characters_completed', (e) => {
       const data = JSON.parse(e.data);
       if (Number.isInteger(data?.sliceIndex)) {
@@ -532,7 +573,8 @@ function App() {
         llm_stream_enabled: data.llm_stream_enabled !== false,
         llm_rate_limit_enabled: data.llm_rate_limit_enabled !== false,
         llm_rate_limit_rpm: Number(data.llm_rate_limit_rpm) || 3,
-        llm_api_presets: (data.llm_api_presets || []).map(normalizePreset)
+        llm_api_presets: (data.llm_api_presets || []).map(normalizePreset),
+        artist_presets: Array.isArray(data.artist_presets) ? data.artist_presets : []
       });
     } catch (e) {
       addLog("拉取全局配置失败: " + e.message, "error");
@@ -1047,7 +1089,8 @@ function App() {
   const stopPipeline = async () => {
     if (!activeProject) return;
     try {
-      addLog("⏹️ 正在发送停止指令...");
+      addLog("⏹️ 正在发送停止指令并执行硬刹车...");
+      setPipelineRunning(false);
       const res = await fetch(`${API_BASE}/api/projects/${activeProject}/pipeline/stop`, {
         method: "POST"
       });
@@ -1055,6 +1098,8 @@ function App() {
       if (data.success) {
         addLog(data.message);
       }
+      fetchStatus(activeProject);
+      fetchProjectDetails(activeProject);
     } catch (e) {
       addLog("暂停流水线异常: " + e.message, "error");
     }
@@ -3287,7 +3332,7 @@ function App() {
                       />
                     </div>
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
                     <div>
                       <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>中文分镜字数除数</label>
                       <input
@@ -3311,6 +3356,18 @@ function App() {
                         style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                       />
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>当前按每 {config.english_scene_divisor ?? 350} 词生成一个分镜，默认 350</div>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>单次提炼最多场景数</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        value={config.max_scenes_per_request ?? 5}
+                        onChange={(e) => setConfig({ ...config, max_scenes_per_request: Math.max(1, Math.min(20, Number(e.target.value) || 5)) })}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                      />
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>单次请求上限（默认 5），超限自动切片分批提炼</div>
                     </div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
@@ -3421,19 +3478,203 @@ function App() {
                       style={{ width: '100%', height: '200px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(168,85,247,0.35)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
                     />
                   </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>4. NovelAI 画师 / 风格 Prompt 串</label>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
-                      生图时自动追加到最终正向 Prompt 末尾。支持 NovelAI 权重语法；留空即可关闭画师串注入。
-                    </div>
-                    <textarea
-                      value={config.artistStylePrompt || ""}
-                      onChange={(e) => setConfig({ ...config, artistStylePrompt: e.target.value })}
-                      placeholder="例如：2.0::artist:name ::, 1.2::cinematic lighting ::"
-                      spellCheck={false}
-                      style={{ width: '100%', height: '120px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(168,85,247,0.4)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
-                    />
-                  </div>
+                  {(() => {
+                    const allArtistPresets = [...BUILTIN_ARTIST_PRESETS, ...(config.artist_presets || [])];
+                    const matchedPreset = allArtistPresets.find(p => (p.prompt || '').trim() === (config.artistStylePrompt || '').trim());
+                    const currentPresetId = matchedPreset ? matchedPreset.id : 'custom';
+                    const isCustomSaved = (config.artist_presets || []).some(p => p.id === currentPresetId);
+
+                    const handlePresetChange = (presetId) => {
+                      if (presetId === 'custom') return;
+                      const p = allArtistPresets.find(item => item.id === presetId);
+                      if (p) {
+                        setConfig({ ...config, artistStylePrompt: p.prompt });
+                      }
+                    };
+
+                    const handleSavePreset = () => {
+                      const name = (newArtistPresetName || '').trim();
+                      if (!name) {
+                        alert('请输入预设名称！');
+                        return;
+                      }
+                      const currentPrompt = (config.artistStylePrompt || '').trim();
+                      if (!currentPrompt) {
+                        alert('画师/风格 Prompt 串不能为空！');
+                        return;
+                      }
+                      const newPreset = {
+                        id: 'custom_' + Date.now(),
+                        name,
+                        desc: '自定义画风预设',
+                        prompt: currentPrompt
+                      };
+                      setConfig({
+                        ...config,
+                        artist_presets: [...(config.artist_presets || []), newPreset]
+                      });
+                      setNewArtistPresetName('');
+                      addLog(`已保存新画风预设: ${name}`);
+                    };
+
+                    const handleDeletePreset = (idToDelete) => {
+                      const found = (config.artist_presets || []).find(p => p.id === idToDelete);
+                      if (!found) return;
+                      if (!window.confirm(`确定要删除画风预设「${found.name}」吗？`)) return;
+                      const updated = (config.artist_presets || []).filter(p => p.id !== idToDelete);
+                      setConfig({
+                        ...config,
+                        artist_presets: updated,
+                        artistStylePrompt: BUILTIN_ARTIST_PRESETS[0].prompt
+                      });
+                      addLog(`已删除画风预设: ${found.name}`);
+                    };
+
+                    return (
+                      <div style={{ marginTop: '14px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '14px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap', gap: '8px' }}>
+                          <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: '500' }}>
+                            4. NovelAI 画师 / 风格 Prompt 串
+                          </label>
+                          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                            <select
+                              value={currentPresetId}
+                              onChange={(e) => handlePresetChange(e.target.value)}
+                              style={{
+                                background: 'rgba(20, 20, 32, 0.9)',
+                                border: '1px solid rgba(168, 85, 247, 0.45)',
+                                color: '#e2e8f0',
+                                borderRadius: '6px',
+                                padding: '4px 8px',
+                                fontSize: '0.8rem',
+                                outline: 'none',
+                                cursor: 'pointer',
+                                maxWidth: '280px'
+                              }}
+                            >
+                              <optgroup label="内置核心画风配方">
+                                {BUILTIN_ARTIST_PRESETS.map(p => (
+                                  <option key={p.id} value={p.id}>{p.name}</option>
+                                ))}
+                              </optgroup>
+                              {(config.artist_presets && config.artist_presets.length > 0) && (
+                                <optgroup label="自定义已存画风">
+                                  {config.artist_presets.map(p => (
+                                    <option key={p.id} value={p.id}>★ {p.name}</option>
+                                  ))}
+                                </optgroup>
+                              )}
+                              <option value="custom">✨ 自定义（自由编辑）</option>
+                            </select>
+
+                            {isCustomSaved && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeletePreset(currentPresetId)}
+                                title="删除当前自定义预设"
+                                style={{
+                                  background: 'rgba(239, 68, 68, 0.2)',
+                                  border: '1px solid rgba(239, 68, 68, 0.4)',
+                                  color: '#f87171',
+                                  padding: '4px 8px',
+                                  borderRadius: '5px',
+                                  fontSize: '0.75rem',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}
+                              >
+                                <Trash2 size={12} /> 删除
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* 预设说明徽章 */}
+                        <div style={{
+                          fontSize: '0.75rem',
+                          color: matchedPreset ? 'rgba(192, 132, 252, 0.95)' : 'var(--text-muted)',
+                          marginBottom: '6px',
+                          background: matchedPreset ? 'rgba(168, 85, 247, 0.1)' : 'transparent',
+                          padding: matchedPreset ? '4px 8px' : '0',
+                          borderRadius: '4px',
+                          display: 'inline-block'
+                        }}>
+                          {matchedPreset ? `💡 ${matchedPreset.desc}` : '✏️ 自定义自由编辑：可在下方编辑 Prompt，并支持保存为新的可选项'}
+                        </div>
+
+                        <textarea
+                          value={config.artistStylePrompt || ""}
+                          onChange={(e) => setConfig({ ...config, artistStylePrompt: e.target.value })}
+                          placeholder="例如：2.0::artist:name ::, 1.2::cinematic lighting ::"
+                          spellCheck={false}
+                          style={{
+                            width: '100%',
+                            height: '110px',
+                            background: 'rgba(0,0,0,0.25)',
+                            border: '1px solid rgba(168,85,247,0.4)',
+                            borderRadius: '6px',
+                            padding: '8px',
+                            color: 'white',
+                            fontFamily: 'monospace',
+                            fontSize: '0.8rem',
+                            lineHeight: '1.4',
+                            resize: 'vertical'
+                          }}
+                        />
+
+                        {/* 存为新预设栏 */}
+                        <div style={{
+                          marginTop: '8px',
+                          display: 'flex',
+                          gap: '8px',
+                          alignItems: 'center',
+                          background: 'rgba(255,255,255,0.03)',
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          border: '1px dashed rgba(168,85,247,0.3)'
+                        }}>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', flexShrink: 0 }}>保存为新预设：</span>
+                          <input
+                            type="text"
+                            placeholder="输入预设名称（如：我的浪漫古风）..."
+                            value={newArtistPresetName}
+                            onChange={(e) => setNewArtistPresetName(e.target.value)}
+                            style={{
+                              flex: 1,
+                              background: 'rgba(0,0,0,0.3)',
+                              border: '1px solid rgba(255,255,255,0.15)',
+                              borderRadius: '4px',
+                              padding: '4px 8px',
+                              color: '#fff',
+                              fontSize: '0.78rem',
+                              outline: 'none'
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={handleSavePreset}
+                            style={{
+                              background: 'rgba(168, 85, 247, 0.25)',
+                              border: '1px solid rgba(168, 85, 247, 0.5)',
+                              color: '#c084fc',
+                              padding: '4px 10px',
+                              borderRadius: '4px',
+                              fontSize: '0.78rem',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              flexShrink: 0
+                            }}
+                          >
+                            <Plus size={13} /> 存为选项
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </>
               )}
               

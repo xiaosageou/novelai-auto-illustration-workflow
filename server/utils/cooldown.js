@@ -140,12 +140,44 @@ export class CooldownManager {
    * 等待冷却完成的核心方法
    * 如果剩余冷却时间 > 0，则异步等待直到满足冷却限制
    */
-  async waitForCooldown() {
+  /**
+   * 中断冷却计时（暂停或停止流水线时调用）
+   */
+  interruptCooldown() {
+    this.lastGenerationTime = 0;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    this._emit(0);
+  }
+
+  /**
+   * 等待冷却完成的核心方法
+   * 如果剩余冷却时间 > 0，则异步等待直到满足冷却限制
+   * 支持传入 signal 监听中断事件，毫秒级响应暂停
+   */
+  async waitForCooldown(signal = null) {
     const remaining = this.getRemainingSeconds();
     if (remaining > 0) {
+      if (signal?.aborted) return;
       const waitMs = remaining * 1000;
       console.log(`[Cooldown] 需要等待冷却锁，剩余时间: ${remaining.toFixed(1)} 秒...`);
-      await new Promise(resolve => setTimeout(resolve, waitMs));
+      await new Promise((resolve) => {
+        let timer = null;
+        const onAbort = () => {
+          if (timer) clearTimeout(timer);
+          resolve();
+        };
+        timer = setTimeout(() => {
+          if (signal) signal.removeEventListener('abort', onAbort);
+          resolve();
+        }, waitMs);
+        if (signal) {
+          signal.addEventListener('abort', onAbort, { once: true });
+        }
+      });
+      if (signal?.aborted) return;
     }
     // 冷却结束后重置或开启冷却锁
     this.startCooldown();

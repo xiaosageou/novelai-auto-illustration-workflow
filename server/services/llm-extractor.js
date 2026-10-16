@@ -698,8 +698,22 @@ function createThrottledStreamLogger(onProgressLog, prefix = '[LLM]') {
   };
 }
 
-function waitMs(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function waitMs(ms, signal = null) {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let timer = null;
+    const onAbort = () => {
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(() => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
 }
 
 class GlobalRateLimiter {
@@ -805,51 +819,77 @@ function getRateLimiter({ enabled = true, rpm = 3, key = 'default' } = {}) {
   return llmRateLimiterRegistry.get(limiterKey);
 }
 
-export async function postChatCompletionWith429Retry({ url, headers, payload, idleTimeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null }) {
+export async function postChatCompletionWith429Retry({ url, headers, payload, idleTimeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null, signal = null }) {
+  if (signal?.aborted) {
+    const err = new Error("Operation aborted by user");
+    err.name = "AbortError";
+    throw err;
+  }
   const limiter = rateLimit ? getRateLimiter(rateLimit) : null;
   if (limiter) {
     await limiter.acquire();
+    if (signal?.aborted) {
+      const err = new Error("Operation aborted by user");
+      err.name = "AbortError";
+      throw err;
+    }
   }
 
   for (let attempt = 0; ; attempt++) {
+    if (signal?.aborted) {
+      const err = new Error("Operation aborted by user");
+      err.name = "AbortError";
+      throw err;
+    }
     const controller = new AbortController();
-    const streamEnabled = payload?.stream !== false;
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ ...payload, stream: streamEnabled }),
-      signal: controller.signal
-    });
-    llmResponseAbortControllers.set(res, controller);
-    res.__llmIdleTimeoutMs = idleTimeoutMs;
-
-    const isRateLimited = res.status === 429;
-    // flash-lite 的 500 是上游偶发的临时失败；快速模型的突发请求尤其容易遇到它。
-    // 502/503/504 保持原有上层处理语义，避免吞掉代理或服务维护等明确错误。
-    const isTransientServerError = res.status === 500;
-    if (!isRateLimited && !isTransientServerError) {
-      return res;
+    const forwardAbort = () => {
+      try { controller.abort(signal?.reason || new Error("Aborted")); } catch {}
+    };
+    if (signal) {
+      signal.addEventListener('abort', forwardAbort, { once: true });
     }
 
-    if (attempt >= max429Retries) {
-      const status = res.status;
-      const error = new Error(`LLM 返回 ${status}，已重试 ${max429Retries} 次仍失败`);
-      error.code = isRateLimited ? "LLM_429_EXHAUSTED" : "LLM_SERVER_ERROR_EXHAUSTED";
-      error.status = status;
-      throw error;
+    try {
+      const streamEnabled = payload?.stream !== false;
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ ...payload, stream: streamEnabled }),
+        signal: controller.signal
+      });
+      llmResponseAbortControllers.set(res, controller);
+      res.__llmIdleTimeoutMs = idleTimeoutMs;
+
+      const isRateLimited = res.status === 429;
+      // flash-lite 的 500 是上游偶发的临时失败；快速模型的突发请求尤其容易遇到它。
+      // 502/503/504 保持原有上层处理语义，避免吞掉代理或服务维护等明确错误。
+      const isTransientServerError = res.status === 500;
+      if (!isRateLimited && !isTransientServerError) {
+        return res;
+      }
+
+      if (attempt >= max429Retries) {
+        const status = res.status;
+        const error = new Error(`LLM 返回 ${status}，已重试 ${max429Retries} 次仍失败`);
+        error.code = isRateLimited ? "LLM_429_EXHAUSTED" : "LLM_SERVER_ERROR_EXHAUSTED";
+        error.status = status;
+        throw error;
+      }
+
+      const delaySeconds = getExponentialBackoffDelaySeconds({
+        attempt,
+        baseDelaySeconds: initialDelaySeconds,
+        maxDelaySeconds: 120
+      });
+      console.warn(`${logPrefix} 触发 ${res.status}，${delaySeconds} 秒后重试（${attempt + 1}/${max429Retries}）...`);
+      
+      // 临时 500 和 429 都冻结同一连接的队列，避免继续向不稳定的上游施压。
+      limiter?.notify429(delaySeconds * 1000);
+
+      await waitMs(delaySeconds * 1000, signal);
+    } finally {
+      if (signal) signal.removeEventListener('abort', forwardAbort);
     }
-
-    const delaySeconds = getExponentialBackoffDelaySeconds({
-      attempt,
-      baseDelaySeconds: initialDelaySeconds,
-      maxDelaySeconds: 120
-    });
-    console.warn(`${logPrefix} 触发 ${res.status}，${delaySeconds} 秒后重试（${attempt + 1}/${max429Retries}）...`);
-    
-    // 临时 500 和 429 都冻结同一连接的队列，避免继续向不稳定的上游施压。
-    limiter?.notify429(delaySeconds * 1000);
-
-    await waitMs(delaySeconds * 1000);
   }
 }
 
@@ -1351,6 +1391,22 @@ export class LLMExtractor {
     this.trimUrl = trimUrl.trim().replace(/\/+$/, "");
     this.trimKey = trimKey.trim();
     this.trimModel = trimModel.trim() || "mimo-v2.5";
+    this.activeControllers = new Set();
+  }
+
+  abortAll() {
+    for (const controller of this.activeControllers) {
+      try {
+        controller.abort(new Error("Operation aborted by user"));
+      } catch {}
+    }
+    this.activeControllers.clear();
+  }
+
+  _createRequestController() {
+    const controller = new AbortController();
+    this.activeControllers.add(controller);
+    return controller;
   }
 
   updateConfig(baseUrl, apiKey, system_prompt_extract_scenes, system_prompt_character_dna, system_prompt_advanced_prompt, system_prompt_regenerate_scene, _unused7, system_prompt_advanced_prompt_nl, _unused9, rateLimitEnabled, rateLimitRpm, rateLimitKey) {
@@ -1466,8 +1522,13 @@ export class LLMExtractor {
     onProgressLog?.(`[LLM] 正在调用大模型提炼 ${sceneCount} 个场景...`);
     console.log(`[LLM Extractor] 正在提炼章节「${chapterTitle}」的 ${sceneCount} 个场景...`);
 
+    const reqController = this._createRequestController();
     let lastError = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        if (reqController.signal.aborted) {
+          throw new Error("Operation aborted by user");
+        }
       try {
         onProgressLog?.(`[LLM] 场景提炼第 ${attempt}/3 次请求...`);
         const streamLogger = createThrottledStreamLogger(onProgressLog, '[LLM]');
@@ -1479,7 +1540,8 @@ export class LLMExtractor {
           max429Retries: 5,
           initialDelaySeconds: 10,
           logPrefix: "[LLM Extractor] 场景提炼",
-          rateLimit: this.getRateLimitConfig()
+          rateLimit: this.getRateLimitConfig(),
+          signal: reqController.signal
         });
 
         if (res.status !== 200) {
@@ -1532,6 +1594,9 @@ export class LLMExtractor {
     failure.code = 'SCENE_EXTRACTION_EXHAUSTED';
     failure.cause = lastError;
     throw failure;
+    } finally {
+      this.activeControllers.delete(reqController);
+    }
   }
 
   /**
@@ -1994,6 +2059,7 @@ export class LLMExtractor {
       characterContext = charLines ? `\n\n${contextLabel}\n${charLines}` : "";
     }
 
+    const reqController = this._createRequestController();
     const rawSystemPrompt = this.system_prompt_advanced_prompt || DEFAULT_ADVANCED_PROMPT;
     const systemPrompt = ensureAdvancedPromptContract(rawSystemPrompt);
     const scenePayload = this.formatStructuredSceneForLlm(sceneDesc);

@@ -53,6 +53,7 @@ const DEFAULT_CONFIG = {
   noiseSchedule: "karras",
   cjk_scene_divisor: 600,
   english_scene_divisor: 350,
+  max_scenes_per_request: 5,
   proxy_url: "",
   useVibeTransfer: false,
   vibeBundlePath: "2026-06-04.naiv4vibebundle",
@@ -64,11 +65,14 @@ const DEFAULT_CONFIG = {
   system_prompt_extract_scenes: DEFAULT_EXTRACT_SCENES_PROMPT,
   system_prompt_character_dna: DEFAULT_CHARACTER_DNA_PROMPT,
   system_prompt_advanced_prompt_nl: DEFAULT_ADVANCED_PROMPT_V45_NL,
-  system_prompt_advanced_prompt: DEFAULT_ADVANCED_PROMPT
+  system_prompt_advanced_prompt: DEFAULT_ADVANCED_PROMPT,
+  artist_presets: []
 };
 
 function normalizeConfig(config = {}) {
   const normalized = { ...DEFAULT_CONFIG, ...config };
+  normalized.artist_presets = Array.isArray(config.artist_presets) ? config.artist_presets : [];
+  normalized.max_scenes_per_request = Number.isInteger(Number(config.max_scenes_per_request)) && Number(config.max_scenes_per_request) > 0 ? Math.min(20, Number(config.max_scenes_per_request)) : 5;
   const promptDefaults = {
     system_prompt_extract_scenes: DEFAULT_EXTRACT_SCENES_PROMPT,
     system_prompt_character_dna: DEFAULT_CHARACTER_DNA_PROMPT,
@@ -894,14 +898,43 @@ app.post('/api/projects/:projectName/pipeline/start', async (req, res) => {
   }
 });
 
-// 停止生图流水线
+// 停止生图流水线（瞬时硬刹车 + 队列清空）
 app.post('/api/projects/:projectName/pipeline/stop', async (req, res) => {
   try {
     const { projectName } = req.params;
     const pipeline = await getPipeline(projectName);
-    pipeline.isRunning = false;
+
+    // 1. 触发 Pipeline 瞬时硬刹车，秒级中止在途 LLM/NAI 请求与冷却计时
+    await pipeline.stop();
     agentRouter.stopComicProduction(projectName);
-    res.json({ success: true, message: "已向流水线发送停止指令" });
+
+    // 2. 清空单章排队队列
+    const chapterQ = getChapterQueue(projectName);
+    if (chapterQ) {
+      chapterQ.items = [];
+      chapterQ.current = null;
+      chapterQ.running = false;
+    }
+
+    // 3. 清空单图重绘队列
+    const redrawQ = getRedrawQueue(projectName);
+    if (redrawQ) {
+      redrawQ.items = [];
+      redrawQ.current = null;
+      redrawQ.running = false;
+    }
+
+    // 4. 清空选段生图队列
+    const selectedQ = getSelectedScenesQueue(projectName);
+    if (selectedQ) {
+      selectedQ.items = [];
+      selectedQ.running = false;
+    }
+
+    // 5. 广播停止事件给前端，瞬时更新界面
+    broadcastSSE('pipeline_stopped', { projectName, state: 'paused' });
+
+    res.json({ success: true, message: "流水线已瞬时停止，所有任务已安全暂停" });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

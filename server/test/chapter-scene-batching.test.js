@@ -45,7 +45,7 @@ test('extractChapterScenesInBatches extracts long chapters in two passes and kee
   assert.match(scenes[3].trigger_sentence, /测试章（\d+\/\d+）-scene-\d+/);
 });
 
-test('extractChapterScenesInBatches keeps each request at or below ten scenes', async () => {
+test('extractChapterScenesInBatches keeps each request at or below five scenes', async () => {
   const calls = [];
   const sceneExtractor = {
     async extractChapterScenes(chapterTitle, text, model, onProgressLog, requestedSceneCount) {
@@ -75,12 +75,12 @@ test('extractChapterScenesInBatches keeps each request at or below ten scenes', 
   });
 
   assert.ok(calls.length >= 3);
-  assert.ok(calls.every(call => call.requestedSceneCount <= 10), JSON.stringify(calls));
+  assert.ok(calls.every(call => call.requestedSceneCount <= 5), JSON.stringify(calls));
   assert.equal(calls.reduce((sum, call) => sum + call.requestedSceneCount, 0), 25);
   assert.deepEqual(scenes.map(scene => scene.scene_idx), Array.from({ length: 25 }, (_value, index) => index + 1));
 });
 
-test('extractChapterScenesInBatches still splits when scene count exceeds ten but text is below the size threshold', async () => {
+test('extractChapterScenesInBatches still splits when scene count exceeds five but text is below the size threshold', async () => {
   const calls = [];
   const sceneExtractor = {
     async extractChapterScenes(chapterTitle, text, model, onProgressLog, requestedSceneCount) {
@@ -104,7 +104,7 @@ test('extractChapterScenesInBatches still splits when scene count exceeds ten bu
   });
 
   assert.ok(calls.length >= 2, JSON.stringify(calls));
-  assert.ok(calls.every(call => call.requestedSceneCount <= 10), JSON.stringify(calls));
+  assert.ok(calls.every(call => call.requestedSceneCount <= 5), JSON.stringify(calls));
   assert.equal(calls.reduce((sum, call) => sum + call.requestedSceneCount, 0), 20);
   assert.deepEqual(scenes.map(scene => scene.scene_idx), Array.from({ length: 20 }, (_value, index) => index + 1));
 });

@@ -92,6 +92,17 @@ export class NovelAIClient {
   constructor({ token = "", baseUrl = "https://image.novelai.net" } = {}) {
     this.token = token.trim();
     this.baseUrl = baseUrl.trim();
+    this.activeControllers = new Set();
+  }
+
+  abortAll() {
+    for (const controller of this.activeControllers) {
+      try {
+        controller.abort(new Error("Operation aborted by user"));
+      } catch {}
+    }
+    this.activeControllers.clear();
+    globalCooldownManager.interruptCooldown();
   }
 
   setToken(token) {
@@ -221,8 +232,25 @@ export class NovelAIClient {
       throw new Error("未配置有效的 NovelAI API Token！");
     }
 
-    // 1. 触发全局自适应防抖冷却锁
-    await globalCooldownManager.waitForCooldown();
+    const internalController = new AbortController();
+    this.activeControllers.add(internalController);
+    const forwardAbort = () => {
+      try { internalController.abort(signal?.reason || new Error("Aborted")); } catch {}
+    };
+    if (signal) {
+      if (signal.aborted) forwardAbort();
+      else signal.addEventListener('abort', forwardAbort, { once: true });
+    }
+    const effectiveSignal = internalController.signal;
+
+    try {
+      // 1. 触发全局自适应防抖冷却锁
+      await globalCooldownManager.waitForCooldown(effectiveSignal);
+      if (effectiveSignal.aborted) {
+        const err = new Error("Operation aborted by user");
+        err.name = "AbortError";
+        throw err;
+      }
 
     prompt = removeNonEnglishPromptTokens(prompt);
     negativePrompt = removeNonEnglishPromptTokens(negativePrompt);
@@ -435,11 +463,22 @@ export class NovelAIClient {
     const maxRetries = 6;
     const waitBeforeRetry = async (delaySeconds = globalCooldownManager.cooldownSeconds) => {
       globalCooldownManager.startCooldown(delaySeconds);
-      await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
+      if (effectiveSignal.aborted) return delaySeconds;
+      await new Promise((resolve) => {
+        let t = null;
+        const onAbort = () => {
+          if (t) clearTimeout(t);
+          resolve();
+        };
+        t = setTimeout(() => {
+          effectiveSignal.removeEventListener('abort', onAbort);
+          resolve();
+        }, delaySeconds * 1000);
+        effectiveSignal.addEventListener('abort', onAbort, { once: true });
+      });
       return delaySeconds;
     };
 
-    try {
       while (true) {
         let res;
         try {
@@ -447,9 +486,12 @@ export class NovelAIClient {
             method: "POST",
             headers: this.getHeaders(),
             body: JSON.stringify(payload),
-            signal: signal
+            signal: effectiveSignal
           });
         } catch (fetchErr) {
+          if (fetchErr.name === 'AbortError' || effectiveSignal.aborted) {
+            throw fetchErr;
+          }
           globalCooldownManager.recordNon429Failure();
           if (attempt < maxRetries) {
             attempt++;
@@ -558,8 +600,13 @@ export class NovelAIClient {
       }
 
     } catch (e) {
-      console.error("[NAI Client] 生图网络错误:", e);
+      if (e.name !== 'AbortError' && !effectiveSignal.aborted) {
+        console.error("[NAI Client] 生图网络错误:", e);
+      }
       throw e;
+    } finally {
+      this.activeControllers.delete(internalController);
+      if (signal) signal.removeEventListener('abort', forwardAbort);
     }
   }
 }
