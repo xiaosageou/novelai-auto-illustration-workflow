@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { 
   Settings, Plus, BookOpen, User, Play, Square, Download, 
   RefreshCw, CheckCircle2, Sparkles, X, FileText, Clapperboard, Timer,
-  Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil, Image as ImageIcon
+  Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil, Image as ImageIcon,
+  Flame, Heart, Users, MapPin, Camera, ChevronDown, ChevronUp, Check
 } from 'lucide-react';
 import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
 import { isNaiLogMessage } from './logClassification.js';
@@ -19,6 +20,7 @@ import {
   syncSceneCharacterInteractions,
   syncSceneCharactersFromNames
 } from './sceneEditorCharacters.js';
+import { SEX_POSITION_CATEGORIES, ALL_SEX_POSITIONS } from './sexPositions.js';
 
 const API_BASE = import.meta.env.DEV ? "http://localhost:5001" : "";
 
@@ -173,6 +175,10 @@ function App() {
   const [sceneEditorDirty, setSceneEditorDirty] = useState(false);
   const [savingScene, setSavingScene] = useState(false);
   const [expandedSceneCharacterDetails, setExpandedSceneCharacterDetails] = useState({});
+  const [inlineEditingSceneKey, setInlineEditingSceneKey] = useState(null);
+  const [inlineSceneDraft, setInlineSceneDraft] = useState(null);
+  const [savingInlineScene, setSavingInlineScene] = useState(false);
+  const [quickUpdatingSceneKey, setQuickUpdatingSceneKey] = useState(null);
   const [editingCharacterName, setEditingCharacterName] = useState("");
   const [editingCharacterFeatures, setEditingCharacterFeatures] = useState(null);
   const [savingCharacterTags, setSavingCharacterTags] = useState(false);
@@ -1430,7 +1436,8 @@ function App() {
         position: String(entity?.position || '').trim(),
         must_show: entity?.must_show !== false
       }))
-      .filter(entity => entity.description)
+      .filter(entity => entity.description),
+    preserveDerived: true
   });
 
   const saveSceneEditor = async () => {
@@ -1462,6 +1469,86 @@ function App() {
       addLog(`❌ 保存场景失败: ${error.message}`, 'error');
     } finally {
       setSavingScene(false);
+    }
+  };
+
+  const startInlineEditScene = (chapterKey, scene) => {
+    const sceneKey = `${chapterKey}_${scene.scene_idx}`;
+    setInlineEditingSceneKey(sceneKey);
+    setInlineSceneDraft(buildSceneEditorDraft(scene));
+  };
+
+  const cancelInlineEditScene = () => {
+    setInlineEditingSceneKey(null);
+    setInlineSceneDraft(null);
+    setSavingInlineScene(false);
+  };
+
+  const updateInlineDraft = (updater) => {
+    setInlineSceneDraft(prev => {
+      if (!prev) return prev;
+      return typeof updater === 'function' ? updater(prev) : updater;
+    });
+  };
+
+  const saveInlineSceneEditor = async (chapterKey, sceneIdx) => {
+    if (!inlineSceneDraft || !activeProject) return;
+    try {
+      setSavingInlineScene(true);
+      const payload = {
+        ...serializeSceneDraft(inlineSceneDraft),
+        preserveDerived: true
+      };
+      const response = await fetch(
+        `${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/chapters/${encodeURIComponent(chapterKey)}/scenes/${sceneIdx}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }
+      );
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || '保存场景失败');
+      }
+      addLog(`💾 场景 #${sceneIdx} 结构化信息已保存。`, 'success');
+      setInlineEditingSceneKey(null);
+      setInlineSceneDraft(null);
+      await fetchProjectDetails(activeProject);
+    } catch (error) {
+      addLog(`❌ 保存场景失败: ${error.message}`, 'error');
+    } finally {
+      setSavingInlineScene(false);
+    }
+  };
+
+  const quickUpdateSceneField = async (chapterKey, sceneIdx, updates, label) => {
+    if (!activeProject) return;
+    const sceneKey = `${chapterKey}_${sceneIdx}`;
+    try {
+      setQuickUpdatingSceneKey(sceneKey);
+      const payload = {
+        ...updates,
+        preserveDerived: true
+      };
+      const response = await fetch(
+        `${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/chapters/${encodeURIComponent(chapterKey)}/scenes/${sceneIdx}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }
+      );
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || `更新场景 ${label || ''} 失败`);
+      }
+      addLog(`✨ 场景 #${sceneIdx} ${label || '属性'} 已更新。`, 'success');
+      await fetchProjectDetails(activeProject);
+    } catch (error) {
+      addLog(`❌ 更新场景失败: ${error.message}`, 'error');
+    } finally {
+      setQuickUpdatingSceneKey(null);
     }
   };
 
@@ -2186,6 +2273,7 @@ function App() {
                         ].filter(([, value]) => String(value || '').trim());
                         const hasPrompt = promptSections.length > 0;
                         const isPromptExpanded = expandedPrompt === sceneKey;
+                        const isInlineEditing = inlineEditingSceneKey === sceneKey && inlineSceneDraft !== null;
 
                         return (
                           <div 
@@ -2199,85 +2287,607 @@ function App() {
                                     ? 'prompt-ready'
                                     : ''
                             }`}
-                            onClick={() => openSceneEditor(chapKey, scene)}
                             style={{
-                              cursor: 'pointer',
-                              border: sceneEditor?.chapterKey === chapKey && sceneEditor?.sceneIdx === scene.scene_idx
-                                ? '1px solid rgba(168, 85, 247, 0.65)'
-                                : undefined,
-                              boxShadow: sceneEditor?.chapterKey === chapKey && sceneEditor?.sceneIdx === scene.scene_idx
-                                ? '0 0 0 1px rgba(168, 85, 247, 0.18) inset'
+                              border: isInlineEditing
+                                ? '1px solid rgba(168, 85, 247, 0.75)'
+                                : sceneEditor?.chapterKey === chapKey && sceneEditor?.sceneIdx === scene.scene_idx
+                                  ? '1px solid rgba(168, 85, 247, 0.65)'
+                                  : undefined,
+                              boxShadow: isInlineEditing
+                                ? '0 0 16px rgba(168, 85, 247, 0.22)'
                                 : undefined
                             }}
                           >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ fontWeight: '600', color: 'var(--color-purple)' }}>场景 #{scene.scene_idx}</span>
-                              <span style={{ fontSize: '0.75rem', padding: '2px 8px', borderRadius: '12px', background: 'rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                {isSceneLoading ? (
-                                  <>
-                                    <span className="loading-spinner-tiny" style={{
-                                      display: 'inline-block',
-                                      width: '8px',
-                                      height: '8px',
-                                      borderRadius: '50%',
-                                      border: '2px solid var(--color-purple)',
-                                      borderTopColor: 'transparent',
-                                      animation: 'spin 1s linear infinite'
-                                    }} />
-                                    生图中
-                                  </>
-                                ) : scene.status === 'SUCCESS' ? (
-                                  '已完成'
-                                ) : scene.status === 'FAILED' ? (
-                                  '失败'
-                                ) : scene.status === 'PROMPT_READY' ? (
-                                  <span style={{ color: 'var(--color-purple)', fontWeight: '600' }}>⚡ Prompt 已就绪</span>
-                                ) : (
-                                  '待处理'
+                            {/* 卡片头部行 */}
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span style={{ fontWeight: '700', fontSize: '1rem', color: 'var(--color-purple)' }}>
+                                  场景 #{scene.scene_idx}
+                                </span>
+                                <span style={{ fontSize: '0.75rem', padding: '2px 8px', borderRadius: '12px', background: 'rgba(255,255,255,0.04)', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                  {isSceneLoading ? (
+                                    <>
+                                      <span className="loading-spinner-tiny" style={{
+                                        display: 'inline-block',
+                                        width: '8px',
+                                        height: '8px',
+                                        borderRadius: '50%',
+                                        border: '2px solid var(--color-purple)',
+                                        borderTopColor: 'transparent',
+                                        animation: 'spin 1s linear infinite'
+                                      }} />
+                                      生图中
+                                    </>
+                                  ) : scene.status === 'SUCCESS' ? (
+                                    '已完成'
+                                  ) : scene.status === 'FAILED' ? (
+                                    '失败'
+                                  ) : scene.status === 'PROMPT_READY' ? (
+                                    <span style={{ color: 'var(--color-purple)', fontWeight: '600' }}>⚡ Prompt 已就绪</span>
+                                  ) : (
+                                    '待处理'
+                                  )}
+                                </span>
+                                {(scene.width || scene.prepared_prompt?.width) && (
+                                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: '4px' }}>
+                                    {scene.width || scene.prepared_prompt?.width} × {scene.height || scene.prepared_prompt?.height}
+                                  </span>
                                 )}
-                              </span>
-                            </div>
+                              </div>
 
-                            <div style={{ display: 'grid', gridTemplateColumns: sceneImage ? '168px minmax(0, 1fr)' : '1fr', gap: '14px', alignItems: 'start', marginTop: '10px' }}>
-                              {sceneImage && (
-                                <img
-                                  src={sceneImage}
-                                  alt="插画"
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
+                                  style={{
+                                    padding: '3px 8px',
+                                    fontSize: '0.72rem',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    borderRadius: '6px',
+                                    borderColor: isInlineEditing ? 'rgba(168, 85, 247, 0.65)' : 'rgba(96, 165, 250, 0.45)',
+                                    color: isInlineEditing ? 'var(--color-purple-light, #c084fc)' : '#93c5fd',
+                                    background: isInlineEditing ? 'rgba(168, 85, 247, 0.15)' : 'rgba(255,255,255,0.03)'
+                                  }}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    setPreviewImage(sceneImage);
+                                    if (isInlineEditing) {
+                                      cancelInlineEditScene();
+                                    } else {
+                                      startInlineEditScene(chapKey, scene);
+                                    }
                                   }}
+                                  title={isInlineEditing ? '取消并退出就地编辑' : '在场景卡上直接编辑所有结构化字段'}
+                                >
+                                  <Pencil size={11} /> {isInlineEditing ? '收起编辑' : '就地编辑'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
                                   style={{
-                                    width: '168px',
-                                    height: '112px',
-                                    borderRadius: '8px',
-                                    objectFit: 'contain',
-                                    background: 'linear-gradient(180deg, rgba(2,6,23,0.88), rgba(15,23,42,0.7))',
-                                    border: '1px solid var(--border-light)',
-                                    padding: '6px',
-                                    cursor: 'zoom-in'
+                                    padding: '3px 8px',
+                                    fontSize: '0.72rem',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    borderRadius: '6px'
                                   }}
-                                />
-                              )}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openSceneEditor(chapKey, scene);
+                                  }}
+                                  title="在独立大弹窗中编辑完整信息"
+                                >
+                                  弹窗
+                                </button>
+                              </div>
+                            </div>
 
-                              <div style={{ minWidth: 0 }}>
-                                <div className="scene-trigger" style={{ marginTop: 0 }}>
-                                  「 {scene.trigger_sentence} 」
+                            {/* 条件分支：就地编辑模式 vs 结构化直接可见模式 */}
+                            {isInlineEditing ? (
+                              <div
+                                onClick={(e) => e.stopPropagation()}
+                                style={{
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: '12px',
+                                  marginTop: '6px',
+                                  padding: '14px',
+                                  background: 'rgba(8, 12, 28, 0.85)',
+                                  border: '1px solid rgba(168, 85, 247, 0.35)',
+                                  borderRadius: '10px'
+                                }}
+                              >
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <span style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--color-purple-light, #c084fc)' }}>
+                                    ✏️ 场景 #{scene.scene_idx} 结构化信息就地编辑
+                                  </span>
+                                  <div style={{ display: 'flex', gap: '8px' }}>
+                                    <button
+                                      type="button"
+                                      className="btn-secondary"
+                                      style={{ padding: '3px 10px', fontSize: '0.75rem' }}
+                                      onClick={cancelInlineEditScene}
+                                      disabled={savingInlineScene}
+                                    >
+                                      ✕ 取消
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-primary"
+                                      style={{ padding: '3px 12px', fontSize: '0.75rem' }}
+                                      onClick={() => saveInlineSceneEditor(chapKey, scene.scene_idx)}
+                                      disabled={savingInlineScene}
+                                    >
+                                      {savingInlineScene ? '保存中...' : '💾 保存场景卡'}
+                                    </button>
+                                  </div>
                                 </div>
 
-                                <div className="scene-desc" style={{ marginTop: '10px' }}>
-                                  {scene.visual_description || scene.scene_desc}
+                                {/* 基础信息行 */}
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
+                                  <label style={sceneEditorLabelStyle}>
+                                    触发原句 (Trigger Sentence)
+                                    <input
+                                      style={sceneEditorInputStyle}
+                                      value={inlineSceneDraft.trigger_sentence}
+                                      onChange={(e) => updateInlineDraft(draft => ({ ...draft, trigger_sentence: e.target.value }))}
+                                    />
+                                  </label>
+
+                                  <label style={sceneEditorLabelStyle}>
+                                    NSFW 分级
+                                    <select
+                                      style={sceneEditorInputStyle}
+                                      value={inlineSceneDraft.nsfw_rating}
+                                      onChange={(e) => updateInlineDraft(draft => ({ ...draft, nsfw_rating: e.target.value }))}
+                                    >
+                                      <option value="sfw">sfw 全年龄</option>
+                                      <option value="nsfw_mild">nsfw_mild 微妙</option>
+                                      <option value="nsfw_moderate">nsfw_moderate 中度</option>
+                                      <option value="nsfw_explicit">nsfw_explicit 显式</option>
+                                    </select>
+                                  </label>
+
+                                  <label style={sceneEditorLabelStyle}>
+                                    体位 (标准体位下拉 / 自拟输入)
+                                    <div style={{ display: 'flex', gap: '6px' }}>
+                                      <select
+                                        style={{ ...sceneEditorInputStyle, flex: '1 1 140px', padding: '6px 8px', fontSize: '0.82rem' }}
+                                        value={ALL_SEX_POSITIONS.some(p => p.name === inlineSceneDraft.sex_position) ? inlineSceneDraft.sex_position : ''}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          if (val) {
+                                            updateInlineDraft(draft => ({ ...draft, sex_position: val }));
+                                          }
+                                        }}
+                                      >
+                                        <option value="">-- 标准体位库 --</option>
+                                        {SEX_POSITION_CATEGORIES.map(cat => (
+                                          <optgroup key={cat.category} label={cat.category}>
+                                            {cat.positions.map(pos => (
+                                              <option key={pos.name} value={pos.name}>
+                                                {pos.name} - {pos.desc}
+                                              </option>
+                                            ))}
+                                          </optgroup>
+                                        ))}
+                                      </select>
+                                      <input
+                                        list="standard-sex-positions-datalist"
+                                        style={{ ...sceneEditorInputStyle, flex: '1 1 120px' }}
+                                        placeholder="或直接手输自拟体位"
+                                        value={inlineSceneDraft.sex_position || ''}
+                                        onChange={(e) => updateInlineDraft(draft => ({ ...draft, sex_position: e.target.value }))}
+                                      />
+                                    </div>
+                                  </label>
+
+                                  <div style={{ display: 'flex', gap: '8px' }}>
+                                    <label style={{ ...sceneEditorLabelStyle, flex: 1 }}>
+                                      宽 (Width)
+                                      <input
+                                        style={sceneEditorInputStyle}
+                                        type="number"
+                                        value={inlineSceneDraft.width}
+                                        onChange={(e) => updateInlineDraft(draft => ({ ...draft, width: e.target.value }))}
+                                      />
+                                    </label>
+                                    <label style={{ ...sceneEditorLabelStyle, flex: 1 }}>
+                                      高 (Height)
+                                      <input
+                                        style={sceneEditorInputStyle}
+                                        type="number"
+                                        value={inlineSceneDraft.height}
+                                        onChange={(e) => updateInlineDraft(draft => ({ ...draft, height: e.target.value }))}
+                                      />
+                                    </label>
+                                  </div>
                                 </div>
 
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '10px' }}>
-                                  <span className="tag-badge scene" style={{ margin: 0 }}>{scene.nsfw_rating || 'sfw'}</span>
-                                  {scene.sex_position && (
-                                    <span className="tag-badge scene" style={{ margin: 0, color: '#f472b6', borderColor: 'rgba(244,114,182,0.4)', fontWeight: 600 }}>
-                                      体位: {scene.sex_position}
+                                {/* 画面描述 & 核心动作 */}
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '10px' }}>
+                                  <label style={sceneEditorLabelStyle}>
+                                    画面描述 (Visual Description)
+                                    <AutoResizeTextarea
+                                      style={sceneEditorTextareaStyle}
+                                      minRows={3}
+                                      value={inlineSceneDraft.visual_description}
+                                      onChange={(e) => updateInlineDraft(draft => ({ ...draft, visual_description: e.target.value }))}
+                                    />
+                                  </label>
+
+                                  <label style={sceneEditorLabelStyle}>
+                                    核心动作 (Core Action)
+                                    <AutoResizeTextarea
+                                      style={sceneEditorTextareaStyle}
+                                      minRows={3}
+                                      value={inlineSceneDraft.core_action}
+                                      onChange={(e) => updateInlineDraft(draft => ({ ...draft, core_action: e.target.value }))}
+                                    />
+                                  </label>
+                                </div>
+
+                                {/* 环境与镜头构图 */}
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '10px' }}>
+                                  <label style={sceneEditorLabelStyle}>
+                                    环境场景 (Environment)
+                                    <AutoResizeTextarea
+                                      style={sceneEditorTextareaStyle}
+                                      minRows={2}
+                                      value={inlineSceneDraft.environment}
+                                      onChange={(e) => updateInlineDraft(draft => ({ ...draft, environment: e.target.value }))}
+                                    />
+                                  </label>
+
+                                  <label style={sceneEditorLabelStyle}>
+                                    镜头构图 (Cinematography)
+                                    <AutoResizeTextarea
+                                      style={sceneEditorTextareaStyle}
+                                      minRows={2}
+                                      value={inlineSceneDraft.cinematography}
+                                      onChange={(e) => updateInlineDraft(draft => ({ ...draft, cinematography: e.target.value }))}
+                                    />
+                                  </label>
+                                </div>
+
+                                {/* 角色列表编辑 */}
+                                <div style={{ ...sceneEditorSectionStyle, padding: '10px', gap: '8px' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#e2e8f0', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                      <Users size={14} /> 登场角色结构化信息
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="btn-secondary"
+                                      style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: '999px' }}
+                                      onClick={() => updateInlineDraft(draft => ({
+                                        ...draft,
+                                        characters: [...(draft.characters || []), { name: '', gender: 'unknown', appearance: '', clothing: '', expression: '', pose: '', position: '' }],
+                                        character_prompt_interactions: [...(draft.character_prompt_interactions || []), []]
+                                      }))}
+                                    >
+                                      <Plus size={12} /> 添加角色
+                                    </button>
+                                  </div>
+
+                                  {(inlineSceneDraft.characters || []).map((character, index) => (
+                                    <div
+                                      key={`inline-char-${index}`}
+                                      style={{
+                                        border: '1px solid rgba(255,255,255,0.08)',
+                                        borderRadius: '8px',
+                                        padding: '10px',
+                                        display: 'grid',
+                                        gap: '6px',
+                                        background: 'rgba(5, 8, 20, 0.35)'
+                                      }}
+                                    >
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <strong style={{ fontSize: '0.82rem', color: '#f3f4f6' }}>
+                                          角色 {index + 1}
+                                        </strong>
+                                        <button
+                                          type="button"
+                                          className="btn-secondary"
+                                          style={{ padding: '2px 8px', fontSize: '0.7rem', color: '#fca5a5', borderRadius: '999px' }}
+                                          onClick={() => updateInlineDraft(draft => ({
+                                            ...draft,
+                                            characters: draft.characters.filter((_, i) => i !== index),
+                                            character_prompt_interactions: (draft.character_prompt_interactions || []).filter((_, i) => i !== index)
+                                          }))}
+                                        >
+                                          删除
+                                        </button>
+                                      </div>
+
+                                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '6px' }}>
+                                        <input
+                                          style={{ ...sceneEditorInputStyle, padding: '6px 8px', fontSize: '0.82rem' }}
+                                          placeholder="姓名"
+                                          value={character.name}
+                                          onChange={(e) => updateInlineDraft(draft => ({
+                                            ...draft,
+                                            characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, name: e.target.value } : item)
+                                          }))}
+                                        />
+                                        <input
+                                          style={{ ...sceneEditorInputStyle, padding: '6px 8px', fontSize: '0.82rem' }}
+                                          placeholder="性别"
+                                          value={character.gender}
+                                          onChange={(e) => updateInlineDraft(draft => ({
+                                            ...draft,
+                                            characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, gender: e.target.value } : item)
+                                          }))}
+                                        />
+                                        <input
+                                          style={{ ...sceneEditorInputStyle, padding: '6px 8px', fontSize: '0.82rem' }}
+                                          placeholder="👗 衣着 (clothing)"
+                                          value={character.clothing}
+                                          onChange={(e) => updateInlineDraft(draft => ({
+                                            ...draft,
+                                            characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, clothing: e.target.value } : item)
+                                          }))}
+                                        />
+                                        <input
+                                          style={{ ...sceneEditorInputStyle, padding: '6px 8px', fontSize: '0.82rem' }}
+                                          placeholder="🧘 姿态 (pose)"
+                                          value={character.pose}
+                                          onChange={(e) => updateInlineDraft(draft => ({
+                                            ...draft,
+                                            characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, pose: e.target.value } : item)
+                                          }))}
+                                        />
+                                        <input
+                                          style={{ ...sceneEditorInputStyle, padding: '6px 8px', fontSize: '0.82rem' }}
+                                          placeholder="😊 神态 (expression)"
+                                          value={character.expression}
+                                          onChange={(e) => updateInlineDraft(draft => ({
+                                            ...draft,
+                                            characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, expression: e.target.value } : item)
+                                          }))}
+                                        />
+                                        <input
+                                          style={{ ...sceneEditorInputStyle, padding: '6px 8px', fontSize: '0.82rem' }}
+                                          placeholder="📍 位置 (position)"
+                                          value={character.position}
+                                          onChange={(e) => updateInlineDraft(draft => ({
+                                            ...draft,
+                                            characters: draft.characters.map((item, itemIndex) => itemIndex === index ? { ...item, position: e.target.value } : item)
+                                          }))}
+                                        />
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                {/* 互动、痕迹与画面文字 */}
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
+                                  <label style={sceneEditorLabelStyle}>
+                                    角色互动 (Interactions)
+                                    <AutoResizeTextarea
+                                      style={sceneEditorTextareaStyle}
+                                      minRows={2}
+                                      value={inlineSceneDraft.interactions}
+                                      onChange={(e) => updateInlineDraft(draft => ({ ...draft, interactions: e.target.value }))}
+                                    />
+                                  </label>
+
+                                  <label style={sceneEditorLabelStyle}>
+                                    剧情痕迹 (Plot Traces)
+                                    <AutoResizeTextarea
+                                      style={sceneEditorTextareaStyle}
+                                      minRows={2}
+                                      value={inlineSceneDraft.plot_traces}
+                                      onChange={(e) => updateInlineDraft(draft => ({ ...draft, plot_traces: e.target.value }))}
+                                    />
+                                  </label>
+
+                                  <label style={sceneEditorLabelStyle}>
+                                    画面文字 (Text Elements)
+                                    <AutoResizeTextarea
+                                      style={sceneEditorTextareaStyle}
+                                      minRows={2}
+                                      value={inlineSceneDraft.text_elements}
+                                      onChange={(e) => updateInlineDraft(draft => ({ ...draft, text_elements: e.target.value }))}
+                                    />
+                                  </label>
+                                </div>
+
+                                {/* 必含与避开 */}
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                                  <label style={sceneEditorLabelStyle}>
+                                    必含元素 (Must Show, 逗号分隔)
+                                    <input
+                                      style={sceneEditorInputStyle}
+                                      value={inlineSceneDraft.must_show}
+                                      onChange={(e) => updateInlineDraft(draft => ({ ...draft, must_show: e.target.value }))}
+                                    />
+                                  </label>
+
+                                  <label style={sceneEditorLabelStyle}>
+                                    避开元素 (Must Not Show, 逗号分隔)
+                                    <input
+                                      style={sceneEditorInputStyle}
+                                      value={inlineSceneDraft.must_not_show}
+                                      onChange={(e) => updateInlineDraft(draft => ({ ...draft, must_not_show: e.target.value }))}
+                                    />
+                                  </label>
+                                </div>
+
+                                {/* 保存与取消按钮栏 */}
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '6px' }}>
+                                  <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    onClick={cancelInlineEditScene}
+                                    disabled={savingInlineScene}
+                                  >
+                                    ✕ 取消
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-primary"
+                                    onClick={() => saveInlineSceneEditor(chapKey, scene.scene_idx)}
+                                    disabled={savingInlineScene}
+                                  >
+                                    {savingInlineScene ? '保存中...' : '💾 保存场景卡'}
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              /* 结构化信息直接可见卡片 */
+                              <>
+                                {/* 插画与原文描述 */}
+                                <div style={{ display: 'grid', gridTemplateColumns: sceneImage ? '168px minmax(0, 1fr)' : '1fr', gap: '14px', alignItems: 'start', marginTop: '6px' }}>
+                                  {sceneImage && (
+                                    <img
+                                      src={sceneImage}
+                                      alt="插画"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setPreviewImage(sceneImage);
+                                      }}
+                                      style={{
+                                        width: '168px',
+                                        height: '112px',
+                                        borderRadius: '8px',
+                                        objectFit: 'contain',
+                                        background: 'linear-gradient(180deg, rgba(2,6,23,0.88), rgba(15,23,42,0.7))',
+                                        border: '1px solid var(--border-light)',
+                                        padding: '6px',
+                                        cursor: 'zoom-in'
+                                      }}
+                                    />
+                                  )}
+
+                                  <div style={{ minWidth: 0, display: 'grid', gap: '8px' }}>
+                                    {scene.trigger_sentence && (
+                                      <div className="scene-trigger" style={{ marginTop: 0 }}>
+                                        「 {scene.trigger_sentence} 」
+                                      </div>
+                                    )}
+
+                                    <div className="scene-desc" style={{ marginTop: 0, lineHeight: 1.55 }}>
+                                      {scene.visual_description || scene.scene_desc || <span style={{ color: 'var(--text-muted)' }}>暂无画面描述</span>}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* ⭐ 体位与分级快速控制条 */}
+                                <div style={{
+                                  display: 'flex',
+                                  flexWrap: 'wrap',
+                                  gap: '8px',
+                                  alignItems: 'center',
+                                  padding: '8px 10px',
+                                  background: 'rgba(236, 72, 153, 0.05)',
+                                  border: '1px solid rgba(236, 72, 153, 0.2)',
+                                  borderRadius: '8px',
+                                  marginTop: '6px'
+                                }}>
+                                  {/* 体位选择器 */}
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <span style={{ fontSize: '0.78rem', color: '#f472b6', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                      <Flame size={13} /> 体位:
+                                    </span>
+                                    <select
+                                      style={{
+                                        background: 'rgba(15, 23, 42, 0.85)',
+                                        border: scene.sex_position ? '1px solid rgba(244, 114, 182, 0.5)' : '1px solid rgba(255, 255, 255, 0.15)',
+                                        color: scene.sex_position ? '#f472b6' : 'var(--text-muted)',
+                                        fontWeight: scene.sex_position ? 600 : 400,
+                                        borderRadius: '6px',
+                                        padding: '3px 8px',
+                                        fontSize: '0.78rem',
+                                        cursor: 'pointer',
+                                        outline: 'none'
+                                      }}
+                                      value={scene.sex_position || ''}
+                                      disabled={quickUpdatingSceneKey === sceneKey}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        if (val === '__CUSTOM__') {
+                                          startInlineEditScene(chapKey, scene);
+                                        } else {
+                                          quickUpdateSceneField(chapKey, scene.scene_idx, { sex_position: val }, '体位');
+                                        }
+                                      }}
+                                    >
+                                      <option value="">{scene.sex_position ? '清空体位' : '➕ 选择体位'}</option>
+                                      {scene.sex_position && !ALL_SEX_POSITIONS.some(p => p.name === scene.sex_position) && (
+                                        <option value={scene.sex_position}>{scene.sex_position} (自拟)</option>
+                                      )}
+                                      {SEX_POSITION_CATEGORIES.map(cat => (
+                                        <optgroup key={cat.category} label={cat.category}>
+                                          {cat.positions.map(pos => (
+                                            <option key={pos.name} value={pos.name}>
+                                              {pos.name} - {pos.desc}
+                                            </option>
+                                          ))}
+                                        </optgroup>
+                                      ))}
+                                      <option value="__CUSTOM__">✍️ 自定义自拟体位...</option>
+                                    </select>
+                                    {scene.sex_position && (
+                                      <span style={{
+                                        fontSize: '0.72rem',
+                                        color: '#fbcfe8',
+                                        background: 'rgba(244, 114, 182, 0.18)',
+                                        padding: '1px 6px',
+                                        borderRadius: '4px',
+                                        border: '1px solid rgba(244, 114, 182, 0.35)',
+                                        fontWeight: 600
+                                      }}>
+                                        {scene.sex_position}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {/* NSFW 分级选择器 */}
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                                      分级:
+                                    </span>
+                                    <select
+                                      style={{
+                                        background: 'rgba(15, 23, 42, 0.85)',
+                                        border: '1px solid rgba(255, 255, 255, 0.15)',
+                                        color: scene.nsfw_rating?.includes('explicit') ? '#f472b6' : scene.nsfw_rating?.includes('nsfw') ? '#fb923c' : '#a78bfa',
+                                        fontWeight: 600,
+                                        borderRadius: '6px',
+                                        padding: '3px 8px',
+                                        fontSize: '0.78rem',
+                                        cursor: 'pointer',
+                                        outline: 'none'
+                                      }}
+                                      value={scene.nsfw_rating || 'sfw'}
+                                      disabled={quickUpdatingSceneKey === sceneKey}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onChange={(e) => {
+                                        quickUpdateSceneField(chapKey, scene.scene_idx, { nsfw_rating: e.target.value }, '分级');
+                                      }}
+                                    >
+                                      <option value="sfw">SFW 全年龄</option>
+                                      <option value="nsfw_mild">NSFW Mild 微妙</option>
+                                      <option value="nsfw_moderate">NSFW Moderate 中度</option>
+                                      <option value="nsfw_explicit">NSFW Explicit 显式</option>
+                                    </select>
+                                  </div>
+
+                                  <span className="tag-badge scene" style={{ margin: 0 }}>
+                                    <Users size={12} style={{ marginRight: '3px' }} />
+                                    {sceneCharacterCount} 人
+                                  </span>
+
+                                  {scene.image_path && (
+                                    <span className="tag-badge scene" style={{ margin: 0, color: '#86efac', borderColor: 'rgba(34,197,94,0.3)' }}>
+                                      有图
                                     </span>
                                   )}
-                                  <span className="tag-badge scene" style={{ margin: 0 }}>{sceneCharacterCount} 人</span>
-                                  {scene.image_path && <span className="tag-badge scene" style={{ margin: 0 }}>有图</span>}
+
                                   {hasPrompt && (
                                     <button
                                       type="button"
@@ -2298,76 +2908,227 @@ function App() {
                                     </button>
                                   )}
                                 </div>
-                              </div>
-                            </div>
 
-                            {isPromptExpanded && hasPrompt && (
-                              <div
-                                onClick={(e) => e.stopPropagation()}
-                                style={{
-                                  marginTop: '12px',
-                                  padding: '12px',
-                                  borderRadius: '8px',
-                                  border: '1px solid rgba(168,85,247,0.22)',
-                                  background: 'rgba(7,10,24,0.76)',
-                                  display: 'grid',
-                                  gap: '10px'
-                                }}
-                              >
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
-                                  <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-purple-light, #c084fc)' }}>
-                                    Danbooru Prompt Params
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className="btn-secondary"
-                                    style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: '999px' }}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      const text = promptSections
-                                        .map(([label, value]) => `${label}:\n${value}`)
-                                        .join('\n\n');
-                                      navigator.clipboard.writeText(text);
-                                      addLog(`📋 已复制场景 #${scene.scene_idx} Danbooru Prompt 参数`, 'success');
+                                {/* ⚡ 核心动作 */}
+                                {scene.core_action && (
+                                  <div style={{
+                                    fontSize: '0.82rem',
+                                    background: 'rgba(236,72,153,0.08)',
+                                    border: '1px solid rgba(236,72,153,0.22)',
+                                    borderRadius: '6px',
+                                    padding: '6px 10px',
+                                    color: '#fbcfe8',
+                                    marginTop: '4px'
+                                  }}>
+                                    ⚡ <strong style={{ color: '#f472b6' }}>核心动作：</strong>{scene.core_action}
+                                  </div>
+                                )}
+
+                                {/* 📍 环境场景 & 🎥 镜头构图 */}
+                                {(scene.environment || scene.cinematography) && (
+                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '8px', marginTop: '4px' }}>
+                                    {scene.environment && (
+                                      <div style={{ fontSize: '0.8rem', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '6px', padding: '6px 10px', color: '#cbd5e1' }}>
+                                        <span style={{ color: 'var(--color-blue-light, #93c5fd)', fontWeight: 600 }}>📍 环境场景：</span>
+                                        {scene.environment}
+                                      </div>
+                                    )}
+                                    {scene.cinematography && (
+                                      <div style={{ fontSize: '0.8rem', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '6px', padding: '6px 10px', color: '#cbd5e1' }}>
+                                        <span style={{ color: 'var(--color-purple-light, #c084fc)', fontWeight: 600 }}>🎥 镜头构图：</span>
+                                        {scene.cinematography}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* 👥 登场角色结构化卡片 */}
+                                {sceneCharacters.length > 0 ? (
+                                  <div style={{ display: 'grid', gap: '6px', marginTop: '4px' }}>
+                                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                      <Users size={13} />
+                                      <span>登场角色 ({sceneCharacters.length}人)：</span>
+                                    </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '8px' }}>
+                                      {sceneCharacters.map((char, cIdx) => (
+                                        <div
+                                          key={cIdx}
+                                          style={{
+                                            background: 'rgba(10, 15, 30, 0.45)',
+                                            border: '1px solid rgba(255,255,255,0.08)',
+                                            borderRadius: '8px',
+                                            padding: '8px 10px',
+                                            fontSize: '0.78rem',
+                                            display: 'grid',
+                                            gap: '4px'
+                                          }}
+                                        >
+                                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                            <span style={{ fontWeight: 600, color: '#f3f4f6', fontSize: '0.83rem' }}>
+                                              👤 {char.name || `角色 ${cIdx + 1}`}
+                                            </span>
+                                            {char.gender && (
+                                              <span className="tag-badge scene" style={{ fontSize: '0.7rem', margin: 0, padding: '1px 6px' }}>
+                                                {char.gender}
+                                              </span>
+                                            )}
+                                          </div>
+                                          {char.clothing && (
+                                            <div style={{ color: '#fed7aa', lineHeight: 1.4 }}>
+                                              <span style={{ color: '#fb923c', fontWeight: 600 }}>👗 衣着：</span>{char.clothing}
+                                            </div>
+                                          )}
+                                          {char.pose && (
+                                            <div style={{ color: '#e2e8f0', lineHeight: 1.4 }}>
+                                              <span style={{ color: '#38bdf8', fontWeight: 600 }}>🧘 姿态：</span>{char.pose}
+                                            </div>
+                                          )}
+                                          {char.expression && (
+                                            <div style={{ color: '#e2e8f0', lineHeight: 1.4 }}>
+                                              <span style={{ color: '#a78bfa', fontWeight: 600 }}>😊 神态：</span>{char.expression}
+                                            </div>
+                                          )}
+                                          {char.position && (
+                                            <div style={{ color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                                              <span style={{ color: '#94a3b8', fontWeight: 600 }}>📍 位置：</span>{char.position}
+                                            </div>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : (Array.isArray(scene.character_names) && scene.character_names.length > 0) ? (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', fontSize: '0.8rem', marginTop: '4px' }}>
+                                    <span style={{ color: 'var(--text-muted)' }}>登场角色：</span>
+                                    {scene.character_names.map((name, nIdx) => (
+                                      <span key={nIdx} className="tag-badge scene" style={{ margin: 0 }}>
+                                        👤 {name}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : null}
+
+                                {/* 🤝 互动、🔍 剧情痕迹 & 💬 画面文字 */}
+                                {(scene.interactions || scene.plot_traces || scene.text_elements) && (
+                                  <div style={{ display: 'grid', gap: '4px', fontSize: '0.78rem', background: 'rgba(0,0,0,0.18)', padding: '6px 10px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.04)', marginTop: '4px' }}>
+                                    {scene.interactions && (
+                                      <div>
+                                        <span style={{ color: '#f472b6', fontWeight: 600 }}>🤝 互动：</span>
+                                        <span style={{ color: '#e5e7eb' }}>{scene.interactions}</span>
+                                      </div>
+                                    )}
+                                    {scene.plot_traces && (
+                                      <div>
+                                        <span style={{ color: '#fbbf24', fontWeight: 600 }}>🔍 剧情痕迹：</span>
+                                        <span style={{ color: '#e5e7eb' }}>{scene.plot_traces}</span>
+                                      </div>
+                                    )}
+                                    {scene.text_elements && (
+                                      <div>
+                                        <span style={{ color: '#6ee7b7', fontWeight: 600 }}>💬 画面文字：</span>
+                                        <span style={{ color: '#e5e7eb' }}>{scene.text_elements}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* 🏷️ 必含与避开元素 */}
+                                {((Array.isArray(scene.must_show) && scene.must_show.length > 0) || (Array.isArray(scene.must_not_show) && scene.must_not_show.length > 0)) && (
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center', fontSize: '0.75rem', marginTop: '4px' }}>
+                                    {Array.isArray(scene.must_show) && scene.must_show.length > 0 && (
+                                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
+                                        <span style={{ color: '#86efac', fontWeight: 600 }}>必含:</span>
+                                        {scene.must_show.map((tag, tIdx) => (
+                                          <span key={tIdx} style={{ background: 'rgba(34, 197, 94, 0.12)', border: '1px solid rgba(34, 197, 94, 0.3)', color: '#86efac', padding: '1px 6px', borderRadius: '4px' }}>
+                                            +{tag}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                    {Array.isArray(scene.must_not_show) && scene.must_not_show.length > 0 && (
+                                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
+                                        <span style={{ color: '#fca5a5', fontWeight: 600 }}>避开:</span>
+                                        {scene.must_not_show.map((tag, tIdx) => (
+                                          <span key={tIdx} style={{ background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.3)', color: '#fca5a5', padding: '1px 6px', borderRadius: '4px' }}>
+                                            -{tag}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Danbooru Prompt 折叠面板 */}
+                                {isPromptExpanded && hasPrompt && (
+                                  <div
+                                    onClick={(e) => e.stopPropagation()}
+                                    style={{
+                                      marginTop: '8px',
+                                      padding: '12px',
+                                      borderRadius: '8px',
+                                      border: '1px solid rgba(168,85,247,0.22)',
+                                      background: 'rgba(7,10,24,0.76)',
+                                      display: 'grid',
+                                      gap: '10px'
                                     }}
                                   >
-                                    <Copy size={12} /> 复制
-                                  </button>
-                                </div>
-                                {promptSections.map(([label, value]) => (
-                                  <div key={label} style={{ display: 'grid', gap: '4px' }}>
-                                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{label}</div>
-                                    <pre
-                                      style={{
-                                        margin: 0,
-                                        whiteSpace: 'pre-wrap',
-                                        wordBreak: 'break-word',
-                                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-                                        fontSize: '0.76rem',
-                                        lineHeight: 1.45,
-                                        color: '#e5e7eb',
-                                        background: 'rgba(0,0,0,0.24)',
-                                        border: '1px solid rgba(255,255,255,0.06)',
-                                        borderRadius: '6px',
-                                        padding: '8px'
-                                      }}
-                                    >
-                                      {value}
-                                    </pre>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                                      <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--color-purple-light, #c084fc)' }}>
+                                        Danbooru Prompt Params
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className="btn-secondary"
+                                        style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: '999px' }}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const text = promptSections
+                                            .map(([label, value]) => `${label}:\n${value}`)
+                                            .join('\n\n');
+                                          navigator.clipboard.writeText(text);
+                                          addLog(`📋 已复制场景 #${scene.scene_idx} Danbooru Prompt 参数`, 'success');
+                                        }}
+                                      >
+                                        <Copy size={12} /> 复制
+                                      </button>
+                                    </div>
+                                    {promptSections.map(([label, value]) => (
+                                      <div key={label} style={{ display: 'grid', gap: '4px' }}>
+                                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{label}</div>
+                                        <pre
+                                          style={{
+                                            margin: 0,
+                                            whiteSpace: 'pre-wrap',
+                                            wordBreak: 'break-word',
+                                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                                            fontSize: '0.76rem',
+                                            lineHeight: 1.45,
+                                            color: '#e5e7eb',
+                                            background: 'rgba(0,0,0,0.24)',
+                                            border: '1px solid rgba(255,255,255,0.06)',
+                                            borderRadius: '6px',
+                                            padding: '8px'
+                                          }}
+                                        >
+                                          {value}
+                                        </pre>
+                                      </div>
+                                    ))}
                                   </div>
-                                ))}
-                              </div>
+                                )}
+                              </>
                             )}
 
                             {/* 单场景重绘操作栏 */}
                             <div 
                               style={{ 
-                                marginTop: '14px', 
-                                paddingTop: '12px', 
+                                marginTop: '12px', 
+                                paddingTop: '10px', 
                                 borderTop: '1px solid rgba(255,255,255,0.04)', 
                                 display: 'flex', 
                                 justifyContent: 'flex-end', 
-                                gap: '10px' 
+                                gap: '8px',
+                                flexWrap: 'wrap'
                               }}
                             >
                               <button
@@ -2450,16 +3211,20 @@ function App() {
                                   alignItems: 'center',
                                   gap: '4px',
                                   height: '28px',
-                                  borderColor: 'rgba(96, 165, 250, 0.45)',
-                                  color: '#93c5fd'
+                                  borderColor: isInlineEditing ? 'rgba(168, 85, 247, 0.65)' : 'rgba(96, 165, 250, 0.45)',
+                                  color: isInlineEditing ? 'var(--color-purple-light, #c084fc)' : '#93c5fd'
                                 }}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  openSceneEditor(chapKey, scene);
+                                  if (isInlineEditing) {
+                                    cancelInlineEditScene();
+                                  } else {
+                                    startInlineEditScene(chapKey, scene);
+                                  }
                                 }}
-                                title="查看并编辑完整场景卡与生图参数"
+                                title="在场景卡上直接编辑所有结构化字段"
                               >
-                                <Pencil size={12} /> 编辑
+                                <Pencil size={12} /> {isInlineEditing ? '收起编辑' : '编辑卡片'}
                               </button>
                               <button
                                 className="btn-secondary"
@@ -2733,41 +3498,41 @@ function App() {
                     </select>
                   </label>
                   <label style={sceneEditorLabelStyle}>
-                    Sex Position
-                    <input
-                      list="standard-sex-positions-datalist"
-                      style={sceneEditorInputStyle}
-                      placeholder="体位/动作(选或自拟)"
-                      value={sceneEditor.draft.sex_position || ''}
-                      onChange={(e) => updateSceneDraft(draft => ({ ...draft, sex_position: e.target.value }))}
-                    />
+                    Sex Position (体位)
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <select
+                        style={{ ...sceneEditorInputStyle, flex: '1 1 140px', padding: '6px 8px', fontSize: '0.82rem' }}
+                        value={ALL_SEX_POSITIONS.some(p => p.name === sceneEditor.draft.sex_position) ? sceneEditor.draft.sex_position : ''}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val) {
+                            updateSceneDraft(draft => ({ ...draft, sex_position: val }));
+                          }
+                        }}
+                      >
+                        <option value="">-- 标准体位库 --</option>
+                        {SEX_POSITION_CATEGORIES.map(cat => (
+                          <optgroup key={cat.category} label={cat.category}>
+                            {cat.positions.map(pos => (
+                              <option key={pos.name} value={pos.name}>
+                                {pos.name} - {pos.desc}
+                              </option>
+                            ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                      <input
+                        list="standard-sex-positions-datalist"
+                        style={{ ...sceneEditorInputStyle, flex: '1 1 120px' }}
+                        placeholder="体位/动作(选或自拟)"
+                        value={sceneEditor.draft.sex_position || ''}
+                        onChange={(e) => updateSceneDraft(draft => ({ ...draft, sex_position: e.target.value }))}
+                      />
+                    </div>
                     <datalist id="standard-sex-positions-datalist">
-                      <option value="传教士位" />
-                      <option value="种付位" />
-                      <option value="四足后入" />
-                      <option value="俯卧后入" />
-                      <option value="正向骑乘" />
-                      <option value="反向骑乘" />
-                      <option value="面对面对坐" />
-                      <option value="背向坐身" />
-                      <option value="站立后入" />
-                      <option value="单腿站立" />
-                      <option value="正向火车便当" />
-                      <option value="逆向火车便当" />
-                      <option value="汤匙侧卧" />
-                      <option value="侧卧提腿" />
-                      <option value="倒栽折叠位" />
-                      <option value="手交侍奉" />
-                      <option value="口交侍奉" />
-                      <option value="舔阴侍奉" />
-                      <option value="乳交侍奉" />
-                      <option value="足交侍奉" />
-                      <option value="股间素股" />
-                      <option value="69式互侍" />
-                      <option value="双女侍奉" />
-                      <option value="双男夹击" />
-                      <option value="群芳簇拥" />
-                      <option value="群像围攻" />
+                      {ALL_SEX_POSITIONS.map(pos => (
+                        <option key={pos.name} value={pos.name}>{pos.name} - {pos.desc}</option>
+                      ))}
                     </datalist>
                   </label>
                   <label style={sceneEditorLabelStyle}>

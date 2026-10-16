@@ -1844,13 +1844,9 @@ export class PipelineManager {
         ? value.map(item => stringifyComparable(item))
         : []
     );
-    const lightweightFieldsChanged = (
-      comparableText(updates.trigger_sentence) !== comparableText(currentScene.trigger_sentence) ||
-      comparableText(updates.nsfw_rating) !== comparableText(currentScene.nsfw_rating) ||
-      comparableText(updates.sex_position) !== comparableText(currentScene.sex_position) ||
-      comparableText(updates.visual_description) !== comparableText(currentScene.visual_description || currentScene.scene_desc) ||
-      comparableText(updates.core_action) !== comparableText(currentScene.core_action) ||
-      stringifyComparable(comparableStringList(updates.character_names)) !== stringifyComparable(comparableStringList(currentScene.character_names))
+    const descriptionSubstantiallyChanged = (
+      (updates.visual_description !== undefined && comparableText(updates.visual_description) !== comparableText(currentScene.visual_description || currentScene.scene_desc)) ||
+      (updates.core_action !== undefined && comparableText(updates.core_action) !== comparableText(currentScene.core_action))
     );
     const derivedFieldsUnchanged = (
       comparableText(updates.environment) === comparableText(currentScene.environment) &&
@@ -1867,9 +1863,10 @@ export class PipelineManager {
     const normalized = normalizeSceneCard({
       ...currentScene,
       ...updates,
+      preserveExplicitNsfw: true,
       scene_idx: currentScene.scene_idx
     });
-    if (lightweightFieldsChanged && derivedFieldsUnchanged) {
+    if (!updates.preserveDerived && descriptionSubstantiallyChanged && derivedFieldsUnchanged) {
       normalized.environment = '';
       normalized.cinematography = '';
       normalized.interactions = '';
@@ -1886,6 +1883,8 @@ export class PipelineManager {
       ...currentScene,
       ...normalized,
       scene_idx: currentScene.scene_idx,
+      sex_position: typeof updates.sex_position === 'string' ? updates.sex_position.trim() : (normalized.sex_position || ''),
+      nsfw_rating: typeof updates.nsfw_rating === 'string' && updates.nsfw_rating ? updates.nsfw_rating.trim() : (normalized.nsfw_rating || 'sfw'),
       final_prompt: typeof updates.final_prompt === 'string' ? updates.final_prompt.trim() : currentScene.final_prompt,
       base_prompt: typeof updates.base_prompt === 'string' ? updates.base_prompt.trim() : currentScene.base_prompt,
       final_negative: typeof updates.final_negative === 'string' ? updates.final_negative.trim() : currentScene.final_negative,

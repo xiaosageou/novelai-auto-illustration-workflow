@@ -52,6 +52,7 @@ const NSFW部位特写画质增强提示词 = 'adult character only, target anat
 const 部位特写反拼贴负面提示词 = 'multiple views, split screen, panel layout, comic panel, comic page, manga panel, collage, contact sheet, character sheet, duplicate anatomy, mirrored anatomy, multiple organs, extra organs, extra nipples';
 const 默认NovelAI负面提示词 = 'artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, logo, too many watermarks, negative space, blank page, gigantic breasts';
 const 默认表情稳定负面提示词 = 'bared teeth, clenched teeth, crazy grin, distorted mouth, grimace';
+const NSFW防打码负面提示词 = 'censored, mosaic, mosaic censoring, bar censor';
 const 插入局部放大正向提示词 = 'cross-section, single inset image, magnified inset, penetration focus, deep penetration, cutaway inset, external view main frame, main scene plus one inset, genital penetration visible in inset only';
 const 插入局部放大豁免负面词 = new Set([
   'comic panel',
@@ -506,6 +507,7 @@ export function estimateV45Tokens(text = '') {
 
 function promptTokenPriority(token = '') {
   if (/^(?:girl|boy|other|1girl|1boy|1other|[1-6](?:girls|boys|others))$/i.test(token)) return 95;
+  if (/^(?:nsfw|explicit|uncensored)$/i.test(token)) return 94;
   if (/(?:^|::)\s*artist:|^artist:|official art|year20\d\d/i.test(token)) return 92;
   if (/^(?:no text|textless|no watermark|watermark)$/i.test(token)) return 91;
   if (/exactly_|only_|facing |interaction directed|characters facing/i.test(token)) return 90;
@@ -979,6 +981,24 @@ export function buildFinalImagePrompt(prompt, {
     cleanPrompt,
     normalizedArtistStylePrompt
   );
+
+  const isExplicitNsfw = /^(?:nsfw_explicit|nsfw_moderate)$/i.test(String(sceneNsfwRating || '').trim())
+    || /\b(?:nsfw|explicit|uncensored|completely[_ ]nude|\bnude\b|\bnaked\b|nipples?|pussy|vagina|penis|fellatio|paizuri|sex|penetration|cum|cumshot)\b/i.test(`${cleanPrompt} ${sceneDescription} ${extraPositive}`);
+
+  if (isExplicitNsfw) {
+    if (!/\buncensored\b/i.test(basePrompt)) {
+      if (/\bexplicit\b/i.test(basePrompt)) {
+        basePrompt = basePrompt.replace(/\bexplicit\b/i, 'explicit, uncensored');
+      } else if (/\bnsfw\b/i.test(basePrompt)) {
+        basePrompt = basePrompt.replace(/\bnsfw\b/i, 'nsfw, uncensored');
+      } else if (String(sceneNsfwRating || '').trim() === 'nsfw_explicit') {
+        basePrompt = mergePositivePromptParts('nsfw, explicit, uncensored', basePrompt);
+      } else {
+        basePrompt = mergePositivePromptParts('uncensored', basePrompt);
+      }
+    }
+  }
+
   // 对 basePrompt 应用全局正则规则
   if (useNaturalLanguage) {
     // V4.5 自然语言模式：不过滤 non-English，只进行权重守卫
@@ -1021,11 +1041,13 @@ export function buildFinalImagePrompt(prompt, {
       : removeNonEnglishPromptTokens(normalizeArtistTag(finalPositive));
   }
 
-  // 6. 组合负面提示词：基础画质/文字压制 + 构图约束 + 全局/场景额外负面词
+  // 6. 组合负面提示词：基础画质/文字压制 + 构图约束 + 全局/场景额外负面词 + NSFW防打码
+  const nsfwAntiCensorNegative = isExplicitNsfw ? NSFW防打码负面提示词 : '';
   const finalNegative = 移除纯色背景负面限制(removeNonEnglishPromptTokens(mergeNegativePromptParts(
     默认NovelAI负面提示词,
     构建额外人物负面提示词(sceneCharacterList),
     构建私密场景负面词({ prompt: cleanPrompt, sceneEnvironment, sceneDescription }),
+    nsfwAntiCensorNegative,
     (Array.isArray(sceneMustNotShow) ? sceneMustNotShow : [])
       .map(item => String(item || '').trim())
       .filter(item => item && /^[\x20-\x7E]+$/.test(item))

@@ -266,9 +266,9 @@ export class NovelAIClient {
     const isV4Model = /nai-diffusion-4/i.test(model);
     const normalizedBase = this._normalizeBaseUrl(this.baseUrl);
 
-    // 2. 自适应处理 NSFW 提示词屏蔽（解除艺术审查限制）
+    // 2. 自适应处理 NSFW 提示词屏蔽（解除艺术审查限制与去马赛克）
     const nsfwKeywords = [
-      "nsfw", "nude", "naked", "breasts", "nipples", "pussy", "pubic", "panties", 
+      "nsfw", "uncensored", "nude", "naked", "breasts", "nipples", "pussy", "pubic", "panties", 
       "underwear", "lingerie", "nakedness", "topless", "lewd", "sexy", "undressing", 
       "cleavage", "bare thighs", "sex", "erotic"
     ];
@@ -277,12 +277,17 @@ export class NovelAIClient {
     let finalNegative = negativePrompt;
     if (!finalNegative) {
       const defaultNeg = "artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, logo, too many watermarks, negative space, blank page, gigantic breasts";
-      finalNegative = isNsfwRequested ? defaultNeg : `nsfw, ${defaultNeg}`;
+      finalNegative = isNsfwRequested
+        ? `${defaultNeg}, censored, mosaic, mosaic censoring, bar censor`
+        : `nsfw, ${defaultNeg}`;
     } else if (isNsfwRequested) {
       // 强力清洗传入的自定义负向词，物理移除 nsfw 单词以释放艺术限制
       finalNegative = finalNegative.replace(/\bnsfw\b/gi, "");
       finalNegative = finalNegative.replace(/,\s*,+/g, ",");
       finalNegative = finalNegative.trim().replace(/^,|,$/g, "").trim();
+      if (!/\bmosaic\b/i.test(finalNegative)) {
+        finalNegative = `${finalNegative}, censored, mosaic, mosaic censoring, bar censor`;
+      }
     }
 
     // 3. 构建生图 Payload 参数

@@ -105,3 +105,70 @@ test('Scene readiness logic correctly identifies scenes waiting for render', () 
     image_path: null
   }), false);
 });
+
+test('updateSceneCard preserves sex_position and does not wipe derived fields', async () => {
+  const { PipelineManager } = await import('../services/pipeline-manager.js');
+  const os = await import('os');
+  const path = await import('path');
+  const { promises: fs } = await import('fs');
+
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nai-update-pos-test-'));
+  const projectDir = path.join(outputDir, 'projects', 'pos-test');
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.writeFile(
+    path.join(projectDir, 'book.txt'),
+    '第一卷\n第一章\n\n正文测试。\n',
+    'utf-8'
+  );
+  await fs.writeFile(
+    path.join(projectDir, 'pipeline_progress.json'),
+    JSON.stringify({
+      completed_chapters: {
+        '第一卷_第一章': {
+          status: 'generating',
+          scenes: [
+            {
+              scene_idx: 1,
+              trigger_sentence: '正文测试',
+              visual_description: '两人相拥',
+              core_action: '相拥',
+              sex_position: '',
+              nsfw_rating: 'sfw',
+              environment: '寝殿大床',
+              cinematography: '侧面特写',
+              interactions: '紧紧相拥',
+              characters: [{ name: '林月', gender: 'girl', clothing: '白丝睡裙' }],
+              must_show: ['bed'],
+              must_not_show: ['text']
+            }
+          ]
+        }
+      },
+      global_characters: {},
+      character_dna_slices: {},
+      pipeline_pause: null
+    }, null, 2),
+    'utf-8'
+  );
+
+  const pipeline = new PipelineManager({ projectName: 'pos-test' });
+  pipeline.baseDir = outputDir;
+  pipeline.switchProject('pos-test');
+
+  // 更新体位为 四足后入
+  const result = await pipeline.updateSceneCard('第一卷_第一章', 1, {
+    sex_position: '四足后入',
+    nsfw_rating: 'nsfw_explicit'
+  });
+
+  assert.equal(result.scene.sex_position, '四足后入');
+  assert.equal(result.scene.nsfw_rating, 'nsfw_explicit');
+  // 关键：环境、镜头、角色、必须包含不得被意外清空
+  assert.equal(result.scene.environment, '寝殿大床');
+  assert.equal(result.scene.cinematography, '侧面特写');
+  assert.equal(result.scene.interactions, '紧紧相拥');
+  assert.equal(result.scene.characters.length, 1);
+  assert.equal(result.scene.characters[0].name, '林月');
+  assert.deepEqual(result.scene.must_show, ['bed']);
+});
+

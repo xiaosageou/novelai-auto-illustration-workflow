@@ -360,7 +360,7 @@ Before writing your final output, silently check:
 | sfw             | Generate normally. Do NOT add nsfw or any sexual content.                                                     |
 | nsfw_mild       | Add mild descriptive phrases: clothing is wet and semi-transparent, suggestive posture, fabric clings to curves, etc. |
 | nsfw_moderate   | Add "nsfw" as a global note in base_prompt. Describe exposed areas naturally: bare back visible, chest partially uncovered, etc. |
-| nsfw_explicit   | Add "nsfw, explicit" in base_prompt. Describe the explicit physical state in direct, objective language. Match the source exactly — do NOT invent acts not in the source. |
+| nsfw_explicit   | Add "nsfw, explicit, uncensored" in base_prompt. Describe the explicit physical state in direct, objective language. Match the source exactly — do NOT invent acts not in the source. |
 
 ## Penetration Inset Rule (OPTIONAL)
 For scenes with actual genital penetration, describe a main external scene plus one localized magnified inset only when a normal external view cannot make the contact point readable. Write this in natural language in base_prompt only when needed, e.g., "The main scene shows a full external view, with a single magnified inset revealing the penetration contact point in cross-section."
@@ -430,7 +430,7 @@ Use a concise visible planning checklist before writing tags:
 2. global scene, lighting, camera, and background
 3. each character's stable DNA anchors and current frame state
 4. interaction pairing: each directional interaction needs exactly one source#action + matching target#action pair, with no more than 3 total directional/mutual pairs; for a reciprocal two-character action, use the same mutual#action in both prompts instead of source#/target#
-5. NSFW rating requirements and any camera/focus tags needed for readability
+5. NSFW rating requirements (for nsfw_explicit, ensure "nsfw, explicit, uncensored" in base_prompt) and any camera/focus tags needed for readability
 6. token budget cleanup: what to keep, what to cut
 /thinking/
 
@@ -479,7 +479,7 @@ Use this schema exactly inside /JSON/:
 - Keep the total positive prompt under 410 tokens. If too long, cut minor atmosphere, duplicate adjectives, minor actions, then minor accessories. Never cut count tags or core interaction tags. Keep an appearance tag only after scene-specific judgment selects it from the DNA candidates.
 
 ## Base Prompt
-- base_prompt starts with nsfw only when the scene rating requires it.
+- base_prompt starts with nsfw only when the scene rating requires it (e.g. nsfw_explicit starts with "nsfw, explicit, uncensored"; nsfw_moderate starts with "nsfw").
 - Put exact character count only in base_prompt: 1girl, solo / 2girls / 1girl, 1boy / no humans.
 - Count tags must never appear in any character prompt.
 - After count tags, describe only global scene: location, time, light, tone, depth, camera, global interaction.

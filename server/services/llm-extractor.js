@@ -2000,7 +2000,9 @@ export class LLMExtractor {
     const nsfwRating = (typeof sceneDesc === 'object' ? sceneDesc.nsfw_rating : '') || 'sfw';
     const plotTraces = (typeof sceneDesc === 'object' ? sceneDesc.plot_traces : '') || '';
     const isPenetrationScene = isExplicitPenetrationScene(sceneDesc, nsfwRating);
-    const nsfwLine = `【NSFW 等级】${nsfwRating}（请严格按照 system prompt 中对该等级的标签规则输出，不得遗漏也不得升级）`;
+    const nsfwLine = nsfwRating === 'nsfw_explicit'
+      ? `【NSFW 等级】${nsfwRating}（请严格按照 system prompt 输出：base_prompt 开头必须包含 "nsfw, explicit, uncensored"，并在涉及生殖器官、穿透或高潮时如实给出解剖学视觉 tags，不得回避打码）`
+      : `【NSFW 等级】${nsfwRating}（请严格按照 system prompt 中对该等级的标签规则输出，不得遗漏也不得升级）`;
     const nsfwPerspectiveLine = nsfwRating !== 'sfw'
       ? "【NSFW 镜头与构图】base_prompt 优先使用能看清肢体接触与神态的景别：立绘穿搭与体态平衡用 cowboy shot 或 medium shot，特写与微表情用 close-up、upper body。再补一个明确视角（如 side view、from above、over-the-shoulder shot、pov），并在 base_prompt 中加入 1.3::rim light:: 轮廓光与三层景深（foreground framing 与 background bokeh），保持一套连贯机位，禁止矛盾视角。"
       : '';
@@ -2060,7 +2062,7 @@ export class LLMExtractor {
     const tagModeEnforcementLine = [
       "【Danbooru 标签模式 — 强制规则】",
       "1. base_prompt 和每个 character_prompts[].prompt 必须是英文 Danbooru-style tag list，禁止自然语言完整句子。",
-      "2. base_prompt 放 nsfw、精确人数、场景、光照、镜头、全局互动；角色外貌、服装、表情和单人姿势只放 character_prompts。",
+      "2. base_prompt 放 nsfw、精确人数、场景、光照、镜头、全局互动（若为 nsfw_explicit，开头必须包含 nsfw, explicit, uncensored）；角色外貌、服装、表情和单人姿势只放 character_prompts。",
       "3. character_prompts[].prompt 必须以 girl, / boy, / woman, / man, / other, 开头，禁止出现 1girl、1boy、solo、no humans 等人数标签。",
       "4. Danbooru tag 指短视觉标签，不是英文句子。优先使用 lower_snake_case 或常见短标签，如 white_dress、looking_at_viewer、from_behind、cowboy shot。",
       "5. 遇到单个标签难以准确表达的概念时，先拆成多个可见标签组合，不要退回自然语言整句。例如“从背后抱住”应优先写成 from_behind、hug、arms_around_waist，而不是一句英文描述。",
@@ -2200,7 +2202,16 @@ export class LLMExtractor {
         }
       }
       // LLM 已在 /thinking/ 中决定镜头、局部放大、角色位置和互动；后端不再补写或改写这些内容。
-      const resolvedBasePrompt = uniquePhrases(base_prompt.split(/[,，]/)).join(', ');
+      let resolvedBasePrompt = uniquePhrases(base_prompt.split(/[,，]/)).join(', ');
+      if (nsfwRating === 'nsfw_explicit' && !/\buncensored\b/i.test(resolvedBasePrompt)) {
+        if (/\bexplicit\b/i.test(resolvedBasePrompt)) {
+          resolvedBasePrompt = resolvedBasePrompt.replace(/\bexplicit\b/i, 'explicit, uncensored');
+        } else if (/\bnsfw\b/i.test(resolvedBasePrompt)) {
+          resolvedBasePrompt = resolvedBasePrompt.replace(/\bnsfw\b/i, 'nsfw, uncensored');
+        } else {
+          resolvedBasePrompt = uniquePhrases(['nsfw', 'explicit', 'uncensored', ...resolvedBasePrompt.split(/[,，]/)]).join(', ');
+        }
+      }
       const prompt = uniquePhrases([
         ...resolvedBasePrompt.split(/[,，]/),
         ...character_prompts.flatMap(item => item.prompt.split(/[,，]/))

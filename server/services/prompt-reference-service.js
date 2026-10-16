@@ -91,7 +91,7 @@ export function cleanReferenceTags(rawTags) {
   const tokens = rawTags.split(/[,;\n]+/).map(t => t.trim()).filter(Boolean);
   
   // 冗余通用质量词、时间戳与负面标记
-  const genericQualityRegex = /^(masterpiece|best quality|high detail|very aesthetic|best illustration|ultra high resolution|digital illustration|Variety\+|medium complexity|censored|uncensored|year 202[0-9]|simple illustration|flat color|-?[0-9.]+::.*::)$/i;
+  const genericQualityRegex = /^(masterpiece|best quality|high detail|very aesthetic|best illustration|ultra high resolution|digital illustration|Variety\+|medium complexity|censored|year 202[0-9]|simple illustration|flat color|-?[0-9.]+::.*::)$/i;
   // 画师词缀
   const isArtistRegex = /^([0-9.]+::)?artist:[^:]*(::)?$/i;
 
