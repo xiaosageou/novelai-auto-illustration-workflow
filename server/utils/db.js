@@ -293,15 +293,17 @@ export class ProjectProgress {
     this.data.pipeline_pause = pauseInfo ? { ...pauseInfo, updatedAt: Date.now() } : null;
   }
 
-  setChapterStatus(chapKey, status, scenes = []) {
+  setChapterStatus(chapKey, status, scenes = [], extra = {}) {
     if (!this.data) return;
     const previous = this.data.completed_chapters[chapKey] || {};
     this.data.completed_chapters[chapKey] = {
+      ...previous,
       status,
       scenes,
       scene_extraction_failures: Array.isArray(previous.scene_extraction_failures)
         ? previous.scene_extraction_failures
         : [],
+      ...extra,
       updatedAt: Date.now()
     };
   }

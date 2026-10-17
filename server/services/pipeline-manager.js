@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { ProjectProgress } from '../utils/db.js';
 import { getSceneCountMetrics, inferSceneInteractionActions, LLMExtractor } from './llm-extractor.js';
 import { NovelAIClient } from './nai-client.js';
@@ -737,11 +738,67 @@ export class PipelineManager {
 
       this.writeLog(`\n[Pipeline] ➔ 正在处理章节: ${chap.chapter}`);
 
+      const expansion = this._checkChapterExpansion(chap, currentProgress);
+
       let scenes = [];
       try {
         if (Array.isArray(currentProgress?.scenes) && currentProgress.scenes.length > 0) {
           scenes = currentProgress.scenes.map(s => ({ ...s, ...normalizeSceneCard(s), status: s.status || 'PENDING' }));
-          this.writeLog(`[Pipeline] 检测到该章节已有提炼好的 ${scenes.length} 个分镜场景，直接恢复断点场景...`);
+          if (expansion.isExpanded) {
+            this.writeLog(`[Pipeline] 检测到章节「${chap.chapter}」内容扩充（+${expansion.extraChars} 字），正在继续为新增无图内容提炼分镜...`);
+            const preparePromises = [];
+            const naiQueue = [];
+            let llmDone = false;
+            const naiConsumerPromise = this._runNaiConsumerLinear(naiQueue, () => llmDone, naiModel);
+            try {
+              await this._extractExpansionScenesIncrementally(
+                chap,
+                chapKey,
+                expansion.newText,
+                scenes,
+                sceneModel,
+                '[Pipeline]',
+                async (newBatchScenes, allScenes) => {
+                  for (const scene of newBatchScenes) {
+                    const preparePromise = (async () => {
+                      await this.runPriorityJobs();
+                      if (!this.isRunning) return;
+                      await this._prepareSceneForNaiQueue(chap, scene, allScenes, chapKey, naiTagsModel, naiQueue);
+                    })();
+                    preparePromises.push(preparePromise);
+                  }
+                }
+              );
+              for (const scene of scenes) {
+                if (scene.status !== 'SUCCESS') {
+                  const preparePromise = (async () => {
+                    await this.runPriorityJobs();
+                    if (!this.isRunning) return;
+                    await this._prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue);
+                  })();
+                  preparePromises.push(preparePromise);
+                }
+              }
+              await Promise.all(preparePromises);
+            } finally {
+              llmDone = true;
+              await naiConsumerPromise;
+            }
+            if (this.isRunning) {
+              const allDone = scenes.every(s => s.status === 'SUCCESS');
+              if (allDone) {
+                const content = String(chap.content || '').trim();
+                const content_hash = crypto.createHash('sha256').update(content).digest('hex');
+                const content_length = content.length;
+                this.projectProgress.setChapterStatus(chapKey, 'completed', scenes, { content_hash, content_length });
+                await this.projectProgress.save();
+                this.writeLog(`[Pipeline] 章节「${chap.chapter}」所有多图配图已锁定。`);
+              }
+            }
+            continue;
+          } else {
+            this.writeLog(`[Pipeline] 检测到该章节已有提炼好的 ${scenes.length} 个分镜场景，直接恢复断点场景...`);
+          }
         } else {
           const naiQueue = [];
           let llmDone = false;
@@ -763,6 +820,17 @@ export class PipelineManager {
             llmDone = true;
             await naiConsumerPromise;
           }
+          if (this.isRunning) {
+            const allDone = scenes.every(s => s.status === 'SUCCESS');
+            if (allDone) {
+              const content = String(chap.content || '').trim();
+              const content_hash = crypto.createHash('sha256').update(content).digest('hex');
+              const content_length = content.length;
+              this.projectProgress.setChapterStatus(chapKey, 'completed', scenes, { content_hash, content_length });
+              await this.projectProgress.save();
+              this.writeLog(`[Pipeline] 章节「${chap.chapter}」所有多图配图已锁定。`);
+            }
+          }
           continue;
         }
 
@@ -771,7 +839,10 @@ export class PipelineManager {
         if (this.isRunning) {
           const allDone = scenes.every(s => s.status === 'SUCCESS');
           if (allDone) {
-            this.projectProgress.setChapterStatus(chapKey, 'completed', scenes);
+            const content = String(chap.content || '').trim();
+            const content_hash = crypto.createHash('sha256').update(content).digest('hex');
+            const content_length = content.length;
+            this.projectProgress.setChapterStatus(chapKey, 'completed', scenes, { content_hash, content_length });
             await this.projectProgress.save();
             this.writeLog(`[Pipeline] 章节「${chap.chapter}」所有多图配图已锁定。`);
           }
@@ -957,6 +1028,156 @@ export class PipelineManager {
 
     this.writeLog(`${logPrefix} 章节「${chap.chapter}」成功提炼 ${scenes.length} 幅插画场景。`);
     return scenes;
+  }
+
+  /**
+   * 检查章节是否发生了正文扩充（增量正文未配图）
+   * 返回 { isExpanded: boolean, extraChars: number, newText: string, startIndex: number, currentHash: string, currentLength: number }
+   */
+  _checkChapterExpansion(chap, currentProgress) {
+    if (!currentProgress || !Array.isArray(currentProgress.scenes) || currentProgress.scenes.length === 0) {
+      return { isExpanded: false, extraChars: 0, newText: '', startIndex: 0 };
+    }
+
+    const currentContent = String(chap?.content || '').trim();
+    if (!currentContent) {
+      return { isExpanded: false, extraChars: 0, newText: '', startIndex: 0 };
+    }
+
+    const currentLength = currentContent.length;
+    const currentHash = crypto.createHash('sha256').update(currentContent).digest('hex');
+
+    // 1. 若已有 content_hash 且完全一致，说明正文毫无变化，直接判定为未扩充
+    if (currentProgress.content_hash && currentProgress.content_hash === currentHash) {
+      return { isExpanded: false, extraChars: 0, newText: '', startIndex: 0, currentHash, currentLength };
+    }
+
+    // 2. 检查已有场景的触发句在当前文本中的物理分布
+    const existingScenes = currentProgress.scenes.filter(s => s && (s.trigger_sentence || s.visual_description));
+    if (existingScenes.length === 0) {
+      return { isExpanded: false, extraChars: 0, newText: '', startIndex: 0, currentHash, currentLength };
+    }
+
+    let maxTriggerEndIndex = 0;
+    let matchedCount = 0;
+
+    for (const scene of existingScenes) {
+      const trigger = String(scene.trigger_sentence || '').trim();
+      if (!trigger) continue;
+
+      let idx = currentContent.indexOf(trigger);
+      let matchLen = trigger.length;
+
+      // 如果完全匹配未找到，尝试前 25 个字符或第一行模糊匹配
+      if (idx === -1) {
+        const firstLine = trigger.split(/\r?\n/)[0].trim().slice(0, 30);
+        if (firstLine.length >= 6) {
+          idx = currentContent.indexOf(firstLine);
+          matchLen = firstLine.length;
+        }
+      }
+
+      if (idx !== -1) {
+        matchedCount++;
+        const end = idx + matchLen;
+        if (end > maxTriggerEndIndex) {
+          maxTriggerEndIndex = end;
+        }
+      }
+    }
+
+    // 若没有任何一个已有场景能匹配到当前正文，可能文本结构已被重组，安全起见不自动追加
+    if (matchedCount === 0) {
+      return { isExpanded: false, extraChars: 0, newText: '', startIndex: 0, currentHash, currentLength };
+    }
+
+    const remainingText = currentContent.slice(maxTriggerEndIndex).trim();
+    const remainingLength = remainingText.length;
+
+    const isEnglish = !/[\u4e00-\u9fa5]/.test(currentContent);
+    const divisor = isEnglish ? (this.config.english_scene_divisor || 350) : (this.config.cjk_scene_divisor || 600);
+    const minThreshold = Math.max(300, Math.round(divisor * 0.7));
+
+    // 3. 判断条件：
+    // (a) 尾部剩余文本长度超过一个分镜的阈值（如 >= 420 字）
+    // (b) 且按当前全文字数计算的总期望场景数，明显大于已有场景数（差额 >= 1）
+    const totalMetrics = getSceneCountMetrics(
+      currentContent,
+      this.config.cjk_scene_divisor || 600,
+      this.config.english_scene_divisor || 350
+    );
+    const expectedTotalScenes = totalMetrics.sceneCount;
+
+    const hasRecordedLengthIncrease = currentProgress.content_length && (currentLength >= currentProgress.content_length + minThreshold);
+
+    if (remainingLength >= minThreshold && (expectedTotalScenes > existingScenes.length || hasRecordedLengthIncrease)) {
+      return {
+        isExpanded: true,
+        extraChars: remainingLength,
+        newText: remainingText,
+        startIndex: maxTriggerEndIndex,
+        currentHash,
+        currentLength
+      };
+    }
+
+    return { isExpanded: false, extraChars: 0, newText: '', startIndex: 0, currentHash, currentLength };
+  }
+
+  async _extractExpansionScenesIncrementally(chap, chapKey, newText, existingScenes, sceneModel, logPrefix, onBatchReady = null) {
+    const countMetrics = getSceneCountMetrics(
+      newText,
+      this.config.cjk_scene_divisor || 600,
+      this.config.english_scene_divisor || 350
+    );
+    const requestedSceneCount = Math.max(1, countMetrics.sceneCount);
+    const countDescription = countMetrics.language === 'english'
+      ? `扩充词数 ${countMetrics.count}，按 ceil(词数 / ${countMetrics.divisor})`
+      : `扩充字数 ${countMetrics.count}，按 ceil(字数 / ${countMetrics.divisor})`;
+    this.writeLog(`${logPrefix} 章节「${chap.chapter}」${countDescription} 计算为补提 ${requestedSceneCount} 个分镜场景。`);
+
+    const newScenes = [];
+    const baseIdx = existingScenes.reduce((max, s) => Math.max(max, Number(s.scene_idx) || 0), 0);
+
+    await extractChapterScenesInBatches({
+      chapterTitle: `${chap.chapter} (扩充续段)`,
+      text: newText,
+      model: sceneModel,
+      sceneExtractor: this.sceneExtractor,
+      onProgressLog: (logMsg, type, options) => this.writeLog(logMsg, type, options),
+      onBatchExtracted: async (batchScenes, batchInfo) => {
+        const normalizedBatch = (Array.isArray(batchScenes) ? batchScenes : []).map((scene, index) => {
+          const normalizedScene = normalizeSceneCard(scene);
+          const originalTrigger = findOriginalTriggerSentence(chap.content, normalizedScene.trigger_sentence);
+          return {
+            ...normalizedScene,
+            scene_idx: baseIdx + newScenes.length + index + 1,
+            trigger_sentence: originalTrigger,
+            status: normalizedScene.status || 'PENDING'
+          };
+        });
+        if (normalizedBatch.length === 0) return;
+        newScenes.push(...normalizedBatch);
+        const allScenes = [...existingScenes, ...newScenes];
+        await this._persistChapterScenes(chap, chapKey, allScenes);
+        await onBatchReady?.(normalizedBatch, allScenes);
+      },
+      onBatchFailed: async (error, batchInfo) => {
+        const allScenes = [...existingScenes, ...newScenes];
+        await this._recordSceneExtractionBatchFailure(chap, chapKey, allScenes, error, batchInfo);
+      },
+      requestedSceneCount,
+      sceneCountOptions: {
+        cjkDivisor: this.config.cjk_scene_divisor,
+        englishDivisor: this.config.english_scene_divisor
+      },
+      maxScenesPerRequest: this.config.max_scenes_per_request || 5,
+      shouldAbort: () => !this.isRunning,
+      signal: this.abortController?.signal || null
+    });
+
+    this.writeLog(`${logPrefix} 章节「${chap.chapter}」扩充内容成功补提 ${newScenes.length} 幅插画场景。`);
+    return newScenes;
   }
 
   // ====== 双线并行流水线 — 新增方法 ======
@@ -1320,20 +1541,69 @@ export class PipelineManager {
     const completedChapters = this.projectProgress.getCompletedChapters();
     const currentProgress = completedChapters[chapKey];
 
-    // 跳过已全部完成的章节
-    if (currentProgress && currentProgress.status === 'completed') {
+    const expansion = this._checkChapterExpansion(chap, currentProgress);
+
+    // 跳过已全部完成且无扩充的章节
+    if (currentProgress && currentProgress.status === 'completed' && !expansion.isExpanded) {
       this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」插画配图已全部完成，跳过。`);
+      if (!currentProgress.content_hash) {
+        const content = String(chap.content || '').trim();
+        const content_hash = crypto.createHash('sha256').update(content).digest('hex');
+        const content_length = content.length;
+        this.projectProgress.setChapterStatus(chapKey, 'completed', currentProgress.scenes, { content_hash, content_length });
+        await this.projectProgress.save();
+      }
       return null;
     }
 
-    this.writeLog(`\n[Pipeline LLM] ➔ 正在处理第 ${idx + 1}/${totalChapters} 章节: ${chap.chapter}`);
+    if (expansion.isExpanded) {
+      this.writeLog(`\n[Pipeline LLM] ➔ 章节「${chap.chapter}」检测到正文扩充（+${expansion.extraChars} 字），正在继续为新增无图内容提炼分镜...`);
+    } else {
+      this.writeLog(`\n[Pipeline LLM] ➔ 正在处理第 ${idx + 1}/${totalChapters} 章节: ${chap.chapter}`);
+    }
 
     let scenes = [];
     try {
       // ── 恢复已有场景或重新提取 ────────────────────────────────────────────
       if (Array.isArray(currentProgress?.scenes) && currentProgress.scenes.length > 0) {
         scenes = currentProgress.scenes.map(s => ({ ...s, ...normalizeSceneCard(s), status: s.status || 'PENDING' }));
-        this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」恢复已有 ${scenes.length} 个分镜场景...`);
+        if (expansion.isExpanded) {
+          const preparePromises = [];
+          await this._extractExpansionScenesIncrementally(
+            chap,
+            chapKey,
+            expansion.newText,
+            scenes,
+            sceneModel,
+            '[Pipeline LLM]',
+            async (newBatchScenes, allScenes) => {
+              for (const scene of newBatchScenes) {
+                const preparePromise = (async () => {
+                  if (!this.isRunning) return;
+                  await this.runPriorityJobs();
+                  if (!this.isRunning) return;
+                  await this._prepareSceneForNaiQueue(chap, scene, allScenes, chapKey, naiTagsModel, naiQueue);
+                })();
+                preparePromises.push(preparePromise);
+              }
+            }
+          );
+          for (const scene of scenes) {
+            if (scene.status !== 'SUCCESS') {
+              const preparePromise = (async () => {
+                if (!this.isRunning) return;
+                await this.runPriorityJobs();
+                if (!this.isRunning) return;
+                await this._prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue);
+              })();
+              preparePromises.push(preparePromise);
+            }
+          }
+          await Promise.all(preparePromises);
+          return null;
+        } else {
+          this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」恢复已有 ${scenes.length} 个分镜场景...`);
+        }
       } else {
         const preparePromises = [];
         scenes = await this._extractChapterScenesIncrementally(chap, chapKey, sceneModel, '[Pipeline LLM]', async (newScenes, allScenes) => {
@@ -1444,7 +1714,10 @@ export class PipelineManager {
       // 若该章节所有场景均已完成，锁定章节状态为 completed
       const allDone = scenes.every(s => s.status === 'SUCCESS');
       if (allDone) {
-        this.projectProgress.setChapterStatus(chapKey, 'completed', scenes);
+        const content = String(chap.content || '').trim();
+        const content_hash = crypto.createHash('sha256').update(content).digest('hex');
+        const content_length = content.length;
+        this.projectProgress.setChapterStatus(chapKey, 'completed', scenes, { content_hash, content_length });
         await this.projectProgress.save();
         this.writeLog(`[Pipeline NAI] 章节「${chap.chapter}」所有多图配图已锁定。`);
       }
