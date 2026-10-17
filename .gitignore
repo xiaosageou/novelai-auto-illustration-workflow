@@ -47,4 +47,6 @@ docs/*
 !docs/suozhang_r18_full.json
 !docs/suozhang-regular.json
 doc/
+.cache/
+**/.cache/
 

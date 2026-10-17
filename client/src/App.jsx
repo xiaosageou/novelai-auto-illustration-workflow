@@ -2669,6 +2669,7 @@ function App() {
                           ? sceneCharacters.length
                           : (Array.isArray(scene.character_names) ? scene.character_names.length : 0);
                         const sceneImage = scene.image_path ? encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`) : null;
+                        const sceneThumbnail = scene.image_path ? encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}?w=360`) : null;
                         const basePrompt = String(scene.base_prompt || scene.prepared_prompt?.basePrompt || '').trim();
                         const characterPrompts = getNonEmptyPromptList(scene.character_prompts, scene.prepared_prompt?.characterPrompts);
                         const negativeCharacterPrompts = getNonEmptyPromptList(scene.negative_character_prompts, scene.prepared_prompt?.negativeCharacterPrompts);
@@ -3151,7 +3152,9 @@ function App() {
                                 <div style={{ display: 'grid', gridTemplateColumns: sceneImage ? '168px minmax(0, 1fr)' : '1fr', gap: '14px', alignItems: 'start', marginTop: '6px' }}>
                                   {sceneImage && (
                                     <img
-                                      src={sceneImage}
+                                      src={sceneThumbnail || sceneImage}
+                                      loading="lazy"
+                                      decoding="async"
                                       alt="插画"
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -3753,7 +3756,9 @@ function App() {
                             <img
                               key={`inline-${scene.scene_idx}`}
                               className="reader-illustration"
-                              src={encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`)}
+                              src={encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}?w=960`)}
+                              loading="lazy"
+                              decoding="async"
                               alt=""
                               onClick={() => setPreviewImage(encodeURI(`${API_BASE}/projects/${activeProject}/${scene.image_path}`))}
                             />
@@ -4030,7 +4035,9 @@ function App() {
               {sceneEditor.imagePath && (
                 <div style={{ ...sceneEditorSectionStyle, alignContent: 'start', minHeight: 0 }}>
                   <img
-                    src={encodeURI(`${API_BASE}/projects/${activeProject}/${sceneEditor.imagePath}`)}
+                    src={encodeURI(`${API_BASE}/projects/${activeProject}/${sceneEditor.imagePath}?w=720`)}
+                    loading="lazy"
+                    decoding="async"
                     alt="场景插画"
                     onClick={() => setPreviewImage(encodeURI(`${API_BASE}/projects/${activeProject}/${sceneEditor.imagePath}`))}
                     style={{
@@ -5236,6 +5243,7 @@ function App() {
             </button>
             <img 
               src={previewImage} 
+              decoding="async"
               alt="预览" 
               style={{ maxWidth: '100%', maxHeight: '90vh', objectFit: 'contain', borderRadius: '8px', boxShadow: '0 10px 30px rgba(0,0,0,0.5)' }} 
             />

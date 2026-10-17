@@ -179,7 +179,7 @@ export default function ComicWorkbench({ apiBase, projectName }) {
             {candidate ? <>
               <div className="comic-image-controls"><label>点击原图定位<select value={speaker} onChange={e => setSpeaker(e.target.value)}><option value="">批注位置</option>{speakers.map(s => <option key={s} value={s}>说话角色 · {s}</option>)}</select></label><button onClick={() => setZoom(true)}>放大原图 <ExternalLink size={14}/></button></div>
               <div className="comic-image-stage"><div className="comic-image-map" onClick={imageClick} role="button" tabIndex={0} aria-label="点击原图记录批注或说话角色位置">
-                <img src={currentImage} alt={`${panel.panelId} 当前候选原图`} />
+                <img src={currentImage} loading="lazy" decoding="async" alt={`${panel.panelId} 当前候选原图`} />
                 {Object.entries(anchors).map(([name, pos]) => <span className="comic-marker" key={name} style={{ left: `${pos.x * 100}%`, top: `${pos.y * 100}%` }}>{name}</span>)}
                 {point && <span className="comic-marker note" style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}>批注</span>}
               </div></div>

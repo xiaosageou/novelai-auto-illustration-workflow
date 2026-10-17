@@ -15,6 +15,7 @@ import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_AD
 import { normalizeAdvancedPromptForConfig } from './utils/advanced-prompt-contract.js';
 import { createAgentRouter } from './services/agent-api.js';
 import { createComicLegacyGuard } from './services/comic-service.js';
+import { createThumbnailMiddleware } from './services/thumbnail-service.js';
 
 const BASE_DIR = process.cwd();
 const CONFIG_PATH = path.join(BASE_DIR, 'illustrator_config.json');
@@ -154,7 +155,10 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// 静态托管项目资源（可直接通过 /projects/项目名/illustrations/图片名 加载图片）
+// 缩略图服务（当请求携带 ?w= 或 ?width= 时动态生成/提供轻量 WebP 缩略图与长效缓存）
+app.use('/projects', createThumbnailMiddleware({ projectsDir: path.join(BASE_DIR, 'projects') }));
+
+// 静态托管项目资源（可直接通过 /projects/项目名/illustrations/图片名 加载图片原图）
 app.use('/projects', express.static(path.join(BASE_DIR, 'projects')));
 
 // 自动检测并静态托管前端构建好的网页资源，以便 Docker 单容器部署
