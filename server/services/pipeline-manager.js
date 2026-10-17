@@ -753,7 +753,7 @@ export class PipelineManager {
             const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
             const promptQueue = new ConcurrencyQueue(promptConcurrency);
             try {
-              await this._extractExpansionScenesIncrementally(
+              const newScenes = await this._extractExpansionScenesIncrementally(
                 chap,
                 chapKey,
                 expansion.newText,
@@ -770,6 +770,9 @@ export class PipelineManager {
                   }
                 }
               );
+              if (Array.isArray(newScenes) && newScenes.length > 0) {
+                scenes.push(...newScenes);
+              }
               for (const scene of scenes) {
                 if (scene.status !== 'SUCCESS') {
                   promptQueue.run(async () => {
@@ -1547,17 +1550,23 @@ export class PipelineManager {
 
     const expansion = this._checkChapterExpansion(chap, currentProgress);
 
-    // 跳过已全部完成且无扩充的章节
+    // 跳过已全部完成且无扩充的章节（但要确保所有场景真正出图了）
     if (currentProgress && currentProgress.status === 'completed' && !expansion.isExpanded) {
-      this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」插画配图已全部完成，跳过。`);
-      if (!currentProgress.content_hash) {
-        const content = String(chap.content || '').trim();
-        const content_hash = crypto.createHash('sha256').update(content).digest('hex');
-        const content_length = content.length;
-        this.projectProgress.setChapterStatus(chapKey, 'completed', currentProgress.scenes, { content_hash, content_length });
-        await this.projectProgress.save();
+      const hasUnrenderedScenes = Array.isArray(currentProgress.scenes) && currentProgress.scenes.some(s =>
+        s.status !== 'SUCCESS' || !s.image_path || !existsSync(path.join(this.projBase, s.image_path))
+      );
+      if (!hasUnrenderedScenes) {
+        this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」插画配图已全部完成，跳过。`);
+        if (!currentProgress.content_hash) {
+          const content = String(chap.content || '').trim();
+          const content_hash = crypto.createHash('sha256').update(content).digest('hex');
+          const content_length = content.length;
+          this.projectProgress.setChapterStatus(chapKey, 'completed', currentProgress.scenes, { content_hash, content_length });
+          await this.projectProgress.save();
+        }
+        return null;
       }
-      return null;
+      this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」标记为 completed 但仍有未出图场景，继续处理...`, "warning");
     }
 
     if (expansion.isExpanded) {
@@ -1574,7 +1583,7 @@ export class PipelineManager {
         if (expansion.isExpanded) {
           const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
           const promptQueue = new ConcurrencyQueue(promptConcurrency);
-          await this._extractExpansionScenesIncrementally(
+          const newScenes = await this._extractExpansionScenesIncrementally(
             chap,
             chapKey,
             expansion.newText,
@@ -1592,6 +1601,9 @@ export class PipelineManager {
               }
             }
           );
+          if (Array.isArray(newScenes) && newScenes.length > 0) {
+            scenes.push(...newScenes);
+          }
           for (const scene of scenes) {
             if (scene.status !== 'SUCCESS') {
               promptQueue.run(async () => {
@@ -1723,12 +1735,15 @@ export class PipelineManager {
       await this.runPriorityJobs();
 
       // 若该章节所有场景均已完成，锁定章节状态为 completed
-      const allDone = scenes.every(s => s.status === 'SUCCESS');
+      // 使用持久化存储中的最新场景列表，避免闭包快照在多批扩充时过期
+      const latestProgress = this.projectProgress.getCompletedChapters()?.[chapKey];
+      const latestScenes = latestProgress?.scenes || scenes;
+      const allDone = latestScenes.every(s => s.status === 'SUCCESS');
       if (allDone) {
         const content = String(chap.content || '').trim();
         const content_hash = crypto.createHash('sha256').update(content).digest('hex');
         const content_length = content.length;
-        this.projectProgress.setChapterStatus(chapKey, 'completed', scenes, { content_hash, content_length });
+        this.projectProgress.setChapterStatus(chapKey, 'completed', latestScenes, { content_hash, content_length });
         await this.projectProgress.save();
         this.writeLog(`[Pipeline NAI] 章节「${chap.chapter}」所有多图配图已锁定。`);
       }
