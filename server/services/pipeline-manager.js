@@ -366,10 +366,11 @@ export class PipelineManager {
     await this.initialize();
     
     if (this.chapters.length === 0) {
+      this.writeLog("[Pipeline] 未找到小说章节正文，请先导入小说。", "warning");
       return {};
     }
 
-    console.log("[Pipeline] 启动全书角色 DNA 分切片智能提取流水线...");
+    this.writeLog(`[Pipeline] 启动全书角色 DNA 分切片智能提取流水线（共 ${this.chapters.length} 章，每 ${this.dnaSliceSize} 章一组）...`);
 
     const totalSlices = Math.ceil(this.chapters.length / this.dnaSliceSize);
     for (let sliceIdx = 0; sliceIdx < totalSlices; sliceIdx++) {
@@ -377,10 +378,11 @@ export class PipelineManager {
         await this.extractCharacterDnaSlice(sliceIdx, { force: true });
       } catch (error) {
         console.error(`[Pipeline] 切片 ${sliceIdx + 1} 角色 DNA 提取异常:`, error);
+        this.writeLog(`[Pipeline] 切片 ${sliceIdx + 1} 角色 DNA 提取异常: ${error.message}`, "error");
       }
     }
 
-    console.log("[Pipeline] 全书全局角色 DNA 大辞典构建完成！");
+    this.writeLog("[Pipeline] 全书全局角色 DNA 大辞典构建完成！", "success");
     return this.projectProgress.getGlobalCharacters();
   }
 
@@ -420,7 +422,7 @@ export class PipelineManager {
       chapterBatches.push(info.chapters.slice(start, start + batchSize));
     }
 
-    this.writeLog(`[Pipeline] 正在更新角色 DNA 切片 ${info.label}... 平均每章约 ${averageChapterChars} 字，本次按每批 ${batchSize} 章发送。`);
+    this.writeLog(`[Pipeline] 正在更新角色 DNA 切片 ${info.label}... 平均每章约 ${averageChapterChars} 字，本次按每批 ${batchSize} 章发送，模型: ${model}`);
     this.projectProgress.setCharacterDnaSliceStatus(info.sliceKey, {
       status: 'processing',
       sliceIndex: info.sliceIndex,
@@ -445,10 +447,15 @@ export class PipelineManager {
         this.writeLog(`[Pipeline] 角色 DNA 切片 ${info.label} 第 ${batchIndex + 1}/${chapterBatches.length} 批：${batchSourceChapters.join(", ")}`);
       }
 
-      const list = await this.characterDnaExtractor.extractCharacterDNA(batchText, model, {
-        knownCharacters: this.projectProgress.getGlobalCharacters(),
-        sourceChapters: batchSourceChapters
-      });
+      const list = await this.characterDnaExtractor.extractCharacterDNA(
+        batchText,
+        model,
+        {
+          knownCharacters: this.projectProgress.getGlobalCharacters(),
+          sourceChapters: batchSourceChapters
+        },
+        (msg, type, options) => this.writeLog(msg, type, options)
+      );
 
       for (const char of list) {
         if (char && char.name && char.name.length >= 2) {
@@ -508,6 +515,7 @@ export class PipelineManager {
       await this.projectProgress.save();
     }
 
+    const uniqueCount = new Set(allExtractedCharacters.filter(char => char?.name).map(char => char.name)).size;
     this.projectProgress.setCharacterDnaSliceStatus(info.sliceKey, {
       status: 'completed',
       sliceIndex: info.sliceIndex,
@@ -517,10 +525,10 @@ export class PipelineManager {
       averageChapterChars,
       batchSize,
       batchCount: chapterBatches.length,
-      characterCount: new Set(allExtractedCharacters.filter(char => char?.name).map(char => char.name)).size
+      characterCount: uniqueCount
     });
     await this.projectProgress.save();
-    this.writeLog(`[Pipeline] 角色 DNA 切片 ${info.label} 更新完成。`);
+    this.writeLog(`[Pipeline] 角色 DNA 切片 ${info.label} 更新完成（共录入/更新 ${uniqueCount} 位主要角色）。`, "success");
     return this.projectProgress.getGlobalCharacters();
   }
 

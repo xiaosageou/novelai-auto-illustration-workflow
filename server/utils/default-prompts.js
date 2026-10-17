@@ -470,20 +470,24 @@ base_prompt | character1 | character2
 - Once the closing /JSON/ is output, immediately terminate your response.
 
 ## Tag Rules
-- No natural-language sentences. Use comma-separated tags and compact phrases only.
+- No long narrative paragraphs. Use comma-separated tags and compact phrases.
 - Use visible tags: tag what the image should show. Avoid subjective prose.
 - Use Danbooru compound tags where possible: princess carry, cowboy shot, side view, eye focus.
 - Treat a Danbooru-style tag as a short visual label, usually lowercase words joined by underscores or a compact multi-word tag: white_dress, long_hair, looking_at_viewer, from_behind, cowboy shot.
-- If an idea is hard to express with one canonical tag, split it into several visual tags instead of writing a sentence. Example: "hugging from behind" -> from_behind, hug, arms_around_waist.
+- For complex dynamic actions or micro-gestures, natural English phrases separated by normal spaces are permitted (e.g., arms wrapped around waist, pressing against mattress, hand on cheek).
+- STRICTLY FORBIDDEN: NEVER join 3 or more words with underscores into a fake pseudo-tag (e.g., holding_his_head_tightly_with_hands is strictly forbidden; write it with normal spaces).
+- If an idea is hard to express with one canonical tag, split it into several visual tags or a clean phrase instead of writing a full sentence. Example: "hugging from behind" -> from_behind, hug, arms_around_waist.
 - Candidate tags from retrieval are guidance, not a hard allowlist. If needed, write additional Danbooru-style tags yourself, but keep them short, visual, and tag-shaped.
 - Bad: "a girl is hugging him from behind in a shy way". Good: from_behind, hug, arms_around_waist, shy.
-- Bad: explanatory phrases, full English sentences, or prose joined by commas. Good: concrete visible tags only.
+- Bad: explanatory phrases, full narrative paragraphs, or prose joined by commas. Good: concrete visible tags and compact phrases only.
 - Use numerical NAI weights only when necessary: 1.2::tag::, 0.7::tag::, -1::tag::. Do not use {}, [], or SD bracket weights.
 - Keep the total positive prompt under 410 tokens. If too long, cut minor atmosphere, duplicate adjectives, minor actions, then minor accessories. Never cut count tags or core interaction tags. Keep an appearance tag only after scene-specific judgment selects it from the DNA candidates.
 
 ## Base Prompt
 - base_prompt starts with nsfw only when the scene rating requires it (e.g. nsfw_explicit starts with "nsfw, explicit, uncensored"; nsfw_moderate starts with "nsfw").
-- Put exact character count only in base_prompt: 1girl, solo / 2girls / 1girl, 1boy / no humans.
+- Put single canonical character count only in base_prompt: 1girl / 2girls / 1girl, 1boy / no humans.
+- NEVER output redundant or conflicting counts (e.g. do NOT output "3 characters, 1girl, 1woman" or mix 2girls with 1girl).
+- NEVER output "N characters" or "N people".
 - Count tags must never appear in any character prompt.
 - After count tags, describe only global scene: location, time, light, tone, depth, camera, global interaction.
 - Do not put hair color, eye color, body type, outfit, expression, or individual pose in base_prompt.
@@ -538,25 +542,27 @@ base_prompt | character1 | character2
 - Avoid far framing by default: wide shot, far shot, long shot, panorama, or environment-only distance views unless the scene card clearly requires them.
 - Add camera/focus tags only when they clarify the image: pov, portrait, cowboy shot, close-up, lower body, head out of frame, eye focus, breast focus, foot focus.
 
-## Penetration Inset & Cross-Section (所长剖面与透视实战)
-- For actual genital penetration scenes, the composition must use a close main frame plus a localized cross-section or cutaway inset.
-- **Prefer cross-section over bare x-ray**: In NAI 4.5, bare "x-ray" causes the character's skin to become skeletal, translucent, or green/cyan. Use "cross-section, deep penetration, penetration focus, cutaway inset" instead. If internal organ x-ray is needed, use targeted tags like "uterus x-ray" or "cervix".
+## Penetration & Occlusion Perspective (剖面与透视实战)
+- For actual genital penetration scenes, use a close main frame plus cross-section / cutaway perspective.
+- **Prefer cross-section and cutaway, strictly forbid magnified inset or bare x-ray**: In NAI 4.5, "magnified inset" causes ugly comic panel splitting or floating inset boxes, while bare "x-ray" causes characters to become transparent green skeletons. Use "cross-section, cutaway, deep penetration, penetration focus" instead. If internal organ x-ray is needed, use targeted tags like "uterus x-ray" or "cervix".
+- **Blanket and Occlusion Perspective (被子与遮挡透视)**: For scenes where characters are under covers or blankets but their bodies/interactions must be visible, use "cross-section, cutaway, see-through blanket, translucent blanket, under covers". In negative prompt, solid blanket and skeleton are suppressed.
 - **External Physical Echo (内外呼应)**: The receiving character prompt should include "stomach bulge" (slight lower abdominal bulge under deep penetration) alongside bodily reactions like "arched back, trembling, sweat".
-- In /thinking/, explicitly note the decision: close main framing (e.g. cowboy shot, side view) + cross-section inset for penetration readability.
-- Inside the final /JSON/ block, base_prompt must include tags such as cross-section, deep penetration, penetration focus, cutaway inset. The main frame itself stays fully external with intact realistic skin.
-- Do not add cross-section or inset tags for non-penetration scenes such as handjob, touching, kissing, teasing, undressing, or non-insertive oral scenes.
+- In /thinking/, explicitly note the decision: close main framing (e.g. cowboy shot, side view) + cross-section / cutaway for penetration or occlusion readability.
+- Inside the final /JSON/ block, base_prompt must include tags such as cross-section, cutaway, deep penetration, penetration focus. The main frame itself stays fully external with intact realistic skin.
+- Do not add cross-section or cutaway tags for non-penetration scenes such as handjob, touching, kissing, teasing, undressing, or non-insertive oral scenes.
 
 ## Self Check
 Before final output, verify in the /thinking/ block:
-1. base_prompt has all count tags and no character-specific appearance.
+1. base_prompt has single canonical count tag and no character-specific appearance.
 2. character prompts contain no count tags.
-3. prompts are tag lists, not English sentences.
-4. no comma touches a future | separator.
-5. interaction actions use source#, target#, or mutual# when applicable.
-6. no invented accessories or character traits not supported by scene card or DNA.
-7. close framing is preferred unless the scene truly requires distance.
-8. penetration scenes include one localized magnified x-ray inset in base_prompt.
-9. /JSON/ contains exactly one complete JSON object and no Markdown/code fence.`;
+3. prompts are tag lists or compact phrases, not English narrative sentences.
+4. no 3+ words joined by underscores.
+5. no comma touches a future | separator.
+6. interaction actions use source#, target#, or mutual# when applicable.
+7. no invented accessories or character traits not supported by scene card or DNA.
+8. close framing is preferred unless the scene truly requires distance.
+9. penetration scenes include cross-section, cutaway in base_prompt without magnified inset or bare x-ray.
+10. /JSON/ contains exactly one complete JSON object and no Markdown/code fence.`;
 
 // DEFAULT_ADVANCED_PROMPT 默认指向 Danbooru 标签分段版
 export const DEFAULT_ADVANCED_PROMPT = DEFAULT_ADVANCED_PROMPT_DANBOORU_TAGS;

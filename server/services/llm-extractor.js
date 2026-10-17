@@ -1988,16 +1988,21 @@ export class LLMExtractor {
   /**
    * 从 10 章小说切片中提炼主要角色及其结构化外貌 DNA 特征（Prompts Bundle）
    */
-  async extractCharacterDNA(sliceText, model = "deepseek-chat", context = {}) {
+  async extractCharacterDNA(sliceText, model = "deepseek-chat", context = {}, onProgressLog = null) {
     if (!this.apiKey) {
       throw new Error("请先配置有效的 LLM API Key！");
     }
 
+    const progressCb = typeof onProgressLog === 'function'
+      ? onProgressLog
+      : (typeof context === 'function' ? context : (typeof context?.onProgressLog === 'function' ? context.onProgressLog : null));
+    const effectiveContext = typeof context === 'object' && context !== null ? context : {};
+
     const systemPrompt = withSystemPrefix(this.system_prompt_character_dna || DEFAULT_CHARACTER_DNA_PROMPT);
 
     const cleanedSliceText = preserveTextForLlm(sliceText);
-    const knownCharacters = context?.knownCharacters && Object.keys(context.knownCharacters).length > 0
-      ? JSON.stringify(Object.entries(context.knownCharacters).map(([name, data]) => ({
+    const knownCharacters = effectiveContext?.knownCharacters && Object.keys(effectiveContext.knownCharacters).length > 0
+      ? JSON.stringify(Object.entries(effectiveContext.knownCharacters).map(([name, data]) => ({
           name,
           aliases: data.aliases || [],
           gender: data.gender || "",
@@ -2008,7 +2013,7 @@ export class LLMExtractor {
           body_proportion: data.body_proportion || ""
         })), null, 2)
       : "[]";
-    const sourceChapters = Array.isArray(context?.sourceChapters) ? context.sourceChapters : [];
+    const sourceChapters = Array.isArray(effectiveContext?.sourceChapters) ? effectiveContext.sourceChapters : [];
     const url = `${this.baseUrl}/chat/completions`;
     const payload = {
       model,
@@ -2035,8 +2040,10 @@ export class LLMExtractor {
     };
 
     console.log(`[LLM Extractor] 正在提取全局角色 DNA (切片长度: ${sliceText.length} 字)...`);
+    progressCb?.(`[角色 DNA 提炼] 正在调用大模型分析切片 (${sourceChapters.join(', ') || '未知章节'}, 切片长度: ${sliceText.length} 字)...`);
 
     try {
+      const streamLogger = createThrottledStreamLogger(progressCb, '[角色 DNA 提炼]');
       const res = await postChatCompletionWith429Retry({
         url,
         headers: this.getHeaders(),
@@ -2052,7 +2059,10 @@ export class LLMExtractor {
         throw new Error(`HTTP Error ${res.status}`);
       }
 
-      const { content: rawContent } = await readLlmResponse(res);
+      const { content: rawContent } = await readLlmResponse(res, {
+        onStreamText: streamLogger?.push
+      });
+      streamLogger?.flush();
       if (!rawContent) {
         throw new Error("大模型返回内容为空");
       }
@@ -2060,14 +2070,38 @@ export class LLMExtractor {
       const completeness = checkTextCompleteness(rawContent);
       if (!completeness.isComplete) {
         console.warn(`[LLM Extractor] 角色 DNA 提炼结果不完整: ${completeness.reason}. 启动自愈修复...`);
+        progressCb?.(`[角色 DNA 提炼] 输出疑似不完整 (${completeness.reason})，正在自愈修复...`, 'warning');
       }
 
       const rawList = robustJsonLoads(rawContent);
 
       // 对大模型提取出的角色 DNA 进行后处理二次净化，滤除任何瞬时/场景状态标签
-      return rawList.map(char => sanitizeCharacterDnaEntry(char, { defaultSourceChapters: sourceChapters }));
+      const sanitized = rawList.map(char => sanitizeCharacterDnaEntry(char, { defaultSourceChapters: sourceChapters }));
+      if (sanitized.length === 0) {
+        progressCb?.(`[角色 DNA 提炼] 本切片未发现新主要角色或返回列表为空`, 'info');
+      } else {
+        progressCb?.(`[角色 DNA 提炼] 成功提炼出 ${sanitized.length} 位角色 DNA：`, 'success');
+        for (const char of sanitized) {
+          const aliasStr = Array.isArray(char.aliases) && char.aliases.length > 0 ? ` (别名: ${char.aliases.join(', ')})` : '';
+          const genderStr = char.gender ? `[${char.gender}]` : '';
+          const roleStr = char.role_type ? `[${char.role_type}]` : '';
+          let proxyStr = '';
+          if (char.proxy_character?.danbooru_tag) {
+            const pc = char.proxy_character;
+            proxyStr = `\n    └─ 🎭 同人脸模: ${pc.danbooru_tag}${pc.character_name_cn ? ` (${pc.character_name_cn})` : ''}${pc.series ? ` 【${pc.series}】` : ''}`;
+            if (pc.suppress_tags && (Array.isArray(pc.suppress_tags) ? pc.suppress_tags.length > 0 : Boolean(pc.suppress_tags))) {
+              const suppressStr = Array.isArray(pc.suppress_tags) ? pc.suppress_tags.join(', ') : pc.suppress_tags;
+              proxyStr += ` | 压制标签: ${suppressStr}`;
+            }
+          }
+          const tagsSnippet = char.tags ? `\n    └─ 🏷️ 基础Prompt: ${char.tags.length > 100 ? char.tags.slice(0, 100) + '...' : char.tags}` : '';
+          progressCb?.(`  • ${char.name}${aliasStr} ${genderStr}${roleStr}${proxyStr}${tagsSnippet}`, 'info');
+        }
+      }
+      return sanitized;
     } catch (error) {
       console.error("[LLM Extractor] 提取角色 DNA 异常:", error);
+      progressCb?.(`[角色 DNA 提炼] 提取异常: ${error.message}`, 'error');
       return [];
     }
   }
@@ -2148,11 +2182,11 @@ export class LLMExtractor {
         ? [
             "【插入剖面与透视规则（所长全量实战架构）】本场景存在明确交合插入：",
             "- /thinking/ 中必须明确构图决策：主图保持正常外视角（如 cowboy shot 或 side view），规划局部剖面 (cross-section)。",
-            "- 【优先使用 cross-section 代替裸 x-ray】：在 base_prompt 必须优先使用 cross-section、deep penetration、penetration focus（或 magnified inset、cutaway inset），绝不要单用 x-ray 避免人物身体变透明或骨骼化；若需内部器官透视使用精准靶向词（如 uterus x-ray、cervix、internal cumshot）。",
+            "- 【优先使用 cross-section 与 cutaway，严禁 magnified inset 与裸 x-ray】：在 base_prompt 必须使用 cross-section、cutaway、deep penetration、penetration focus。严禁使用 magnified inset（会导致画中画/切片割裂）和 x-ray inset / x-ray（会导致透明人与骨骼发光发绿）；若为被子/遮挡物透视，使用 cross-section, cutaway, see-through blanket, translucent blanket, under covers；若需内部器官透视使用精准靶向词（如 uterus x-ray、cervix、internal cumshot）。",
             "- 【体内穿透与体表回显双向联动】：在承受方角色的 character_prompts 中，联动加入 stomach bulge（腹部微隆）与 arched back、trembling，形成体内穿透与体表受力的双向真实呼应。",
             "- 主图本体必须保持正常外部视角与精致肌肤质感，不要把整张主图做成医用 x-ray。"
           ].join("\n")
-        : "【插入剖面规则（非插入场景禁止误用）】若场景并非真实插入行为（手交、抚摸、接吻、脱衣、非插入式口交/挑逗），不要加入 cross-section、inset_image、magnified_inset、xray_inset、stomach bulge。")
+        : "【插入剖面规则（非插入场景禁止误用）】若场景并非真实插入行为（手交、抚摸、接吻、脱衣、非插入式口交/挑逗），不要加入 cross-section、cutaway、deep penetration、stomach bulge。")
       : '';
     const rawSexPosition = (typeof sceneDesc === 'object' ? (sceneDesc.sex_position || sceneDesc.sexPosition) : '') || '';
     const matchedSexPos = findSexPosition(
@@ -2198,11 +2232,11 @@ export class LLMExtractor {
 
     const tagModeEnforcementLine = [
       "【Danbooru 标签模式 — 强制规则】",
-      "1. base_prompt 和每个 character_prompts[].prompt 必须是英文 Danbooru-style tag list，禁止自然语言完整句子。",
-      "2. base_prompt 放 nsfw、精确人数、场景、光照、镜头、全局互动（若为 nsfw_explicit，开头必须包含 nsfw, explicit, uncensored）；角色外貌、服装、表情和单人姿势只放 character_prompts。",
+      "1. base_prompt 和每个 character_prompts[].prompt 必须是英文 Danbooru-style tag list，禁止长篇自然语言段落叙述。",
+      "2. base_prompt 放 nsfw、唯一精确人数（仅允许 1girl、2girls、1girl 1boy 等唯一标准人数标签，严禁 3 characters、2 people 等无意义统计词，严禁与分项身份重叠）、场景、光照、镜头、全局互动（若为 nsfw_explicit，开头必须包含 nsfw, explicit, uncensored）；角色外貌、服装、表情和单人姿势只放 character_prompts。",
       "3. character_prompts[].prompt 必须以 girl, / boy, / woman, / man, / other, 开头，禁止出现 1girl、1boy、solo、no humans 等人数标签。",
-      "4. Danbooru tag 指短视觉标签，不是英文句子。优先使用 lower_snake_case 或常见短标签，如 white_dress、looking_at_viewer、from_behind、cowboy shot。",
-      "5. 遇到单个标签难以准确表达的概念时，先拆成多个可见标签组合，不要退回自然语言整句。例如“从背后抱住”应优先写成 from_behind、hug、arms_around_waist，而不是一句英文描述。",
+      "4. Danbooru tag 指短视觉标签。对于复杂动态、微观动作或体态接触，允许使用自然的英文短语（用正常空格分隔，如 arms wrapped around waist, pressing against mattress）；严禁使用 3 个以上单词用下划线硬拼的长假词（如 holding_his_head_tightly_with_hands 是绝对禁止的，必须写成正常空格）。",
+      "5. 遇到单个标签难以准确表达的概念时，先拆成多个可见标签组合，不要退回完整叙事句。例如“从背后抱住”写成 from_behind, hug, arms_around_waist。",
       "6. 互动必须尽量使用 source#action、target#action、mutual#action 标清主动方和承受方（仅放在 character_prompts 中，不得出现在 base_prompt）。每一个方向性互动必须恰好由一组 source#action 与对应的 target#action 成对出现，整张图最多 3 对；主动方重点刻画接触点与抓取控制（如 waist grab, arms around neck, interlocked fingers），承受方必须配合体感生理反馈（如 blush, trembling, heavy breathing, looking up/away）；两个角色共同、互相完成同一动作时，两人的 prompt 都使用相同的 mutual#action，不能改写成 source#/target#，且该 mutual 对也计入最多 3 对。",
       "7. Token 预算必须前置控制：总正向 tags 不超过 410 tokens。优先删除氛围形容词、重复概念、次要配饰和未被当前画面选中的 DNA tag；不得删除人物数量和核心互动。",
       "8. 衣着状态必须忠实于场景卡 characters[].clothing：有具体服装名则用对应 tags（如 white_dress、school_uniform）；是 nude 则用 completely_nude；是 未指明 时，把角色 DNA 仅当作候选参考，自行判断哪些服装或外貌 tag 对当前画面可见且必要。不得整段照抄 DNA，也不得自行编造细节。",
@@ -2743,17 +2777,30 @@ export function sanitizeCharacterDnaEntry(char, { defaultSourceChapters = [] } =
     cleanFeatures['年龄感标签'] = resolvedAgeTags;
   }
 
+  const isMale = /^(?:boy|man|male)$/i.test(String(char.gender || '').trim()) || /男/.test(String(char.gender || ''));
+  if (isMale) {
+    if (Array.isArray(cleanFeatures['胸部标签'])) {
+      cleanFeatures['胸部标签'] = cleanFeatures['胸部标签'].filter(t => !/flat_chest|breasts/i.test(String(t || '')));
+    }
+  }
+
   // 重新拼装出最干净、最常驻的外貌特征拼接串
   const allFeatureTags = [];
-  const orderedKeys = ["年龄标签", "外貌标签", "身材标签", "胸部标签", "NSFW标签", "发型标签", "发色标签", "眼睛标签", "肤色标签", "服装基底标签", "特殊特征标签"];
+  const orderedKeys = ["年龄标签", "外貌标签", "身材标签", "胸部标签", "发型标签", "发色标签", "眼睛标签", "肤色标签", "服装基底标签", "特殊特征标签"];
   for (const key of orderedKeys) {
     if (Array.isArray(cleanFeatures[key])) {
       allFeatureTags.push(...cleanFeatures[key]);
     }
   }
 
-  const tagsStr = cleanCharacterDnaTags(char.tags || "");
-  const mergedTags = cleanCharacterDnaTags([...tagsStr.split(/[,，]/), ...allFeatureTags]);
+  // 仅在非私密生殖器官特征时并入 permanent allFeatureTags（私密体征保留在 cleanFeatures['NSFW标签'] 槽中供场景动态激活）
+  if (Array.isArray(cleanFeatures['NSFW标签'])) {
+    const nonGenitalNsfw = cleanFeatures['NSFW标签'].filter(t => !/^(?:large_penis|big_penis|penis|small_penis|thick_penis|erect_penis|pussy|vagina)$/i.test(String(t || '').trim().toLowerCase().replace(/\s+/g, '_')));
+    allFeatureTags.push(...nonGenitalNsfw);
+  }
+
+  const tagsStr = cleanCharacterDnaTags(char.tags || "", { gender: char.gender });
+  const mergedTags = cleanCharacterDnaTags([...tagsStr.split(/[,，]/), ...allFeatureTags], { gender: char.gender });
   const evidence = Array.isArray(char.evidence)
     ? char.evidence.map(item => {
         if (typeof item === 'string') {

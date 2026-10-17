@@ -193,6 +193,31 @@ export function removeNonEnglishPromptTokens(text) {
   return deduplicatePromptTokens(tokens).join(", ");
 }
 
+/**
+ * 将 3 个或更多下划线拼接的伪 Tag 还原为自然语言短语（空格分隔）
+ */
+export function cleanPseudoUnderscoreTags(token = '') {
+  if (!token || typeof token !== 'string') return '';
+  const trimmed = token.trim();
+  const weightMatch = trimmed.match(/^([-\d.]+::)([\s\S]+?)(::)$/);
+  const prefix = weightMatch ? weightMatch[1] : '';
+  const suffix = weightMatch ? weightMatch[3] : '';
+  const core = weightMatch ? weightMatch[2] : trimmed;
+
+  if (/^(?:source|target|mutual)#/i.test(core)) {
+    return trimmed;
+  }
+
+  const underscoreCount = (core.match(/_/g) || []).length;
+  if (underscoreCount >= 3) {
+    const spaceConverted = core.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+    return `${prefix}${spaceConverted}${suffix}`;
+  }
+  return trimmed;
+}
+
+const DEPRECATED_INSET_PATTERN = /^(?:magnified inset|x-ray inset|xray inset|single inset image|inset image|main scene plus one inset)$/i;
+
 export function normalizeDanbooruPromptSegment(text, { character = false } = {}) {
   if (!text) return "";
 
@@ -215,6 +240,9 @@ export function normalizeDanbooruPromptSegment(text, { character = false } = {})
     .map(token => token.trim())
     .filter(Boolean)
     .filter(token => !cjkPattern.test(token))
+    .filter(token => !DEPRECATED_INSET_PATTERN.test(token))
+    .map(token => /^cutaway inset$/i.test(token) ? 'cutaway' : token)
+    .map(token => cleanPseudoUnderscoreTags(token))
     .filter(token => !(character && countTagPattern.test(token)))
     .filter(token => !sentenceTokenPattern.test(token))
     .map(token => token.replace(/\s+/g, " ").trim())
@@ -380,9 +408,49 @@ export function isTransientTag(tag) {
 }
 
 /**
+ * DNA 标签同义词折叠消歧与性别生理特征过滤
+ */
+export function normalizeDnaTagSynonyms(tokens = [], { gender = '', preserveGenitalTags = false } = {}) {
+  const isMale = /^(?:boy|man|male)$/i.test(String(gender || '').trim()) || /男/.test(String(gender || ''));
+  const normalized = [];
+  const hasPetite = tokens.some(t => /^(?:petite|loli)$/i.test(String(t || '').trim().toLowerCase().replace(/\s+/g, '_')));
+
+  for (const rawToken of tokens) {
+    const raw = String(rawToken || '').trim();
+    if (!raw) continue;
+    const lowerKey = raw.toLowerCase().replace(/\s+/g, '_');
+
+    // 肤色同义词折叠归一
+    if (lowerKey === 'white_skin' || lowerKey === 'fair_skin') {
+      normalized.push('pale_skin');
+      continue;
+    }
+
+    // 身材同义词折叠归一：若已有 petite/loli，省略 small_body/short
+    if (hasPetite && (lowerKey === 'small_body' || lowerKey === 'short')) {
+      continue;
+    }
+
+    // 男性角色过滤女性胸部标签
+    if (isMale && /^(?:flat_chest|small_breasts|medium_breasts|large_breasts|huge_breasts|gigantic_breasts)$/i.test(lowerKey)) {
+      continue;
+    }
+
+    // 非保留状态下，私密生殖器官标签隔离（移入动态按需槽，不在常驻 SFW DNA 中固化）
+    if (!preserveGenitalTags && /^(?:large_penis|big_penis|penis|small_penis|thick_penis|erect_penis|pussy|vagina)$/i.test(lowerKey)) {
+      continue;
+    }
+
+    normalized.push(raw);
+  }
+
+  return normalized;
+}
+
+/**
  * 过滤掉角色 DNA 标签中的特定临时/场景状态标签，只保留固有的、物理的设定标签
  */
-export function cleanCharacterDnaTags(tagsStringOrArray) {
+export function cleanCharacterDnaTags(tagsStringOrArray, options = {}) {
   let tokens = [];
   if (Array.isArray(tagsStringOrArray)) {
     tokens = tagsStringOrArray;
@@ -395,8 +463,10 @@ export function cleanCharacterDnaTags(tagsStringOrArray) {
   const cleaned = tokens
     .map(t => t.trim())
     .filter(t => t.length > 0 && !isTransientTag(t));
+
+  const synNormalized = normalizeDnaTagSynonyms(cleaned, options);
     
-  return removeNonEnglishPromptTokens(deduplicatePromptTokens(cleaned).join(", "));
+  return removeNonEnglishPromptTokens(deduplicatePromptTokens(synNormalized).join(", "));
 }
 
 /**

@@ -722,7 +722,10 @@ app.post('/api/projects/:projectName/extract-characters', async (req, res) => {
     
     // 异步提炼，不阻塞请求
     pipeline.extractGlobalCharacters().then((dict) => {
-      broadcastSSE('characters_completed', dict);
+      broadcastSSE('characters_completed', {
+        projectName,
+        characters: dict
+      });
     }).catch(err => {
       broadcastSSE('error', { message: `角色 DNA 提取异常: ${err.message}` });
     });

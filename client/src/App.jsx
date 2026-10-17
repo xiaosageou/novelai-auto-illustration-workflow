@@ -188,6 +188,7 @@ function App() {
   const [savingCharacterTags, setSavingCharacterTags] = useState(false);
   const [editingAppearanceVersion, setEditingAppearanceVersion] = useState(null);
   const [savingAppearanceVersion, setSavingAppearanceVersion] = useState(false);
+  const [isExtractingDna, setIsExtractingDna] = useState(false);
   
   // 新建项目表单
   const [newProjName, setNewProjName] = useState("");
@@ -468,6 +469,7 @@ function App() {
     });
 
     eventSource.addEventListener('characters_completed', (e) => {
+      setIsExtractingDna(false);
       const data = JSON.parse(e.data);
       if (Number.isInteger(data?.sliceIndex)) {
         addLog(`🧬 角色 DNA 切片 #${data.sliceIndex + 1} 已更新并合并。`);
@@ -491,6 +493,7 @@ function App() {
         addLog(`🎉 项目 ${data.projectName} 批量插画流水线大功告成！`);
       }
       setPipelineRunning(false);
+      setIsExtractingDna(false);
       if (activeProject) {
         fetchProjectDetails(activeProject);
       }
@@ -504,6 +507,7 @@ function App() {
         addLog(`❌ 流水线发生异常中断: ${data.message}`, 'error');
       }
       setPipelineRunning(false);
+      setIsExtractingDna(false);
     });
 
     eventSource.addEventListener('log', (e) => {
@@ -512,6 +516,7 @@ function App() {
     });
 
     eventSource.addEventListener('error', (e) => {
+      setIsExtractingDna(false);
       const data = JSON.parse(e.data);
       addLog(`⚠️ 系统提示: ${data.message}`, 'warning');
     });
@@ -839,8 +844,9 @@ function App() {
   };
 
   const startExtractCharacters = async () => {
-    if (!activeProject) return;
+    if (!activeProject || isExtractingDna) return;
     try {
+      setIsExtractingDna(true);
       const chapters = projectDetails?.chapters || [];
       const selectedIndex = selectedChapter
         ? chapters.findIndex(chap => chap.volume === selectedChapter.volume && chap.chapter === selectedChapter.chapter)
@@ -850,7 +856,7 @@ function App() {
       const sliceStart = sliceIndex * 10;
       const sliceEnd = Math.min(sliceStart + 10, chapters.length || sliceStart + 10);
 
-      addLog(`🧬 开始重建第 ${sliceStart + 1}-${sliceEnd} 章角色 DNA...`);
+      addLog(`🧬 开始重建第 ${sliceStart + 1}-${sliceEnd} 章角色 DNA（切片 #${sliceIndex + 1}）... 详细流式分析可在「实时日志」中查看。`);
       const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/character-dna-slices/${sliceIndex}/update`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -860,9 +866,11 @@ function App() {
       if (data.success) {
         addLog(data.message);
       } else {
+        setIsExtractingDna(false);
         addLog(`重建角色 DNA 失败: ${data.error || '未知错误'}`, "error");
       }
     } catch (e) {
+      setIsExtractingDna(false);
       addLog("提取角色 DNA 异常: " + e.message, "error");
     }
   };
@@ -870,8 +878,9 @@ function App() {
   const updateDnaSliceAndContinue = async () => {
     if (!activeProject || !dnaUpdatePrompt) return;
     try {
+      setIsExtractingDna(true);
       setPipelineRunning(true);
-      addLog(`🧬 正在更新${dnaUpdatePrompt.sliceLabel}角色 DNA，完成后自动继续流水线...`);
+      addLog(`🧬 正在更新${dnaUpdatePrompt.sliceLabel}角色 DNA，完成后自动继续流水线... 详细流式分析可在「实时日志」中查看。`);
       const res = await fetch(
         `${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/character-dna-slices/${dnaUpdatePrompt.sliceIndex}/update`,
         {
@@ -888,10 +897,12 @@ function App() {
         addLog(data.message);
         setDnaUpdatePrompt(null);
       } else {
+        setIsExtractingDna(false);
         setPipelineRunning(false);
         addLog(`❌ 更新角色 DNA 失败: ${data.error || '未知错误'}`, 'error');
       }
     } catch (e) {
+      setIsExtractingDna(false);
       setPipelineRunning(false);
       addLog(`❌ 更新角色 DNA 异常: ${e.message}`, 'error');
     }
@@ -2197,13 +2208,42 @@ function App() {
               </div>
               <button
                 className="btn-secondary"
-                style={{ padding: '4px 8px', fontSize: '0.72rem' }}
+                style={{ padding: '4px 8px', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '4px' }}
                 onClick={startExtractCharacters}
+                disabled={isExtractingDna || pipelineRunning}
                 title="智能提取/重建当前章节组的角色 DNA"
               >
-                <RefreshCw size={12} /> 重建本组
+                <RefreshCw size={12} className={isExtractingDna ? "animate-spin" : ""} />
+                {isExtractingDna ? '提炼中...' : '重建本组'}
               </button>
             </div>
+            {isExtractingDna && (
+              <div style={{
+                padding: '6px 10px',
+                marginTop: '8px',
+                borderRadius: '6px',
+                background: 'rgba(99, 102, 241, 0.12)',
+                border: '1px solid rgba(99, 102, 241, 0.3)',
+                fontSize: '0.73rem',
+                color: '#a5b4fc',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '8px'
+              }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <RefreshCw size={11} className="animate-spin" />
+                  <span>正在提炼角色 DNA...</span>
+                </span>
+                <button
+                  type="button"
+                  style={{ fontSize: '0.72rem', color: '#818cf8', textDecoration: 'underline', padding: 0, cursor: 'pointer', border: 'none', background: 'transparent' }}
+                  onClick={() => setMainTab('logs')}
+                >
+                  实时日志 ➔
+                </button>
+              </div>
+            )}
             <input
               type="text"
               placeholder="搜索角色名/别名/脸模..."
@@ -3844,6 +3884,7 @@ function App() {
               <User size={15} />
               <span>角色 DNA</span>
               {activeProject && <span className="tab-badge dna">{Object.keys(characters).length}</span>}
+              {isExtractingDna && <span className="tab-pulse-dot" style={{ background: '#a855f7' }} title="角色 DNA 提炼中" />}
             </button>
 
             <button 
@@ -3867,7 +3908,7 @@ function App() {
             >
               <Terminal size={15} />
               <span>实时日志</span>
-              {pipelineRunning && <span className="tab-pulse-dot" title="流水线运行中" />}
+              {(pipelineRunning || isExtractingDna) && <span className="tab-pulse-dot" title={isExtractingDna ? "角色 DNA 提炼中" : "流水线运行中"} />}
             </button>
           </nav>
         </div>

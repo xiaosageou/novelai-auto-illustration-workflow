@@ -53,7 +53,7 @@ const 部位特写反拼贴负面提示词 = 'multiple views, split screen, pane
 const 默认NovelAI负面提示词 = 'artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, logo, too many watermarks, negative space, blank page, gigantic breasts';
 const 默认表情稳定负面提示词 = 'bared teeth, clenched teeth, crazy grin, distorted mouth, grimace';
 const NSFW防打码负面提示词 = 'censored, mosaic, mosaic censoring, bar censor';
-const 插入局部放大正向提示词 = 'cross-section, single inset image, magnified inset, penetration focus, deep penetration, cutaway inset, external view main frame, main scene plus one inset, genital penetration visible in inset only';
+const 插入局部放大正向提示词 = 'cross-section, cutaway, deep penetration, penetration focus';
 const 插入局部放大豁免负面词 = new Set([
   'comic panel',
   'comic page',
@@ -144,6 +144,24 @@ function 构建精确人物数量约束(sceneCharacters = []) {
 
 function 构建额外人物负面提示词(sceneCharacters = []) {
   const count = Array.isArray(sceneCharacters) ? sceneCharacters.length : 0;
+  if (count === 1) {
+    const char = sceneCharacters[0];
+    const genderTag = 角色性别标签(char?.gender);
+    const incompatible = genderTag === 'girl' ? '2girls, 1boy, 2boys' : (genderTag === 'boy' ? '2boys, 1girl, 2girls' : '2girls, 2boys');
+    return [
+      'multiple people',
+      'extra person',
+      'extra character',
+      'background people',
+      'crowd',
+      incompatible,
+      'duplicate person',
+      'duplicate character',
+      'extra head',
+      'extra face',
+      'duplicate body'
+    ].filter(Boolean).join(', ');
+  }
   if (count === 2) {
     const countPrompt = 构建人物数量标签(sceneCharacters);
     const incompatibleTwoPersonCounts = [
@@ -168,13 +186,74 @@ function 构建额外人物负面提示词(sceneCharacters = []) {
       'duplicate character',
       'extra face',
       'extra head',
-      'duplicate body'
+      'duplicate body',
+      'fused bodies',
+      'merged limbs',
+      'extra arms',
+      'extra legs',
+      'multiple heads'
+    ].filter(Boolean).join(', ');
+  }
+  if (count >= 3) {
+    return [
+      `${count + 1}people`,
+      'extra person',
+      'extra character',
+      'background person',
+      'background people',
+      'crowd',
+      'duplicate person',
+      'duplicate character',
+      'extra face',
+      'extra head',
+      'duplicate body',
+      'fused bodies',
+      'merged limbs',
+      'extra arms',
+      'extra legs',
+      'multiple heads'
     ].join(', ');
   }
-  if (count === 3) {
-    return 'fourth person, extra person, extra character, background person, background people, crowd, 4people, duplicate person, duplicate character, extra face, extra head, duplicate body';
-  }
   return '';
+}
+
+function 构建透视遮挡负面词(prompt = '') {
+  const text = String(prompt || '').toLowerCase();
+  const hasPerspective = /cross-section|cutaway|see-through blanket|translucent blanket|under covers/i.test(text);
+  if (!hasPerspective) return '';
+  return 'solid blanket, opaque blanket, medical x-ray, skeleton';
+}
+
+/**
+ * 消除 Base Prompt 中的重复/冲突人数标签与长句噪点
+ */
+export function normalizeBasePromptCharacterCounts(rawBasePrompt = '', sceneCharacters = []) {
+  if (!rawBasePrompt) return '';
+  const canonicalCount = 构建人物数量标签(sceneCharacters);
+
+  const rawTokens = String(rawBasePrompt)
+    .split(/[,，]/)
+    .map(t => t.trim())
+    .filter(Boolean);
+
+  const cleanedTokens = [];
+  const countTagRegex = /^(?:solo|no humans|\d+\s*(?:girls?|boys?|men|man|women|woman|others?))$/i;
+  const genericCountNoise = /^\d+\s*(?:characters?|people|persons?)$/i;
+
+  for (const token of rawTokens) {
+    if (genericCountNoise.test(token)) {
+      continue;
+    }
+    if (canonicalCount && countTagRegex.test(token)) {
+      continue;
+    }
+    cleanedTokens.push(token);
+  }
+
+  if (canonicalCount) {
+    return mergePositivePromptParts(canonicalCount, cleanedTokens.join(', '));
+  }
+  return cleanedTokens.join(', ');
 }
 
 function 构建动作关系强调提示词(prompt = '') {
@@ -508,12 +587,13 @@ export function estimateV45Tokens(text = '') {
 function promptTokenPriority(token = '') {
   if (/^(?:girl|boy|other|1girl|1boy|1other|[1-6](?:girls|boys|others))$/i.test(token)) return 95;
   if (/^(?:nsfw|explicit|uncensored)$/i.test(token)) return 94;
-  if (/(?:^|::)\s*artist:|^artist:|official art|year20\d\d/i.test(token)) return 92;
   if (/^(?:no text|textless|no watermark|watermark)$/i.test(token)) return 91;
   if (/exactly_|only_|facing |interaction directed|characters facing/i.test(token)) return 90;
-  if (/hair|eyes|dress|robe|shirt|skirt|armor|uniform|skin|breasts|muscular|petite/i.test(token)) return 75;
-  if (/^(?:source|target|mutual)#/i.test(token)) return 72;
-  if (/hug|kiss|hold|grab|push|pull|point|attack|look|pose|standing|sitting|kneeling/i.test(token)) return 70;
+  if (/^(?:source|target|mutual)#/i.test(token)) return 88;
+  if (/cross-section|cutaway|deep penetration|penetration focus|stomach bulge|doggystyle|missionary|cowgirl|straddling|fellatio|paizuri|sex|hug|kiss|hold|grab|push|pull|point|attack|look|pose|standing|sitting|kneeling/i.test(token)) return 85;
+  if (/hair|eyes|dress|robe|shirt|skirt|armor|uniform|skin|breasts|muscular|petite/i.test(token)) return 80;
+  if (/(?:^|::)\s*artist:|^artist:|official art|year20\d\d/i.test(token)) return 76;
+  if (/cowboy shot|close-up|closeup|medium shot|upper body|lower body|side view|from behind|from above|from below|pov|wide shot/i.test(token)) return 74;
   if (/masterpiece|aesthetic|quality|absurdres|detailed|lighting|atmosphere/i.test(token)) return 20;
   return 50;
 }
@@ -969,16 +1049,13 @@ export function buildFinalImagePrompt(prompt, {
       )
       .filter(Boolean);
   }
-  const characterCountPrompt = 构建人物数量标签(sceneCharacterList);
-  const exactCharacterCountPrompt = 构建精确人物数量约束(sceneCharacterList);
   const normalizedArtistStylePrompt = normalizeArtistTag(artistStylePrompt || '');
+  const normalizedBase = normalizeBasePromptCharacterCounts(cleanPrompt, sceneCharacterList);
 
   // 5. 组合正向提示词
   let basePrompt = mergePositivePromptParts(
     prePositive,
-    characterCountPrompt,
-    exactCharacterCountPrompt,
-    cleanPrompt,
+    normalizedBase,
     normalizedArtistStylePrompt
   );
 
@@ -1041,12 +1118,13 @@ export function buildFinalImagePrompt(prompt, {
       : removeNonEnglishPromptTokens(normalizeArtistTag(finalPositive));
   }
 
-  // 6. 组合负面提示词：基础画质/文字压制 + 构图约束 + 全局/场景额外负面词 + NSFW防打码
+  // 6. 组合负面提示词：基础画质/文字压制 + 构图约束 + 全局/场景额外负面词 + 透视遮挡负向 + NSFW防打码
   const nsfwAntiCensorNegative = isExplicitNsfw ? NSFW防打码负面提示词 : '';
   const finalNegative = 移除纯色背景负面限制(removeNonEnglishPromptTokens(mergeNegativePromptParts(
     默认NovelAI负面提示词,
     构建额外人物负面提示词(sceneCharacterList),
     构建私密场景负面词({ prompt: cleanPrompt, sceneEnvironment, sceneDescription }),
+    构建透视遮挡负面词(basePrompt),
     nsfwAntiCensorNegative,
     (Array.isArray(sceneMustNotShow) ? sceneMustNotShow : [])
       .map(item => String(item || '').trim())

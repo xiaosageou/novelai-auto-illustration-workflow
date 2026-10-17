@@ -60,7 +60,7 @@ Hard requirements:
 - Put the total character count only in base_prompt.
 - Do not put character-specific appearance, clothing, expression or individual pose in base_prompt.
 - Prefer close framing tags such as close-up, medium close-up, cowboy shot, upper body, or from waist up. Avoid wide shot, far shot, and long shot unless clearly required by the scene.
-- For actual genital penetration scenes, /thinking/ must explicitly plan one close main frame plus one localized magnified x-ray inset, and /JSON/.base_prompt must include tags such as magnified inset, x-ray inset, cutaway inset, cross-section, or penetration focus.
+- For actual genital penetration scenes, /thinking/ must explicitly plan close main framing plus cross-section / cutaway perspective, and /JSON/.base_prompt must include tags such as cross-section, cutaway, deep penetration, or penetration focus (never use magnified inset or bare x-ray).
 - Do not output a top-level "prompt" field.
 - Output the JSON object only inside /JSON/, without Markdown or commentary.`;
 }

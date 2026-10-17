@@ -17,15 +17,23 @@ import {
   postChatCompletionWith429Retry,
   readLlmResponse,
   SCENES_JSON_END,
-  SCENES_JSON_START
+  SCENES_JSON_START,
+  sanitizeCharacterDnaEntry
 } from '../services/llm-extractor.js';
 import { NovelAIClient } from '../services/nai-client.js';
 import { globalCooldownManager } from '../utils/cooldown.js';
 import {
   buildFinalImagePrompt,
   enforceV45PromptBudget,
-  estimateV45Tokens
+  estimateV45Tokens,
+  normalizeBasePromptCharacterCounts
 } from '../services/prompt-builder.js';
+import {
+  cleanPseudoUnderscoreTags,
+  normalizeDnaTagSynonyms,
+  cleanCharacterDnaTags,
+  normalizeDanbooruPromptSegment
+} from '../utils/prompt-cleaner.js';
 import { buildCharacterSpatialGuidance } from '../services/prompt-builder.js';
 import { normalizeSceneCard } from '../utils/scene-structure.js';
 import { normalizeAdvancedPromptForConfig } from '../utils/advanced-prompt-contract.js';
@@ -1104,6 +1112,61 @@ test('character dna cleanup keeps stable nsfw traits and drops transient ones', 
     assert.deepEqual(result[0].features.NSFW标签, ['large breasts']);
     assert.match(result[0].tags, /large breasts/);
     assert.doesNotMatch(result[0].tags, /\berection\b/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('extractCharacterDNA emits detailed progress and character proxy logs to callback', async () => {
+  const extractor = new LLMExtractor({ apiKey: 'dummy-key', baseUrl: 'https://example.com/v1' });
+  const originalFetch = globalThis.fetch;
+  const capturedLogs = [];
+
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    choices: [{
+      message: {
+        content: JSON.stringify([{
+          name: '艾拉薇儿',
+          aliases: ['金发天使'],
+          gender: 'girl',
+          role_type: '女主',
+          proxy_character: {
+            danbooru_tag: 'gabriel_white_tenma',
+            character_name_cn: '天真·珈百璃·怀特',
+            series: '珈百璃的堕落',
+            suppress_tags: ['school uniform', 'halo']
+          },
+          tags: '1girl, blonde hair, blue eyes',
+          features: {
+            外貌标签: ['blonde hair', 'blue eyes']
+          },
+          evidence: [],
+          confidence: 0.95,
+          source_chapters: ['第1章']
+        }])
+      }
+    }]
+  }));
+
+  try {
+    const result = await extractor.extractCharacterDNA(
+      '测试正文内容',
+      'test-model',
+      { knownCharacters: {}, sourceChapters: ['第1章'] },
+      (msg, type, options) => capturedLogs.push({ msg, type, options })
+    );
+    assert.equal(result.length, 1);
+    assert.equal(result[0].name, '艾拉薇儿');
+    assert.equal(result[0].proxy_character.danbooru_tag, 'gabriel_white_tenma');
+    
+    // 验证调用了 onProgressLog 输出详细日志
+    assert(capturedLogs.length >= 2, '应该捕获到提取开始与提炼详情日志');
+    const startLog = capturedLogs.find(l => l.msg.includes('正在调用大模型分析切片'));
+    assert(startLog, '应该有切片分析开始日志');
+    const summaryLog = capturedLogs.find(l => l.msg.includes('成功提炼出 1 位角色 DNA'));
+    assert(summaryLog, '应该有提炼成功统计日志');
+    const proxyLog = capturedLogs.find(l => l.msg.includes('gabriel_white_tenma'));
+    assert(proxyLog, '应该输出同人脸模详细信息');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -4040,3 +4103,116 @@ test.skip('pipeline injects source target tags from inferred scene interactions 
     await fs.rm(outputDir, { recursive: true, force: true });
   }
 });
+
+test('Fix 1: normalizeBasePromptCharacterCounts deduplicates count tags and eliminates vague noise', () => {
+  const sceneCharacters = [
+    { name: '甲', gender: 'girl' },
+    { name: '乙', gender: 'girl' },
+    { name: '丙', gender: 'boy' }
+  ];
+  const messyCleanPrompt = '2girls, 1boy, 3 characters, 1girl, 1woman, 1man, bedroom, soft lighting';
+  const normalized = normalizeBasePromptCharacterCounts(messyCleanPrompt, sceneCharacters);
+
+  assert.equal(normalized, '2girls, 1boy, bedroom, soft lighting');
+  assert.doesNotMatch(normalized, /3 characters/);
+  assert.doesNotMatch(normalized, /\b1woman\b/);
+  assert.doesNotMatch(normalized, /\b1man\b/);
+});
+
+test('Fix 2: promptTokenPriority keeps actions and clothing ahead of artist style without sacrificing artist style under normal budget', () => {
+  const baseBudget = 180;
+  const longPrompt = '1girl, 1boy, 1.3::artist:mignon::, 1.2::artist:quasarcake::, hug, kiss, deep penetration, white dress, blue robe, school uniform, detailed bedroom, dim lighting, wood table, bookshelf, warm lamp, carpet floor';
+  
+  const budgeted = enforceV45PromptBudget(longPrompt, [], baseBudget);
+  assert.match(budgeted.basePrompt, /hug/);
+  assert.match(budgeted.basePrompt, /kiss/);
+  assert.match(budgeted.basePrompt, /white dress/);
+  assert.match(budgeted.basePrompt, /artist:mignon/);
+  assert.match(budgeted.basePrompt, /artist:quasarcake/);
+});
+
+test('Fix 3: cross-section and cutaway perspective are preserved while deprecated magnified/xray insets are stripped', () => {
+  const input = 'cross-section, cutaway, deep penetration, magnified inset, x-ray inset, single inset image, see-through blanket';
+  const cleaned = normalizeDanbooruPromptSegment(input);
+
+  assert.match(cleaned, /cross-section/);
+  assert.match(cleaned, /cutaway/);
+  assert.match(cleaned, /deep penetration/);
+  assert.match(cleaned, /see-through blanket/);
+  assert.doesNotMatch(cleaned, /magnified inset/i);
+  assert.doesNotMatch(cleaned, /x-ray inset/i);
+  assert.doesNotMatch(cleaned, /single inset image/i);
+});
+
+test('Fix 4: cleanPseudoUnderscoreTags converts >=3 underscore pseudo-tags to natural language phrases', () => {
+  const pseudoTag1 = 'holding_his_head_tightly_with_hands';
+  const pseudoTag2 = 'pressing_against_the_soft_mattress';
+  const normalTag = 'looking_at_viewer';
+  const weightedPseudoTag = '1.2::arms_wrapped_around_his_waist::';
+
+  assert.equal(cleanPseudoUnderscoreTags(pseudoTag1), 'holding his head tightly with hands');
+  assert.equal(cleanPseudoUnderscoreTags(pseudoTag2), 'pressing against the soft mattress');
+  assert.equal(cleanPseudoUnderscoreTags(normalTag), 'looking_at_viewer');
+  assert.equal(cleanPseudoUnderscoreTags(weightedPseudoTag), '1.2::arms wrapped around his waist::');
+
+  const segment = normalizeDanbooruPromptSegment('1girl, holding_his_head_tightly_with_hands, white_dress, looking_at_viewer');
+  assert.match(segment, /holding his head tightly with hands/);
+  assert.match(segment, /white_dress/);
+  assert.match(segment, /looking_at_viewer/);
+});
+
+test('Fix 5: character DNA removes flat_chest from males, normalizes skin/body synonyms, and isolates genital tags from permanent tags', () => {
+  const maleChar = {
+    name: '安小鱼',
+    gender: 'boy',
+    role_type: '男主',
+    tags: 'petite, small_body, white_skin, large_penis, flat_chest',
+    features: {
+      胸部标签: ['flat_chest'],
+      身材标签: ['petite', 'small_body'],
+      肤色标签: ['white_skin'],
+      NSFW标签: ['large_penis']
+    }
+  };
+
+  const sanitized = sanitizeCharacterDnaEntry(maleChar);
+  assert.doesNotMatch(sanitized.tags, /flat_chest/i);
+  assert.doesNotMatch(sanitized.tags, /large_penis/i);
+  assert.match(sanitized.tags, /pale_skin/i);
+  assert.doesNotMatch(sanitized.tags, /white_skin/i);
+  assert.match(sanitized.tags, /petite/i);
+  assert.doesNotMatch(sanitized.tags, /small_body/i);
+  // 私密生殖标签安全隔离在 NSFW 槽中
+  assert.deepEqual(sanitized.features.NSFW标签, ['large_penis']);
+  assert.deepEqual(sanitized.features.胸部标签, []);
+});
+
+test('Fix 6: dynamic negative prompt covers 1 person, 2 person, 3+ person and injects perspective occlusion suppression', () => {
+  const onePersonResult = buildFinalImagePrompt('bedroom', {
+    sceneCharacters: [{ name: '女主', gender: 'girl' }]
+  });
+  assert.match(onePersonResult.finalNegative, /multiple people/i);
+  assert.match(onePersonResult.finalNegative, /extra person/i);
+  assert.match(onePersonResult.finalNegative, /crowd/i);
+
+  const twoPersonResult = buildFinalImagePrompt('bedroom', {
+    sceneCharacters: [{ name: '男主', gender: 'boy' }, { name: '女主', gender: 'girl' }]
+  });
+  assert.match(twoPersonResult.finalNegative, /third person/i);
+  assert.match(twoPersonResult.finalNegative, /fused bodies/i);
+  assert.match(twoPersonResult.finalNegative, /merged limbs/i);
+
+  const threePersonResult = buildFinalImagePrompt('bedroom', {
+    sceneCharacters: [{ name: '甲', gender: 'girl' }, { name: '乙', gender: 'girl' }, { name: '丙', gender: 'boy' }]
+  });
+  assert.match(threePersonResult.finalNegative, /4people/i);
+  assert.match(threePersonResult.finalNegative, /fused bodies/i);
+
+  const perspectiveResult = buildFinalImagePrompt('cross-section, see-through blanket, bedroom', {
+    sceneCharacters: [{ name: '女主', gender: 'girl' }]
+  });
+  assert.match(perspectiveResult.finalNegative, /solid blanket/i);
+  assert.match(perspectiveResult.finalNegative, /medical x-ray/i);
+  assert.match(perspectiveResult.finalNegative, /skeleton/i);
+});
+
