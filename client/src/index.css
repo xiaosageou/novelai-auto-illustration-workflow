@@ -684,3 +684,510 @@ h1, h2, h3, h4 {
     flex-direction: column;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════
+   全新 Tab 标签化架构样式 (Top Nav + 4 Tab Viewports)
+   ═══════════════════════════════════════════════════════════ */
+
+.app-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background-color: var(--bg-dark);
+}
+
+/* 顶部全局导航栏 */
+.app-header {
+  height: 56px;
+  min-height: 56px;
+  background: rgba(16, 18, 38, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-light);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  z-index: 50;
+  gap: 16px;
+}
+
+.app-header-left {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  min-width: 0;
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-title);
+  font-size: 1.05rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #c084fc, #38bdf8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.brand-icon {
+  color: #c084fc;
+}
+
+.main-tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border-light);
+  padding: 3px 4px;
+  border-radius: 10px;
+}
+
+.main-tab-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.main-tab-item:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.main-tab-item.active {
+  color: white;
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.3), rgba(14, 165, 233, 0.25));
+  border-color: rgba(192, 132, 252, 0.4);
+  box-shadow: 0 2px 10px rgba(168, 85, 247, 0.2);
+}
+
+.main-tab-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  font-size: 0.68rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+}
+
+.tab-badge.dna {
+  background: rgba(236, 72, 153, 0.2);
+  color: #f472b6;
+}
+
+.tab-badge.progress {
+  background: rgba(56, 189, 248, 0.2);
+  color: #38bdf8;
+}
+
+.tab-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+  animation: pulse-glow 1.5s infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(1.3); }
+}
+
+.app-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.active-project-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 8px;
+  background: rgba(168, 85, 247, 0.1);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  font-size: 0.8rem;
+  color: #d8b4fe;
+  cursor: pointer;
+  transition: all 0.2s;
+  max-width: 180px;
+}
+
+.active-project-pill:hover {
+  background: rgba(168, 85, 247, 0.2);
+  border-color: rgba(168, 85, 247, 0.5);
+}
+
+.pill-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-pipeline-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 主视口 */
+.app-main-viewport {
+  flex: 1;
+  height: calc(100vh - 56px);
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 空白占位大状态 */
+.empty-state-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: auto;
+  text-align: center;
+  padding: 40px;
+  max-width: 480px;
+}
+
+.empty-state-container h3 {
+  font-size: 1.15rem;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.empty-state-container p {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+/* 标签页通用 Header */
+.tab-view-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.tab-view-header h2 {
+  font-size: 1.25rem;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tab-view-subtitle {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* ═════════ 1. 书籍项目 Tab ═════════ */
+.books-tab-view {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 36px;
+  max-width: 1600px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.books-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 20px;
+  margin-top: 16px;
+}
+
+.book-card-item {
+  padding: 18px 20px;
+  border-radius: 14px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 180px;
+  border: 1px solid var(--border-light);
+  transition: all 0.25s ease;
+  position: relative;
+}
+
+.book-card-item:hover {
+  transform: translateY(-3px);
+  border-color: rgba(168, 85, 247, 0.4);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+}
+
+.book-card-item.active {
+  border-color: var(--color-purple);
+  box-shadow: 0 0 25px rgba(168, 85, 247, 0.25);
+  background: linear-gradient(145deg, rgba(26, 28, 58, 0.85), rgba(16, 18, 38, 0.95));
+}
+
+.book-card-item.create-card {
+  border: 2px dashed rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.015);
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+.book-card-item.create-card:hover {
+  border-color: var(--color-blue);
+  background: rgba(14, 165, 233, 0.05);
+}
+
+.create-icon-wrapper {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  display: grid;
+  place-items: center;
+  color: var(--color-blue);
+  margin: 0 auto;
+}
+
+.book-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.book-delete-btn {
+  padding: 4px;
+  flex-shrink: 0;
+  border-color: rgba(239, 68, 68, 0.25);
+  color: var(--color-pink);
+}
+
+.book-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+
+.book-card-middle {
+  margin: 14px 0;
+}
+
+.book-progress-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.book-progress-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.book-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--color-purple), var(--color-blue));
+  transition: width 0.4s ease;
+}
+
+.book-card-bottom {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ═════════ 2. 角色 DNA Tab ═════════ */
+.dna-tab-view {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 20px;
+  padding: 20px 24px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.dna-sidebar-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  padding: 14px;
+}
+
+.dna-sidebar-header {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.dna-search-input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-light);
+  border-radius: 7px;
+  padding: 6px 10px;
+  color: white;
+  font-size: 0.78rem;
+  outline: none;
+}
+
+.dna-search-input:focus {
+  border-color: rgba(168, 85, 247, 0.5);
+}
+
+.dna-char-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 4px;
+}
+
+.dna-char-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.dna-char-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.dna-char-item.active {
+  background: rgba(168, 85, 247, 0.12);
+  border-color: rgba(168, 85, 247, 0.4);
+}
+
+.dna-detail-viewport {
+  flex: 1;
+  height: 100%;
+  overflow-y: auto;
+  border-radius: 16px;
+}
+
+/* ═════════ 3. 工作台 Tab ═════════ */
+.workbench-tab-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px 24px;
+  overflow: hidden;
+}
+
+/* ═════════ 4. 实时日志 Tab ═════════ */
+.logs-tab-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px 24px;
+  overflow: hidden;
+}
+
+.logs-split-container {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+.log-panel-box {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.log-panel-header {
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.log-scroll-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  font-family: var(--font-title);
+  font-size: 0.8rem;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.log-line {
+  margin-bottom: 6px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+
+.log-line.error { color: var(--color-pink); }
+.log-line.warning { color: var(--color-orange); }
+.log-line.success { color: var(--color-green); }
+
+.log-timestamp {
+  color: var(--text-muted);
+  margin-right: 8px;
+  font-size: 0.75rem;
+}
+
+.log-empty-tip {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-align: center;
+  margin-top: 30px;
+}
+

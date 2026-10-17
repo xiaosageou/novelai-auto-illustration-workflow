@@ -3,7 +3,7 @@ import {
   Settings, Plus, BookOpen, User, Play, Square, Download, 
   RefreshCw, CheckCircle2, Sparkles, X, FileText, Clapperboard, Timer,
   Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil, Image as ImageIcon,
-  Flame, Heart, Users, MapPin, Camera, ChevronDown, ChevronUp, Check
+  Flame, Heart, Users, MapPin, Camera, ChevronDown, ChevronUp, Check, Terminal
 } from 'lucide-react';
 import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
 import { isNaiLogMessage } from './logClassification.js';
@@ -139,7 +139,10 @@ function App() {
   const [activeProject, setActiveProject] = useState("");
   const [projectDetails, setProjectDetails] = useState(null);
   const [selectedChapter, setSelectedChapter] = useState(null);
+  const [mainTab, setMainTab] = useState('workbench'); // 'books' | 'dna' | 'workbench' | 'logs'
   const [workspaceTab, setWorkspaceTab] = useState('scenes');
+  const [selectedDnaCharacter, setSelectedDnaCharacter] = useState('');
+  const [dnaSearchQuery, setDnaSearchQuery] = useState('');
   const [chapterContent, setChapterContent] = useState(null);
   const [textSelections, setTextSelections] = useState([]);
   const [isSubmittingSelections, setIsSubmittingSelections] = useState(false);
@@ -705,7 +708,7 @@ function App() {
     }
   };
 
-  const selectProject = async (name) => {
+  const selectProject = async (name, shouldSwitchTab = false) => {
     if (activeProject && selectedChapter && textSelections.length > 0) {
       const previousChapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
       saveReaderSelections(activeProject, previousChapterKey, textSelections);
@@ -718,6 +721,9 @@ function App() {
     addLog(`📂 载入项目: ${name}`);
     setSelectedChapter(null); // 切换项目时重置选中章节
     setTextSelections([]);
+    if (shouldSwitchTab) {
+      setMainTab('workbench');
+    }
     fetchProjectDetails(name, true);
   };
 
@@ -2052,181 +2058,324 @@ function App() {
     }
   };
 
-  return (
-    <div className={[
-      'app-container',
-      workspaceTab === 'reader' && projectDetails ? 'reader-mode' : '',
-      workspaceTab === 'comics' && projectDetails ? 'comic-mode' : '',
-      isProjectSidebarCollapsed ? 'project-sidebar-collapsed' : ''
-    ].filter(Boolean).join(' ')}>
-      {isProjectSidebarCollapsed && !projectDetails && (
-        <button
-          className="sidebar-toggle sidebar-toggle-floating"
-          type="button"
-          title="展开书籍项目栏"
-          aria-label="展开书籍项目栏"
-          onClick={() => setIsProjectSidebarCollapsed(false)}
-        >
-          <PanelLeftOpen size={17} />
+
+  const renderBooksTab = () => (
+    <div className="books-tab-view">
+      <div className="tab-view-header">
+        <div>
+          <h2><BookOpen size={22} /> 书籍项目库</h2>
+          <p className="tab-view-subtitle">共 {projects.length} 部小说项目，点击进入创作工作台</p>
+        </div>
+        <button className="btn-primary" onClick={() => setIsNewProjectOpen(true)}>
+          <Plus size={16} /> 导入新书籍
         </button>
-      )}
-      {/* 1. 左栏：项目概览与角色 DNA */}
-      <div className="app-column project-sidebar">
-        <div className="column-header">
-          <h2><BookOpen size={18} /> 书籍项目</h2>
-          <div className="sidebar-header-actions">
-            <button
-              className="sidebar-toggle"
-              type="button"
-              title="收起书籍项目栏"
-              aria-label="收起书籍项目栏"
-              onClick={() => setIsProjectSidebarCollapsed(true)}
-            >
-              <PanelLeftClose size={16} />
-            </button>
-            <button className="btn-secondary" style={{ padding: '6px' }} onClick={() => setIsNewProjectOpen(true)}>
-              <Plus size={16} />
-            </button>
+      </div>
+
+      <div className="books-grid">
+        <div className="book-card-item create-card glass-panel" onClick={() => setIsNewProjectOpen(true)}>
+          <div className="create-card-content">
+            <div className="create-icon-wrapper">
+              <Plus size={26} />
+            </div>
+            <div style={{ fontWeight: 600, fontSize: '1rem', marginTop: '12px' }}>导入新小说</div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>支持 TXT 格式全本章节解析</div>
           </div>
         </div>
-        
-        <div className="column-body" style={{ flex: '0 0 220px', marginBottom: '20px' }}>
-          <div className="glass-panel" style={{ height: '100%', overflowY: 'auto', padding: '8px' }}>
-            {projects.map(proj => (
-              <div 
-                key={proj.name}
-                className={`project-card glass-panel ${activeProject === proj.name ? 'active' : ''}`}
-                onClick={() => selectProject(proj.name)}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                  <div style={{ fontWeight: '500', fontSize: '0.95rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proj.name}</div>
+
+        {projects.map(proj => {
+          const isActive = activeProject === proj.name;
+          return (
+            <div
+              key={proj.name}
+              className={`book-card-item glass-panel ${isActive ? 'active' : ''}`}
+              onClick={() => selectProject(proj.name, true)}
+            >
+              <div className="book-card-top">
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px' }}>
+                  <div className="book-title" title={proj.name}>{proj.name}</div>
                   <button
-                    className="btn-secondary"
+                    className="btn-secondary book-delete-btn"
                     title="删除项目"
-                    onClick={(event) => requestDeleteProject(proj, event)}
-                    style={{ padding: '3px', flexShrink: 0, borderColor: 'rgba(239,68,68,0.35)', color: 'var(--color-pink)' }}
+                    onClick={(e) => requestDeleteProject(proj, e)}
                   >
-                    <X size={12} />
+                    <Trash2 size={13} />
                   </button>
                 </div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                  创建时间: {new Date(proj.createdAt).toLocaleDateString()}
+
+                <div className="book-meta">
+                  <span>📅 创建于 {new Date(proj.createdAt).toLocaleDateString()}</span>
+                  {isActive && projectDetails && (
+                    <span className="book-badge chapters-count">
+                      {projectDetails.chapters?.length || 0} 章节
+                    </span>
+                  )}
                 </div>
               </div>
-            ))}
+
+              {isActive && (
+                <div className="book-card-middle">
+                  <div className="book-progress-info">
+                    <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>处理进度</span>
+                    <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--color-blue)' }}>
+                      {progressInfo.completed} / {progressInfo.total} 章
+                    </span>
+                  </div>
+                  <div className="book-progress-bar">
+                    <div
+                      className="book-progress-fill"
+                      style={{
+                        width: `${progressInfo.total > 0 ? (progressInfo.completed / progressInfo.total) * 100 : 0}%`
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="book-card-bottom" onClick={(e) => e.stopPropagation()}>
+                <button
+                  className="btn-primary"
+                  style={{ flex: 1, padding: '7px 12px', fontSize: '0.8rem', justifyContent: 'center' }}
+                  onClick={() => selectProject(proj.name, true)}
+                >
+                  <Clapperboard size={14} /> 进入工作台
+                </button>
+                <button
+                  className="btn-secondary"
+                  style={{ padding: '7px 12px', fontSize: '0.8rem' }}
+                  onClick={async () => {
+                    await selectProject(proj.name, false);
+                    setMainTab('dna');
+                  }}
+                  title="查看角色 DNA"
+                >
+                  <User size={14} /> DNA
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+
+  const renderDnaTab = () => {
+    if (!activeProject) {
+      return (
+        <div className="empty-state-container">
+          <BookOpen size={48} style={{ opacity: 0.3, marginBottom: '12px' }} />
+          <h3>请先在「书籍项目」中选择一部小说</h3>
+          <p>选择小说后即可查看并提取该书的人物 DNA 词典与同人脸模</p>
+          <button className="btn-primary" style={{ marginTop: '16px' }} onClick={() => setMainTab('books')}>
+            去选择书籍
+          </button>
+        </div>
+      );
+    }
+
+    const charEntries = Object.entries(characters);
+    const activeDnaChar = characters[selectedDnaCharacter] ? selectedDnaCharacter : (charEntries[0]?.[0] || "");
+    const charData = characters[activeDnaChar] || null;
+
+    const filteredEntries = charEntries.filter(([name, data]) => {
+      if (!dnaSearchQuery) return true;
+      const q = dnaSearchQuery.toLowerCase();
+      return name.toLowerCase().includes(q)
+        || (data.aliases || []).some(a => a.toLowerCase().includes(q))
+        || (data.proxy_character?.danbooru_tag || '').toLowerCase().includes(q)
+        || (data.proxy_character?.character_name_cn || '').toLowerCase().includes(q);
+    });
+
+    return (
+      <div className="dna-tab-view">
+        {/* 左栏：角色列表导航 */}
+        <div className="dna-sidebar-panel glass-panel">
+          <div className="dna-sidebar-header">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <User size={16} /> 角色列表 ({charEntries.length})
+              </div>
+              <button
+                className="btn-secondary"
+                style={{ padding: '4px 8px', fontSize: '0.72rem' }}
+                onClick={startExtractCharacters}
+                title="智能提取/重建当前章节组的角色 DNA"
+              >
+                <RefreshCw size={12} /> 重建本组
+              </button>
+            </div>
+            <input
+              type="text"
+              placeholder="搜索角色名/别名/脸模..."
+              value={dnaSearchQuery}
+              onChange={(e) => setDnaSearchQuery(e.target.value)}
+              className="dna-search-input"
+            />
+          </div>
+
+          <div className="dna-char-list">
+            {charEntries.length === 0 ? (
+              <div style={{ padding: '24px 12px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                暂未提取角色 DNA<br />点击右上角「重建本组」提取
+              </div>
+            ) : filteredEntries.length === 0 ? (
+              <div style={{ padding: '24px 12px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                未找到匹配的角色
+              </div>
+            ) : (
+              filteredEntries.map(([name, data]) => {
+                const isSelected = activeDnaChar === name;
+                return (
+                  <div
+                    key={name}
+                    className={`dna-char-item ${isSelected ? 'active' : ''}`}
+                    onClick={() => setSelectedDnaCharacter(name)}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ fontWeight: 600, fontSize: '0.88rem', color: isSelected ? 'white' : 'var(--text-primary)' }}>
+                        {name}
+                      </span>
+                      {data.gender && (
+                        <span className="tag-badge scene" style={{ fontSize: '0.66rem', padding: '1px 5px' }}>
+                          {data.gender}
+                        </span>
+                      )}
+                    </div>
+                    {data.proxy_character?.danbooru_tag && (
+                      <div style={{ fontSize: '0.7rem', color: '#f472b6', marginTop: '3px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <span>🎭 {data.proxy_character.danbooru_tag}</span>
+                        {data.proxy_character.character_name_cn ? `(${data.proxy_character.character_name_cn})` : ''}
+                      </div>
+                    )}
+                    {(data.aliases?.length > 0) && (
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        别名: {data.aliases.join(' / ')}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
 
-        <div className="column-header">
-          <h2><User size={18} /> 角色 DNA 大辞典</h2>
-          {activeProject && (
-            <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: '0.75rem' }} onClick={startExtractCharacters}>
-              <RefreshCw size={12} style={{ marginRight: '4px' }} /> 重建本组
-            </button>
-          )}
-        </div>
-
-        <div className="column-body">
-          <div className="glass-panel" style={{ height: '100%', overflowY: 'auto', padding: '12px' }}>
-            {Object.keys(characters).length === 0 ? (
-              <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', marginTop: '40px' }}>
-                暂无提取的角色资料，点击上方开始智能分析提取 DNA 特征
-              </div>
-            ) : (
-              Object.entries(characters).map(([name, data]) => (
-                <div key={name} style={{ marginBottom: '14px', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '10px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                    <div style={{ fontWeight: '500', fontSize: '0.9rem', color: 'var(--color-pink)' }}>{name}</div>
-                    {editingCharacterName === name ? (
-                      <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-                        <button
-                          className="btn-secondary"
-                          type="button"
-                          onClick={saveEditingCharacterTags}
-                          disabled={savingCharacterTags}
-                          style={{ padding: '3px 8px', fontSize: '0.75rem' }}
-                        >
-                          {savingCharacterTags ? '保存中' : '保存'}
-                        </button>
-                        <button
-                          className="btn-secondary"
-                          type="button"
-                          onClick={cancelEditingCharacterTags}
-                          disabled={savingCharacterTags}
-                          style={{ padding: '3px 8px', fontSize: '0.75rem' }}
-                        >
-                          取消
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        className="btn-secondary"
-                        type="button"
-                        onClick={() => startEditingCharacterTags(name)}
-                        style={{ padding: '3px 8px', fontSize: '0.75rem', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '4px' }}
-                      >
-                        <Pencil size={11} /> 编辑结构化
-                      </button>
-                    )}
+        {/* 右栏：角色详情展示与深度编辑器 */}
+        <div className="dna-detail-viewport glass-panel">
+          {charData ? (
+            <div style={{ padding: '20px' }}>
+              {/* 顶部标题栏与编辑按钮 */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '14px', marginBottom: '16px' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <h2 style={{ fontSize: '1.4rem', color: 'var(--color-pink)' }}>{activeDnaChar}</h2>
+                    {charData.gender && <span className="tag-badge scene">{charData.gender}</span>}
+                    {charData.role_type && <span className="tag-badge dna">{charData.role_type}</span>}
                   </div>
-                  {(data.aliases?.length > 0 || data.confidence || data.source_chapters?.length > 0) && (
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px' }}>
-                      {data.aliases?.length > 0 ? `别名: ${data.aliases.join(' / ')}` : ''}
-                      {data.confidence ? `${data.aliases?.length > 0 ? ' · ' : ''}置信度: ${Number(data.confidence).toFixed(2)}` : ''}
-                      {data.source_chapters?.length > 0 ? ` · 来源: ${data.source_chapters.slice(0, 3).join(' / ')}${data.source_chapters.length > 3 ? ' ...' : ''}` : ''}
+                  {(charData.aliases?.length > 0 || charData.confidence || charData.source_chapters?.length > 0) && (
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '6px' }}>
+                      {charData.aliases?.length > 0 ? `别名: ${charData.aliases.join(' / ')}` : ''}
+                      {charData.confidence ? ` · 置信度: ${Number(charData.confidence).toFixed(2)}` : ''}
+                      {charData.source_chapters?.length > 0 ? ` · 来源: ${charData.source_chapters.join(' / ')}` : ''}
                     </div>
                   )}
-                  {editingCharacterName === name ? renderFeatureEditor() : renderDnaFeatures(data.features)}
-                  {editingCharacterName !== name && data.proxy_character?.danbooru_tag && (
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {editingCharacterName === activeDnaChar ? (
+                    <>
+                      <button className="btn-primary" onClick={saveEditingCharacterTags} disabled={savingCharacterTags} style={{ padding: '6px 14px', fontSize: '0.8rem' }}>
+                        {savingCharacterTags ? '保存中...' : '保存修改'}
+                      </button>
+                      <button className="btn-secondary" onClick={cancelEditingCharacterTags} disabled={savingCharacterTags} style={{ padding: '6px 14px', fontSize: '0.8rem' }}>
+                        取消
+                      </button>
+                    </>
+                  ) : (
+                    <button className="btn-secondary" onClick={() => startEditingCharacterTags(activeDnaChar)} style={{ padding: '6px 14px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Pencil size={13} /> 编辑人设与脸模
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* 编辑态 vs 非编辑态 */}
+              {editingCharacterName === activeDnaChar ? (
+                renderFeatureEditor()
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  {/* 同人脸模大卡片 */}
+                  {charData.proxy_character?.danbooru_tag ? (
                     <div style={{
-                      marginTop: '8px',
-                      padding: '6px 8px',
-                      borderRadius: '6px',
+                      padding: '14px 16px',
+                      borderRadius: '10px',
                       background: 'rgba(236, 72, 153, 0.08)',
-                      border: '1px solid rgba(236, 72, 153, 0.25)',
+                      border: '1px solid rgba(236, 72, 153, 0.3)',
                       display: 'flex',
                       flexDirection: 'column',
-                      gap: '4px'
+                      gap: '8px'
                     }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '4px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem', color: '#f472b6', fontWeight: 600 }}>
-                          <span>🎭 同人脸模:</span>
-                          <span style={{ fontFamily: 'monospace', background: 'rgba(236, 72, 153, 0.2)', padding: '1px 5px', borderRadius: '4px' }}>
-                            {data.proxy_character.danbooru_tag}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.92rem', color: '#f472b6', fontWeight: 600 }}>
+                          <span>🎭 同人动漫脸模代理</span>
+                          <span style={{ fontFamily: 'monospace', background: 'rgba(236, 72, 153, 0.2)', padding: '2px 8px', borderRadius: '5px' }}>
+                            {charData.proxy_character.danbooru_tag}
                           </span>
                         </div>
-                        {(data.proxy_character.character_name_cn || data.proxy_character.series) && (
-                          <span style={{ fontSize: '0.70rem', color: 'var(--text-secondary)' }}>
-                            {data.proxy_character.character_name_cn}
-                            {data.proxy_character.series ? ` (${data.proxy_character.series})` : ''}
+                        {(charData.proxy_character.character_name_cn || charData.proxy_character.series) && (
+                          <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                            {charData.proxy_character.character_name_cn}
+                            {charData.proxy_character.series ? ` · 《${charData.proxy_character.series}》` : ''}
                           </span>
                         )}
                       </div>
-                      {data.proxy_character.reason && (
-                        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>
-                          理由: {data.proxy_character.reason}
+                      {charData.proxy_character.reason && (
+                        <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                          <span style={{ color: 'var(--text-muted)' }}>匹配理由：</span>{charData.proxy_character.reason}
                         </div>
                       )}
-                      {Array.isArray(data.proxy_character.suppress_tags) && data.proxy_character.suppress_tags.length > 0 && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.66rem', color: '#fda4af', flexWrap: 'wrap', marginTop: '2px' }}>
-                          <span>🚫 服饰压制:</span>
-                          {data.proxy_character.suppress_tags.map(st => (
-                            <span key={st} style={{ background: 'rgba(244, 63, 94, 0.15)', padding: '0px 4px', borderRadius: '3px', fontFamily: 'monospace' }}>
+                      {Array.isArray(charData.proxy_character.suppress_tags) && charData.proxy_character.suppress_tags.length > 0 && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', flexWrap: 'wrap', marginTop: '4px' }}>
+                          <span style={{ color: '#fda4af' }}>🚫 原著服饰压制词：</span>
+                          {charData.proxy_character.suppress_tags.map(st => (
+                            <span key={st} style={{ background: 'rgba(244, 63, 94, 0.15)', color: '#fda4af', padding: '1px 6px', borderRadius: '4px', fontFamily: 'monospace' }}>
                               {st}
                             </span>
                           ))}
                         </div>
                       )}
                     </div>
+                  ) : (
+                    <div style={{
+                      padding: '12px 16px',
+                      borderRadius: '8px',
+                      background: 'rgba(255, 255, 255, 0.02)',
+                      border: '1px dashed rgba(255, 255, 255, 0.1)',
+                      fontSize: '0.78rem',
+                      color: 'var(--text-muted)'
+                    }}>
+                      未绑定同人脸模代理。点击右上角「编辑人设与脸模」可指定 Danbooru 动漫角色作为骨相锚点。
+                    </div>
                   )}
-                  {(characterDnaVersions[name] || []).length > 0 && (
-                    <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--color-pink)', fontWeight: 600, letterSpacing: '0.03em', marginBottom: '6px' }}>章节外观版本</div>
-                      {characterDnaVersions[name].map(version => {
-                        const isEditing = editingAppearanceVersion?.characterName === name && editingAppearanceVersion?.id === version.id;
+
+                  {/* 结构化五官体态标签 */}
+                  <div style={{ marginTop: '8px' }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '10px' }}>
+                      结构化特征短语 (Visual Feature Tags)
+                    </div>
+                    {renderDnaFeatures(charData.features)}
+                  </div>
+
+                  {/* 章节外观版本流 */}
+                  {(characterDnaVersions[activeDnaChar] || []).length > 0 && (
+                    <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <div style={{ fontSize: '0.82rem', color: 'var(--color-pink)', fontWeight: 600, marginBottom: '8px' }}>
+                        章节外观演进版本 (Appearance Versions)
+                      </div>
+                      {characterDnaVersions[activeDnaChar].map(version => {
+                        const isEditing = editingAppearanceVersion?.characterName === activeDnaChar && editingAppearanceVersion?.id === version.id;
                         const range = `第 ${Number(version.startChapterIndex) + 1} 章${version.endChapterIndex == null ? '起' : `–${Number(version.endChapterIndex) + 1} 章`}`;
                         return (
-                          <div key={version.id} style={{ padding: '7px 8px', marginTop: '5px', borderRadius: '6px', background: 'rgba(255,255,255,0.035)' }}>
+                          <div key={version.id} style={{ padding: '8px 10px', marginTop: '6px', borderRadius: '6px', background: 'rgba(255,255,255,0.035)' }}>
                             {isEditing ? (
                               <>
                                 <div style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
@@ -2239,14 +2388,14 @@ function App() {
                             ) : (
                               <>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '6px', alignItems: 'start' }}>
-                                  <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>{range}</span>
+                                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{range}</span>
                                   <span style={{ display: 'flex', gap: '4px' }}>
-                                    <button className="btn-secondary" type="button" onClick={() => setEditingAppearanceVersion({ characterName: name, id: version.id, startChapterIndex: version.startChapterIndex, tags: version.tags || '' })} style={{ padding: '2px 5px' }} title="编辑外观版本"><Pencil size={10} /></button>
-                                    <button className="btn-secondary" type="button" onClick={() => deleteAppearanceVersion(name, version.id)} disabled={characterDnaVersions[name].length <= 1} style={{ padding: '2px 5px', color: 'var(--color-pink)' }} title="删除外观版本"><Trash2 size={10} /></button>
+                                    <button className="btn-secondary" type="button" onClick={() => setEditingAppearanceVersion({ characterName: activeDnaChar, id: version.id, startChapterIndex: version.startChapterIndex, tags: version.tags || '' })} style={{ padding: '2px 5px' }} title="编辑外观版本"><Pencil size={10} /></button>
+                                    <button className="btn-secondary" type="button" onClick={() => deleteAppearanceVersion(activeDnaChar, version.id)} disabled={characterDnaVersions[activeDnaChar].length <= 1} style={{ padding: '2px 5px', color: 'var(--color-pink)' }} title="删除外观版本"><Trash2 size={10} /></button>
                                   </span>
                                 </div>
-                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px', wordBreak: 'break-word' }}>{version.tags}</div>
-                                {version.evidence?.[0]?.quote && <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', marginTop: '4px' }}>证据：{version.evidence[0].quote}</div>}
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '3px', wordBreak: 'break-word' }}>{version.tags}</div>
+                                {version.evidence?.[0]?.quote && <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '4px' }}>证据：{version.evidence[0].quote}</div>}
                               </>
                             )}
                           </div>
@@ -2255,28 +2404,40 @@ function App() {
                     </div>
                   )}
                 </div>
-              ))
-            )}
-          </div>
+              )}
+            </div>
+          ) : (
+            <div style={{ display: 'grid', placeContent: 'center', height: '100%', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+              请在左侧列表中选择一个角色以查看和编辑设定
+            </div>
+          )}
         </div>
       </div>
+    );
+  };
 
-      {/* 2. 中栏：章节选择与场景定格卡片流 */}
-      <div className="app-column workbench">
+
+  const renderWorkbenchTab = () => {
+    if (!projectDetails) {
+      return (
+        <div className="empty-state-container">
+          <Clapperboard size={48} style={{ opacity: 0.3, marginBottom: '12px' }} />
+          <h3>请先选择一部小说项目</h3>
+          <p>选择小说后即可进入场景生图、分镜细化与条漫制作</p>
+          <button className="btn-primary" style={{ marginTop: '16px' }} onClick={() => setMainTab('books')}>
+            去选择小说
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="workbench-tab-view">
         {projectDetails ? (
           <>
             <div className="column-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <button
-                  className="sidebar-toggle"
-                  type="button"
-                  title={isProjectSidebarCollapsed ? '展开书籍项目栏' : '收起书籍项目栏'}
-                  aria-label={isProjectSidebarCollapsed ? '展开书籍项目栏' : '收起书籍项目栏'}
-                  aria-expanded={!isProjectSidebarCollapsed}
-                  onClick={() => setIsProjectSidebarCollapsed(collapsed => !collapsed)}
-                >
-                  {isProjectSidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
-                </button>
+                
                 <span style={{ fontSize: '1.1rem', fontWeight: '600' }}>{activeProject}</span>
                 <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                   ({progressInfo.completed} / {progressInfo.total} 章节已处理)
@@ -3572,12 +3733,19 @@ function App() {
           </div>
         )}
       </div>
+    );
+  };
 
-      {/* 3. 右栏：冷却管理、实时进度与日志 */}
-      <div className="app-column status-sidebar">
-        {/* 实时流水线日志 */}
-        <div className="column-header">
-          <h2><Sparkles size={18} /> 流水线实时日志</h2>
+
+  const renderLogsTab = () => (
+    <div className="logs-tab-view">
+      <div className="tab-view-header">
+        <div>
+          <h2><Terminal size={22} /> 流水线与生图运行日志</h2>
+          <p className="tab-view-subtitle">实时监控后台大模型提取状态、NovelAI 生图请求与频控降级</p>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <div
             className={`cooldown-chip ${cooldown > 0 ? 'active' : ''} ${cooldownState.mode === 'degraded' ? 'degraded' : ''}`}
             title={cooldownState.mode === 'degraded'
@@ -3587,41 +3755,187 @@ function App() {
             <Timer size={14} />
             <span>{cooldown > 0 ? `${Math.ceil(cooldown)}s` : `${cooldownState.cooldownSeconds || 15}s`}</span>
           </div>
-        </div>
-        <div className="column-body" style={{ display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', minHeight: 0 }}>
-          {/* 上半部分：常规/LLM日志 */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <div style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <span>⚙️ 流水线与 LLM 日志</span>
-            </div>
-            <div className="glass-panel" style={{ flex: 1, overflowY: 'auto', padding: '10px', fontFamily: 'var(--font-title)', fontSize: '0.8rem' }}>
-              {logs.map((log, idx) => (
-                <div key={idx} style={{ marginBottom: '6px', lineHeight: '1.4', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: log.type === 'error' ? 'var(--color-pink)' : log.type === 'warning' ? 'var(--color-orange)' : log.type === 'success' ? 'var(--color-green)' : 'var(--text-secondary)' }}>
-                  <span style={{ color: 'var(--text-muted)', marginRight: '6px' }}>[{log.time}]</span>
-                  {log.text}
-                </div>
-              ))}
-              <div ref={logsEndRef} />
-            </div>
-          </div>
 
-          {/* 下半部分：NAI日志 */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <div style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <span>🎨 NovelAI 生图日志</span>
-            </div>
-            <div className="glass-panel" style={{ flex: 1, overflowY: 'auto', padding: '10px', fontFamily: 'var(--font-title)', fontSize: '0.8rem' }}>
-              {naiLogs.map((log, idx) => (
-                <div key={idx} style={{ marginBottom: '6px', lineHeight: '1.4', color: log.type === 'error' ? 'var(--color-pink)' : log.type === 'warning' ? 'var(--color-orange)' : log.type === 'success' ? 'var(--color-green)' : 'var(--text-secondary)' }}>
-                  <span style={{ color: 'var(--text-muted)', marginRight: '6px' }}>[{log.time}]</span>
-                  {log.text}
+          <button
+            className="btn-secondary"
+            onClick={() => { setLogs([]); setNaiLogs([]); }}
+            style={{ padding: '6px 12px', fontSize: '0.8rem' }}
+          >
+            <Trash2 size={13} /> 清空日志
+          </button>
+        </div>
+      </div>
+
+      <div className="logs-split-container">
+        {/* 左半部分：常规/LLM日志 */}
+        <div className="log-panel-box glass-panel">
+          <div className="log-panel-header">
+            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>⚙️ 流水线与 LLM 提取日志</span>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{logs.length} 条记录</span>
+          </div>
+          <div className="log-scroll-area">
+            {logs.length === 0 ? (
+              <div className="log-empty-tip">暂无流水线日志</div>
+            ) : (
+              logs.map((log, idx) => (
+                <div key={idx} className={`log-line ${log.type || ''}`}>
+                  <span className="log-timestamp">[{log.time}]</span>
+                  <span>{log.text}</span>
                 </div>
-              ))}
-              <div ref={naiLogsEndRef} />
-            </div>
+              ))
+            )}
+            <div ref={logsEndRef} />
+          </div>
+        </div>
+
+        {/* 右半部分：NovelAI 生图日志 */}
+        <div className="log-panel-box glass-panel">
+          <div className="log-panel-header">
+            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>🎨 NovelAI 生图控制台</span>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{naiLogs.length} 条记录</span>
+          </div>
+          <div className="log-scroll-area">
+            {naiLogs.length === 0 ? (
+              <div className="log-empty-tip">暂无 NovelAI 生图日志</div>
+            ) : (
+              naiLogs.map((log, idx) => (
+                <div key={idx} className={`log-line ${log.type || ''}`}>
+                  <span className="log-timestamp">[{log.time}]</span>
+                  <span>{log.text}</span>
+                </div>
+              ))
+            )}
+            <div ref={naiLogsEndRef} />
           </div>
         </div>
       </div>
+    </div>
+  );
+
+
+  return (
+    <div className="app-root">
+      {/* 顶部全局导航栏 */}
+      <header className="app-header">
+        <div className="app-header-left">
+          <div className="app-brand">
+            <Sparkles size={19} className="brand-icon" />
+            <span>NovelAI Illustrator</span>
+          </div>
+
+          <nav className="main-tab-bar" role="tablist">
+            <button 
+              type="button"
+              className={`main-tab-item ${mainTab === 'books' ? 'active' : ''}`}
+              onClick={() => setMainTab('books')}
+            >
+              <BookOpen size={15} />
+              <span>书籍项目</span>
+              <span className="tab-badge">{projects.length}</span>
+            </button>
+
+            <button 
+              type="button"
+              className={`main-tab-item ${mainTab === 'dna' ? 'active' : ''}`}
+              onClick={() => setMainTab('dna')}
+              disabled={!activeProject}
+              title={!activeProject ? '请先选择一本书籍' : ''}
+            >
+              <User size={15} />
+              <span>角色 DNA</span>
+              {activeProject && <span className="tab-badge dna">{Object.keys(characters).length}</span>}
+            </button>
+
+            <button 
+              type="button"
+              className={`main-tab-item ${mainTab === 'workbench' ? 'active' : ''}`}
+              onClick={() => setMainTab('workbench')}
+              disabled={!activeProject}
+              title={!activeProject ? '请先选择一本书籍' : ''}
+            >
+              <Clapperboard size={15} />
+              <span>工作台</span>
+              {activeProject && progressInfo.total > 0 && (
+                <span className="tab-badge progress">{progressInfo.completed}/{progressInfo.total}</span>
+              )}
+            </button>
+
+            <button 
+              type="button"
+              className={`main-tab-item ${mainTab === 'logs' ? 'active' : ''}`}
+              onClick={() => setMainTab('logs')}
+            >
+              <Terminal size={15} />
+              <span>实时日志</span>
+              {pipelineRunning && <span className="tab-pulse-dot" title="流水线运行中" />}
+            </button>
+          </nav>
+        </div>
+
+        <div className="app-header-right">
+          {activeProject && (
+            <div className="active-project-pill" onClick={() => setMainTab('books')} title="点击切换书籍">
+              <BookOpen size={13} />
+              <span className="pill-name">{activeProject}</span>
+            </div>
+          )}
+
+          {activeProject && (
+            <div className="header-pipeline-controls">
+              {pipelineRunning ? (
+                <button className="btn-secondary" style={{ color: 'var(--color-orange)', padding: '5px 12px', fontSize: '0.8rem' }} onClick={stopPipeline}>
+                  <Square size={14} /> 暂停
+                </button>
+              ) : (
+                <button className="btn-primary" style={{ padding: '5px 14px', fontSize: '0.8rem' }} onClick={startPipeline}>
+                  <Play size={14} /> 启动流水线
+                </button>
+              )}
+
+              {readyScenesCount > 0 && (
+                <button
+                  className="btn-secondary"
+                  onClick={() => startRenderReadyScenes()}
+                  style={{
+                    padding: '5px 12px',
+                    fontSize: '0.8rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    borderColor: 'rgba(168, 85, 247, 0.65)',
+                    color: '#c084fc'
+                  }}
+                  title="仅排队生成所有已就绪场景"
+                >
+                  <ImageIcon size={14} /> 仅生图 ({readyScenesCount})
+                </button>
+              )}
+
+              <div
+                className={`cooldown-chip ${cooldown > 0 ? 'active' : ''} ${cooldownState.mode === 'degraded' ? 'degraded' : ''}`}
+                title={cooldownState.mode === 'degraded'
+                  ? '429 降级模式：固定 35 秒，成功 5 次后恢复'
+                  : `基础间隔 ${cooldownState.baseCooldownSeconds || config.nai_cooldown_seconds || 15} 秒`}
+              >
+                <Timer size={13} />
+                <span>{cooldown > 0 ? `${Math.ceil(cooldown)}s` : `${cooldownState.cooldownSeconds || 15}s`}</span>
+              </div>
+            </div>
+          )}
+
+          <button className="btn-secondary" style={{ padding: '6px 9px' }} onClick={() => setIsConfigOpen(true)} title="全局设置">
+            <Settings size={15} />
+          </button>
+        </div>
+      </header>
+
+      {/* 主视口 */}
+      <main className="app-main-viewport">
+        {mainTab === 'books' && renderBooksTab()}
+        {mainTab === 'dna' && renderDnaTab()}
+        {mainTab === 'workbench' && renderWorkbenchTab()}
+        {mainTab === 'logs' && renderLogsTab()}
+      </main>
 
       {/* 角色 DNA 切片更新提示 */}
       {dnaUpdatePrompt && (
