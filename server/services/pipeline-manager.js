@@ -459,6 +459,7 @@ export class PipelineManager {
             aliases: char.aliases || [],
             gender: char.gender || "",
             role_type: char.role_type || "",
+            proxy_character: char.proxy_character || null,
             evidence: char.evidence || [],
             confidence: char.confidence || 0,
             height_class: char.height_class || "",
@@ -562,7 +563,8 @@ export class PipelineManager {
           负面提示词: effectiveDna.supersededNegative || "",
           结构化特征: effectiveDna.features,
           身高等级: effectiveDna.height_class || charData.height_class || "",
-          身体比例: effectiveDna.body_proportion || charData.body_proportion || ""
+          身体比例: effectiveDna.body_proportion || charData.body_proportion || "",
+          proxy_character: effectiveDna.proxy_character || charData.proxy_character || null
         });
       }
     }

@@ -181,6 +181,7 @@ function App() {
   const [quickUpdatingSceneKey, setQuickUpdatingSceneKey] = useState(null);
   const [editingCharacterName, setEditingCharacterName] = useState("");
   const [editingCharacterFeatures, setEditingCharacterFeatures] = useState(null);
+  const [editingProxyCharacter, setEditingProxyCharacter] = useState(null);
   const [savingCharacterTags, setSavingCharacterTags] = useState(false);
   const [editingAppearanceVersion, setEditingAppearanceVersion] = useState(null);
   const [savingAppearanceVersion, setSavingAppearanceVersion] = useState(false);
@@ -711,6 +712,7 @@ function App() {
     }
     setEditingCharacterName("");
     setEditingCharacterFeatures(null);
+    setEditingProxyCharacter(null);
     closeSceneEditor();
     setActiveProject(name);
     addLog(`📂 载入项目: ${name}`);
@@ -1245,6 +1247,27 @@ function App() {
       return acc;
     }, emptyCharacterFeatures())
   );
+
+  const emptyProxyCharacterState = () => ({
+    danbooru_tag: '',
+    character_name_cn: '',
+    series: '',
+    reason: '',
+    suppress_tags: ''
+  });
+
+  const proxyToEditorState = (proxy = null) => {
+    if (!proxy) return emptyProxyCharacterState();
+    return {
+      danbooru_tag: proxy.danbooru_tag || '',
+      character_name_cn: proxy.character_name_cn || '',
+      series: proxy.series || '',
+      reason: proxy.reason || '',
+      suppress_tags: Array.isArray(proxy.suppress_tags)
+        ? proxy.suppress_tags.join(', ')
+        : String(proxy.suppress_tags || '')
+    };
+  };
   const sceneEditorLabelStyle = {
     display: 'grid',
     gap: '6px',
@@ -1672,6 +1695,132 @@ function App() {
         <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
           每个字段输入逗号分隔的结构化视觉短语。保存后会自动重建基础外貌短语。
         </div>
+
+        {/* 同人动漫脸模代理编辑器 */}
+        <div style={{
+          marginTop: '10px',
+          padding: '10px',
+          borderRadius: '8px',
+          background: 'rgba(236, 72, 153, 0.05)',
+          border: '1px solid rgba(236, 72, 153, 0.25)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.76rem', fontWeight: 600, color: '#f472b6' }}>
+              🎭 同人动漫脸模代理 (Proxy Character Anchor)
+            </span>
+            {editingProxyCharacter?.danbooru_tag && (
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: '2px 6px', fontSize: '0.68rem', color: '#fda4af' }}
+                onClick={() => setEditingProxyCharacter(emptyProxyCharacterState())}
+              >
+                清除脸模
+              </button>
+            )}
+          </div>
+          <div style={{ fontSize: '0.70rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+            绑定 Danbooru 知名动漫同人角色作为脸模骨相，生图时自动置于角色 prompt 前缀；原著服装自动置入反向提示词防止污染。
+          </div>
+          <label style={{ display: 'grid', gridTemplateColumns: '82px 1fr', gap: '8px', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Danbooru Tag</span>
+            <input
+              type="text"
+              value={editingProxyCharacter?.danbooru_tag || ''}
+              onChange={(e) => setEditingProxyCharacter(prev => ({ ...(prev || emptyProxyCharacterState()), danbooru_tag: e.target.value }))}
+              placeholder="如 kasugano_sora, asuka_langley_soryu"
+              style={{
+                width: '100%',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(236, 72, 153, 0.35)',
+                borderRadius: '6px',
+                padding: '6px 8px',
+                color: 'white',
+                fontFamily: 'monospace',
+                fontSize: '0.78rem'
+              }}
+            />
+          </label>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+            <label style={{ display: 'grid', gridTemplateColumns: '82px 1fr', gap: '8px', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>中文名</span>
+              <input
+                type="text"
+                value={editingProxyCharacter?.character_name_cn || ''}
+                onChange={(e) => setEditingProxyCharacter(prev => ({ ...(prev || emptyProxyCharacterState()), character_name_cn: e.target.value }))}
+                placeholder="如 春日野穹"
+                style={{
+                  width: '100%',
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  borderRadius: '6px',
+                  padding: '6px 8px',
+                  color: 'white',
+                  fontSize: '0.78rem'
+                }}
+              />
+            </label>
+            <label style={{ display: 'grid', gridTemplateColumns: '60px 1fr', gap: '8px', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>出处作品</span>
+              <input
+                type="text"
+                value={editingProxyCharacter?.series || ''}
+                onChange={(e) => setEditingProxyCharacter(prev => ({ ...(prev || emptyProxyCharacterState()), series: e.target.value }))}
+                placeholder="如 缘之空 / EVA"
+                style={{
+                  width: '100%',
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  borderRadius: '6px',
+                  padding: '6px 8px',
+                  color: 'white',
+                  fontSize: '0.78rem'
+                }}
+              />
+            </label>
+          </div>
+          <label style={{ display: 'grid', gridTemplateColumns: '82px 1fr', gap: '8px', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>压制原著服饰</span>
+            <input
+              type="text"
+              value={editingProxyCharacter?.suppress_tags || ''}
+              onChange={(e) => setEditingProxyCharacter(prev => ({ ...(prev || emptyProxyCharacterState()), suppress_tags: e.target.value }))}
+              placeholder="逗号分隔，如 black_dress, hair_ornament, plugsuit"
+              style={{
+                width: '100%',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(244, 63, 94, 0.35)',
+                borderRadius: '6px',
+                padding: '6px 8px',
+                color: 'white',
+                fontFamily: 'monospace',
+                fontSize: '0.78rem'
+              }}
+            />
+          </label>
+          <label style={{ display: 'grid', gridTemplateColumns: '82px 1fr', gap: '8px', alignItems: 'start' }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', paddingTop: '6px' }}>匹配理由</span>
+            <textarea
+              rows={2}
+              value={editingProxyCharacter?.reason || ''}
+              onChange={(e) => setEditingProxyCharacter(prev => ({ ...(prev || emptyProxyCharacterState()), reason: e.target.value }))}
+              placeholder="说明匹配该动漫角色的理由（如五官清秀、银白长发、病娇柔弱神态等）"
+              style={{
+                width: '100%',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(255,255,255,0.12)',
+                borderRadius: '6px',
+                padding: '6px 8px',
+                color: 'white',
+                fontSize: '0.78rem',
+                resize: 'vertical'
+              }}
+            />
+          </label>
+        </div>
       </div>
     );
   };
@@ -1821,28 +1970,44 @@ function App() {
     setEditingCharacterName(name);
     const character = characters[name] || {};
     setEditingCharacterFeatures(featuresToEditorState(character.features || {}));
+    setEditingProxyCharacter(proxyToEditorState(character.proxy_character));
   };
 
   const cancelEditingCharacterTags = () => {
     setEditingCharacterName("");
     setEditingCharacterFeatures(null);
+    setEditingProxyCharacter(null);
   };
 
   const saveEditingCharacterTags = async () => {
     if (!activeProject || !editingCharacterName) return;
     setSavingCharacterTags(true);
     try {
+      const proxyPayload = editingProxyCharacter && editingProxyCharacter.danbooru_tag?.trim() ? {
+        danbooru_tag: editingProxyCharacter.danbooru_tag.trim().toLowerCase().replace(/\s+/g, '_'),
+        character_name_cn: editingProxyCharacter.character_name_cn?.trim() || '',
+        series: editingProxyCharacter.series?.trim() || '',
+        reason: editingProxyCharacter.reason?.trim() || '',
+        suppress_tags: String(editingProxyCharacter.suppress_tags || '')
+          .split(/[,，]/)
+          .map(t => t.trim().toLowerCase().replace(/\s+/g, '_'))
+          .filter(Boolean)
+      } : null;
+
       const res = await fetch(
         `${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/characters/${encodeURIComponent(editingCharacterName)}/features`,
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ features: editorStateToFeatures(editingCharacterFeatures) })
+          body: JSON.stringify({
+            features: editorStateToFeatures(editingCharacterFeatures),
+            proxy_character: proxyPayload
+          })
         }
       );
       const data = await res.json();
       if (!data.success) throw new Error(data.error || '保存失败');
-      addLog(`🧬 角色「${editingCharacterName}」结构化 DNA 已更新。`);
+      addLog(`🧬 角色「${editingCharacterName}」结构化 DNA 及同人脸模已更新。`);
       cancelEditingCharacterTags();
       await fetchProjectDetails(activeProject);
     } catch (error) {
@@ -2012,6 +2177,48 @@ function App() {
                     </div>
                   )}
                   {editingCharacterName === name ? renderFeatureEditor() : renderDnaFeatures(data.features)}
+                  {editingCharacterName !== name && data.proxy_character?.danbooru_tag && (
+                    <div style={{
+                      marginTop: '8px',
+                      padding: '6px 8px',
+                      borderRadius: '6px',
+                      background: 'rgba(236, 72, 153, 0.08)',
+                      border: '1px solid rgba(236, 72, 153, 0.25)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '4px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem', color: '#f472b6', fontWeight: 600 }}>
+                          <span>🎭 同人脸模:</span>
+                          <span style={{ fontFamily: 'monospace', background: 'rgba(236, 72, 153, 0.2)', padding: '1px 5px', borderRadius: '4px' }}>
+                            {data.proxy_character.danbooru_tag}
+                          </span>
+                        </div>
+                        {(data.proxy_character.character_name_cn || data.proxy_character.series) && (
+                          <span style={{ fontSize: '0.70rem', color: 'var(--text-secondary)' }}>
+                            {data.proxy_character.character_name_cn}
+                            {data.proxy_character.series ? ` (${data.proxy_character.series})` : ''}
+                          </span>
+                        )}
+                      </div>
+                      {data.proxy_character.reason && (
+                        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>
+                          理由: {data.proxy_character.reason}
+                        </div>
+                      )}
+                      {Array.isArray(data.proxy_character.suppress_tags) && data.proxy_character.suppress_tags.length > 0 && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.66rem', color: '#fda4af', flexWrap: 'wrap', marginTop: '2px' }}>
+                          <span>🚫 服饰压制:</span>
+                          {data.proxy_character.suppress_tags.map(st => (
+                            <span key={st} style={{ background: 'rgba(244, 63, 94, 0.15)', padding: '0px 4px', borderRadius: '3px', fontFamily: 'monospace' }}>
+                              {st}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {(characterDnaVersions[name] || []).length > 0 && (
                     <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
                       <div style={{ fontSize: '0.72rem', color: 'var(--color-pink)', fontWeight: 600, letterSpacing: '0.03em', marginBottom: '6px' }}>章节外观版本</div>
@@ -2973,6 +3180,13 @@ function App() {
                                               </span>
                                             )}
                                           </div>
+                                          {characters[char.name]?.proxy_character?.danbooru_tag && (
+                                            <div style={{ color: '#f472b6', fontSize: '0.72rem', lineHeight: 1.3 }}>
+                                              <span style={{ fontWeight: 600 }}>🎭 脸模：</span>
+                                              <span style={{ fontFamily: 'monospace' }}>{characters[char.name].proxy_character.danbooru_tag}</span>
+                                              {characters[char.name].proxy_character.character_name_cn ? ` (${characters[char.name].proxy_character.character_name_cn})` : ''}
+                                            </div>
+                                          )}
                                           {char.clothing && (
                                             <div style={{ color: '#fed7aa', lineHeight: 1.4 }}>
                                               <span style={{ color: '#fb923c', fontWeight: 600 }}>👗 衣着：</span>{char.clothing}

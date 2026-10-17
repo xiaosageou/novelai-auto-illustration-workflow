@@ -341,7 +341,8 @@ export class ProjectProgress {
     source_chapters = [],
     source_text_summary = "",
     height_class = "",
-    body_proportion = ""
+    body_proportion = "",
+    proxy_character = null
   } = {}) {
     if (!this.data) return;
     
@@ -355,6 +356,7 @@ export class ProjectProgress {
         aliases: uniqueClean(aliases),
         gender: String(gender || '').trim(),
         role_type: String(role_type || '').trim(),
+        proxy_character: proxy_character || null,
         evidence: Array.isArray(evidence) ? evidence.slice(0, 20) : [],
         confidence: normalizeConfidence(confidence),
         height_class: String(height_class || '').trim(),
@@ -371,6 +373,11 @@ export class ProjectProgress {
       char.aliases = uniqueClean([...(char.aliases || []), ...uniqueClean(aliases)]);
       char.gender = char.gender || String(gender || '').trim();
       char.role_type = char.role_type || String(role_type || '').trim();
+      if (proxy_character && (!char.proxy_character || !char.proxy_character.danbooru_tag)) {
+        char.proxy_character = proxy_character;
+      } else if (proxy_character) {
+        char.proxy_character = { ...char.proxy_character, ...proxy_character };
+      }
       char.evidence = [
         ...(Array.isArray(char.evidence) ? char.evidence : []),
         ...(Array.isArray(evidence) ? evidence : [])
@@ -403,6 +410,14 @@ export class ProjectProgress {
     char.tags = uniqueClean(
       DNA_FEATURE_KEYS.flatMap(key => Array.isArray(mergedFeatures[key]) ? mergedFeatures[key] : [])
     ).join(", ");
+    return true;
+  }
+
+  setCharacterDNAProxy(name, proxyCharacter = null) {
+    if (!this.data || !name) return false;
+    const char = this.data.global_characters?.[name];
+    if (!char) return false;
+    char.proxy_character = proxyCharacter;
     return true;
   }
 }

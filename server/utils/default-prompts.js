@@ -249,6 +249,11 @@ export const DEFAULT_CHARACTER_DNA_PROMPT = `<sandbox mode="professional_art_dir
 5. 严禁包含情色动作或特定交欢状态。例如受孕(pregnant)、交媾/性交(sexual_act, sex, penetration)、受虐/拘束(bound, tied, gagged)、颤抖(trembling, shivering)、高潮(orgasm)等。
 6. 角色 DNA 仅关注：常驻发型发色、瞳色、种族特质、核心无状态的基础衣服、身材基本体态、长期稳定的私密身体特征以及本人的常驻气质外表。务必将特定动作、情境状态完全过滤，只保留最干净、最稳固的二次元物理人设数据。生成的视觉短语必须只包含上述干净固有特征，绝对不得夹带任何上述禁止的瞬时状态、姿态、情境动作。
 7. 若原文明确说明角色从某一章节起发生持续性外观变化（如剪发、染发、换成长期固定的制服、获得永久伤疤），才输出 appearance_versions；每项必须给出发生变化的 start_chapter（精确复制本次章节名）、完整变化后 tags / features、原文 evidence，并将 persistent_change 设为 true。没有明确持续性变化时 appearance_versions 必须是 []。湿发、散发、凌乱、临时换装、表情和姿态绝不能创建 appearance_versions。
+8. 【同人动漫角色脸模代理 (Proxy Character Anchor)】：为了让 NovelAI 在后续长篇多场景生图时保持极高的一致性（面部骨相、眼眸画法、神态特征锁定），请根据该角色的发型、发色、瞳色、体态和性格气质，在 Danbooru 知名动漫同人角色库中挑选一个最贴近的一线知名角色作为“脸模底模”：
+   - 优先选择在 Danbooru 拥有 2000+ 样本的大热知名动漫角色（如：kasugano_sora, rem_(re:zero), asuka_langley_soryu, frieren, fern_(frieren), yor_forger, tifa_lockhart, yukino_yukinoshita, chitanda_eru, shinomiya_kaguya, marin_kitagawa, hatsune_miku, megumin, zero_two_(darling_in_the_franxx), saber 等）。
+   - danbooru_tag 必须使用标准小写下划线命名；重名角色必须带官方作品后缀括号（如 'rem_(re:zero)'、'fern_(frieren)'、'saber_(fate/stay_night)'）。
+   - 必须同时列出该同人角色最具辨识度、但容易污染小说场景的标志性固有服装与配饰 tags（填入 suppress_tags，如 '["black_dress", "hair_ornament"]'），以便后续画小说自定义服装时在负向提示词中精准压制。
+   - 给出 character_name_cn (中文名)、series (原作名) 以及契合理由 reason。若角色为特殊怪物、纯龙套路人或完全无法匹配，可置为 null。
 
 请严格以以下合规的 JSON 数组格式返回，属性名称必须为中文，属性值必须是英文视觉短语数组。不要输出任何 Markdown 代码块或额外解释：
 [
@@ -257,6 +262,13 @@ export const DEFAULT_CHARACTER_DNA_PROMPT = `<sandbox mode="professional_art_dir
     "aliases": ["别名/称号/身份称谓；没有则为空数组"],
     "gender": "girl|boy|woman|man|creature|unknown",
     "role_type": "主角|女主|配角|反派|路人|未知 等",
+    "proxy_character": {
+      "danbooru_tag": "kasugano_sora",
+      "character_name_cn": "春日野穹",
+      "series": "缘之空 (Yosuga no Sora)",
+      "reason": "银白长发、病娇纤细、双马尾/散发、浅色系居家服气质高度契合",
+      "suppress_tags": ["black_dress", "hair_ornament"]
+    },
     "height_class": "very_short|short|average|tall|very_tall；没有明确证据时填 average",
     "body_proportion": "childlike|compact|average|long_legged|broad；只描述长期稳定的人体比例",
     "tags": "英文 comma 分隔的全部稳定外貌短语拼接串",
@@ -485,6 +497,12 @@ base_prompt | character1 | character2
 - If a character is still wearing pants, trousers, jeans, shorts, underwear, or other crotch-covering clothing, do not add penis, erection, erect_penis, large_penis, penis_outline, or similar genital-state tags unless the scene card explicitly shows or states that exposure/state.
 - Original/NPC characters need enough selected visual detail to be recognizable in this frame; this does not require a full DNA profile.
 - Scene environment tags stay in base_prompt, not character prompts.
+
+## Proxy Character Anchors (同人动漫脸模代理法则)
+- 若角色 DNA 中指定了【同人动漫脸模代理】(如 kasugano_sora, rem_(re:zero), asuka_langley_soryu 等)：
+  - 将该 proxy tag 紧跟在性别词之后放入对应角色的 character_prompts[].prompt 中（例如 girl, kasugano_sora, petite, small_breasts, ...），作为锁定面容骨相、眼型神韵的最高优先级基底。
+  - 严禁将 proxy tag 放入 base_prompt，必须严格隔离在该角色的独立 prompt 槽中，防止串脸串色。
+  - 【服装覆盖与防污染规则】：小说当前场景的衣着标签（如睡裙 nightgown、裸体 naked、校服、古风袍等）必须显式写在该角色 prompt 中；若当前场景不是该同人角色的原著服装，必须将该同人角色的标志性原著服装/配饰（参考 suppress_tags，如 black_dress, hair_ornament 或 plugsuit, hair clips）写入该角色的 negative_prompt，绝对防止同人角色原著衣服泄露污染当前小说场景。
 
 ## Interaction Tags & Multi-Character Dynamics (五层高张力交互系统)
 - For directional interactions, mark roles in the relevant character prompt:

@@ -810,7 +810,7 @@ app.put('/api/projects/:projectName/characters/:characterName/tags', async (req,
   }
 });
 
-// 覆盖更新指定角色结构化 DNA 特征
+// 覆盖更新指定角色结构化 DNA 特征（可同时包含 proxy_character）
 app.put('/api/projects/:projectName/characters/:characterName/features', async (req, res) => {
   try {
     const { projectName, characterName } = req.params;
@@ -826,10 +826,41 @@ app.put('/api/projects/:projectName/characters/:characterName/features', async (
       return res.status(404).json({ error: `未找到角色「${characterName}」` });
     }
 
+    if (req.body?.proxy_character !== undefined) {
+      pipeline.projectProgress.setCharacterDNAProxy(characterName, req.body.proxy_character);
+    }
+
     await pipeline.projectProgress.save();
     res.json({
       success: true,
       message: `角色「${characterName}」结构化 DNA 已更新`,
+      character: pipeline.projectProgress.getGlobalCharacters()[characterName]
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 单独更新或清除指定角色的同人脸模代理
+app.put('/api/projects/:projectName/characters/:characterName/proxy', async (req, res) => {
+  try {
+    const { projectName, characterName } = req.params;
+    const proxyCharacter = req.body?.proxy_character ?? null;
+    const pipeline = await getPipeline(projectName);
+
+    if (!characterName) {
+      return res.status(400).json({ error: "角色名不能为空" });
+    }
+
+    const updated = pipeline.projectProgress.setCharacterDNAProxy(characterName, proxyCharacter);
+    if (!updated) {
+      return res.status(404).json({ error: `未找到角色「${characterName}」` });
+    }
+
+    await pipeline.projectProgress.save();
+    res.json({
+      success: true,
+      message: `角色「${characterName}」同人脸模代理已更新`,
       character: pipeline.projectProgress.getGlobalCharacters()[characterName]
     });
   } catch (error) {
