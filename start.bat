@@ -21,7 +21,7 @@ rem 1. Start Server on port 5001 from the root directory
 rem This ensures process.cwd() points to the workspace root D:\antigravity\nai
 rem where projects/ and illustrator_config.json reside.
 echo [1/2] Starting backend server (Node.js) on port 5001...
-start /b "" cmd /c "cd /d %~dp0 && set PORT=5001 && node server/index.js"
+start /b "" cmd /c "cd /d %~dp0 && set PORT=5001 && set NODE_OPTIONS=--max-old-space-size=4096 && node server/index.js"
 
 rem Give the backend a moment to print its startup banner
 timeout /t 2 /nobreak > nul

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { enqueueUniqueJob, removeQueuedJobs } from '../utils/job-queue.js';
+import { enqueueUniqueJob, removeQueuedJobs, ConcurrencyQueue } from '../utils/job-queue.js';
 
 test('enqueueUniqueJob marks the first idle job as running-ready', () => {
   const queue = { current: null, items: [] };
@@ -69,3 +69,48 @@ test('removeQueuedJobs only removes pending queue items', () => {
   assert.deepEqual(queue.current, { key: 'chapter-1', chapterKey: 'chapter-1' });
   assert.deepEqual(queue.items.map(job => job.chapterKey), ['chapter-3']);
 });
+
+test('ConcurrencyQueue respects concurrency limit and processes all jobs', async () => {
+  const queue = new ConcurrencyQueue(3);
+  let activeCount = 0;
+  let maxActiveSeen = 0;
+  const completed = [];
+
+  for (let i = 0; i < 10; i++) {
+    const id = i;
+    queue.run(async () => {
+      activeCount++;
+      maxActiveSeen = Math.max(maxActiveSeen, activeCount);
+      await new Promise(r => setTimeout(r, 20));
+      activeCount--;
+      completed.push(id);
+    });
+  }
+
+  await queue.waitIdle();
+  assert.equal(maxActiveSeen, 3);
+  assert.equal(completed.length, 10);
+});
+
+test('ConcurrencyQueue handles task rejections without breaking queue', async () => {
+  const queue = new ConcurrencyQueue(2);
+  const results = [];
+
+  queue.run(async () => {
+    results.push('task1');
+  });
+
+  queue.run(async () => {
+    throw new Error('fail');
+  }).catch(err => {
+    results.push('task2_failed');
+  });
+
+  queue.run(async () => {
+    results.push('task3');
+  });
+
+  await queue.waitIdle();
+  assert.deepEqual(results.sort(), ['task1', 'task2_failed', 'task3'].sort());
+});
+

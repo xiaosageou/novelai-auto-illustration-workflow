@@ -112,6 +112,9 @@ export class ProjectProgress {
   constructor(projectDir) {
     this.progressFile = path.join(projectDir, 'pipeline_progress.json');
     this.data = null;
+    this._isSaving = false;
+    this._saveRequested = false;
+    this._savePromise = null;
   }
 
   normalizeKey(key) {
@@ -186,7 +189,23 @@ export class ProjectProgress {
 
   async save() {
     if (!this.data) return;
-    await writeJsonAtomic(this.progressFile, this.data);
+    if (this._isSaving) {
+      this._saveRequested = true;
+      return this._savePromise;
+    }
+    this._isSaving = true;
+    this._savePromise = (async () => {
+      try {
+        do {
+          this._saveRequested = false;
+          await writeJsonAtomic(this.progressFile, this.data);
+        } while (this._saveRequested);
+      } finally {
+        this._isSaving = false;
+        this._savePromise = null;
+      }
+    })();
+    return this._savePromise;
   }
 
   getCompletedChapters() {

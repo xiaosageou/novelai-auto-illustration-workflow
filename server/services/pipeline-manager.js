@@ -11,6 +11,7 @@ import { normalizeSceneCard, serializeSceneForMatching } from '../utils/scene-st
 import { findOriginalTriggerSentence } from '../utils/prompt-cleaner.js';
 import { globalCooldownManager } from '../utils/cooldown.js';
 import { extractChapterScenesInBatches } from '../utils/chapter-scene-batching.js';
+import { ConcurrencyQueue } from '../utils/job-queue.js';
 
 const CHARACTER_DNA_LONG_CHAPTER_THRESHOLD = 5000;
 const CHARACTER_DNA_LONG_CHAPTER_BATCH_SIZE = 5;
@@ -746,10 +747,11 @@ export class PipelineManager {
           scenes = currentProgress.scenes.map(s => ({ ...s, ...normalizeSceneCard(s), status: s.status || 'PENDING' }));
           if (expansion.isExpanded) {
             this.writeLog(`[Pipeline] 检测到章节「${chap.chapter}」内容扩充（+${expansion.extraChars} 字），正在继续为新增无图内容提炼分镜...`);
-            const preparePromises = [];
             const naiQueue = [];
             let llmDone = false;
             const naiConsumerPromise = this._runNaiConsumerLinear(naiQueue, () => llmDone, naiModel);
+            const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+            const promptQueue = new ConcurrencyQueue(promptConcurrency);
             try {
               await this._extractExpansionScenesIncrementally(
                 chap,
@@ -760,26 +762,24 @@ export class PipelineManager {
                 '[Pipeline]',
                 async (newBatchScenes, allScenes) => {
                   for (const scene of newBatchScenes) {
-                    const preparePromise = (async () => {
+                    promptQueue.run(async () => {
                       await this.runPriorityJobs();
                       if (!this.isRunning) return;
                       await this._prepareSceneForNaiQueue(chap, scene, allScenes, chapKey, naiTagsModel, naiQueue);
-                    })();
-                    preparePromises.push(preparePromise);
+                    }).catch(() => {});
                   }
                 }
               );
               for (const scene of scenes) {
                 if (scene.status !== 'SUCCESS') {
-                  const preparePromise = (async () => {
+                  promptQueue.run(async () => {
                     await this.runPriorityJobs();
                     if (!this.isRunning) return;
                     await this._prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue);
-                  })();
-                  preparePromises.push(preparePromise);
+                  }).catch(() => {});
                 }
               }
-              await Promise.all(preparePromises);
+              await promptQueue.waitIdle();
             } finally {
               llmDone = true;
               await naiConsumerPromise;
@@ -802,20 +802,20 @@ export class PipelineManager {
         } else {
           const naiQueue = [];
           let llmDone = false;
-          const preparePromises = [];
           const naiConsumerPromise = this._runNaiConsumerLinear(naiQueue, () => llmDone, naiModel);
+          const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+          const promptQueue = new ConcurrencyQueue(promptConcurrency);
           try {
             scenes = await this._extractChapterScenesIncrementally(chap, chapKey, sceneModel, '[Pipeline]', async (newScenes, allScenes) => {
               for (const scene of newScenes) {
-                const preparePromise = (async () => {
+                promptQueue.run(async () => {
                   await this.runPriorityJobs();
                   if (!this.isRunning) return;
                   await this._prepareSceneForNaiQueue(chap, scene, allScenes, chapKey, naiTagsModel, naiQueue);
-                })();
-                preparePromises.push(preparePromise);
+                }).catch(() => {});
               }
             });
-            await Promise.all(preparePromises);
+            await promptQueue.waitIdle();
           } finally {
             llmDone = true;
             await naiConsumerPromise;
@@ -1436,14 +1436,18 @@ export class PipelineManager {
     const naiConsumerPromise = this._runNaiConsumerLinear(naiQueue, () => llmDone, naiModel);
 
     try {
-      // 并行启动所有目标场景的 LLM 提示词翻译，并推入生图队列
-      const preparePromises = targetScenes.map(async (scene) => {
-        if (!this.isRunning) return;
-        await this.runPriorityJobs();
-        if (!this.isRunning) return;
-        await this._prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue);
-      });
-      await Promise.all(preparePromises);
+      // 最多 5 个并发执行 LLM 提示词翻译，防止大章节内存暴涨
+      const concurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+      const queue = new ConcurrencyQueue(concurrency);
+      for (const scene of targetScenes) {
+        queue.run(async () => {
+          if (!this.isRunning) return;
+          await this.runPriorityJobs();
+          if (!this.isRunning) return;
+          await this._prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue);
+        }).catch(() => {});
+      }
+      await queue.waitIdle();
     } finally {
       llmDone = true;
       await naiConsumerPromise;
@@ -1568,7 +1572,8 @@ export class PipelineManager {
       if (Array.isArray(currentProgress?.scenes) && currentProgress.scenes.length > 0) {
         scenes = currentProgress.scenes.map(s => ({ ...s, ...normalizeSceneCard(s), status: s.status || 'PENDING' }));
         if (expansion.isExpanded) {
-          const preparePromises = [];
+          const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+          const promptQueue = new ConcurrencyQueue(promptConcurrency);
           await this._extractExpansionScenesIncrementally(
             chap,
             chapKey,
@@ -1578,56 +1583,62 @@ export class PipelineManager {
             '[Pipeline LLM]',
             async (newBatchScenes, allScenes) => {
               for (const scene of newBatchScenes) {
-                const preparePromise = (async () => {
+                promptQueue.run(async () => {
                   if (!this.isRunning) return;
                   await this.runPriorityJobs();
                   if (!this.isRunning) return;
                   await this._prepareSceneForNaiQueue(chap, scene, allScenes, chapKey, naiTagsModel, naiQueue);
-                })();
-                preparePromises.push(preparePromise);
+                }).catch(() => {});
               }
             }
           );
           for (const scene of scenes) {
             if (scene.status !== 'SUCCESS') {
-              const preparePromise = (async () => {
+              promptQueue.run(async () => {
                 if (!this.isRunning) return;
                 await this.runPriorityJobs();
                 if (!this.isRunning) return;
                 await this._prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue);
-              })();
-              preparePromises.push(preparePromise);
+              }).catch(() => {});
             }
           }
-          await Promise.all(preparePromises);
+          await promptQueue.waitIdle();
           return null;
         } else {
           this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」恢复已有 ${scenes.length} 个分镜场景...`);
         }
       } else {
-        const preparePromises = [];
+        const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+        const promptQueue = new ConcurrencyQueue(promptConcurrency);
         scenes = await this._extractChapterScenesIncrementally(chap, chapKey, sceneModel, '[Pipeline LLM]', async (newScenes, allScenes) => {
           for (const scene of newScenes) {
-            const preparePromise = (async () => {
+            promptQueue.run(async () => {
               if (!this.isRunning) return;
               await this.runPriorityJobs();
               if (!this.isRunning) return;
               await this._prepareSceneForNaiQueue(chap, scene, allScenes, chapKey, naiTagsModel, naiQueue);
-            })();
-            preparePromises.push(preparePromise);
+            }).catch(() => {});
           }
         });
-        await Promise.all(preparePromises);
+        await promptQueue.waitIdle();
         return null;
       }
 
       // ── 逐场景 LLM 处理，完成后推入 NAI 队列 ─────────────────────────────
+      const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+      const promptQueue = new ConcurrencyQueue(promptConcurrency);
       for (let sIdx = 0; sIdx < scenes.length; sIdx++) {
         if (!this.isRunning) break;
         const scene = scenes[sIdx];
 
-        await this._prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue);
+        promptQueue.run(async () => {
+          if (!this.isRunning) return;
+          await this.runPriorityJobs();
+          if (!this.isRunning) return;
+          await this._prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue);
+        }).catch(() => {});
       }
+      await promptQueue.waitIdle();
     } catch (error) {
       this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」LLM 阶段异常: ${error.message}`, "error");
       this.projectProgress.setChapterFailed(chapKey, error.message, scenes);

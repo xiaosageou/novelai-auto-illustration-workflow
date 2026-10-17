@@ -20,6 +20,7 @@ RUN mkdir -p /app/projects
 EXPOSE 5001
 ENV PORT=5001
 ENV NODE_ENV=production
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 
 # Start Node.js server
 CMD ["node", "server/index.js"]
