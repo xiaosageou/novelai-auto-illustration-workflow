@@ -639,6 +639,97 @@ export class PipelineManager {
   }
 
   /**
+   * 仅处理 Prompt 提炼阶段（分镜场景提取 + 角色 DNA 绑定 + Prompt 组装并持久化为 PROMPT_READY）
+   * 每就绪一个场景，立即触发 options.onScenePromptReady 回调推入全局 Image 队列。
+   * 不等待 NAI 生图，Prompt 全部准备完毕后即刻返回，解耦 LLM 算力与 NAI 出图。
+   */
+  async processPromptPhase(targetChapterKey = null, options = {}) {
+    this.isRunning = true;
+    this.isPausedByUser = false;
+    this.abortController = new AbortController();
+    await this.initialize();
+    this.chapterIndexMap = new Map(this.chapters.map((c, index) => [
+      this.projectProgress.getEffectiveChapKey(c.volume, c.chapter),
+      index
+    ]));
+    const autoUpdateCharacterDna = Boolean(options.autoUpdateCharacterDna);
+    const onScenePromptReady = options.onScenePromptReady;
+
+    const sceneModel = resolveTaskLlmConfig(this.config, 'scene').model;
+    const naiTagsModel = resolveTaskLlmConfig(this.config, 'naiTags').model;
+
+    const bridgeQueue = {
+      push: (item) => {
+        try {
+          onScenePromptReady?.(item);
+        } catch (e) {
+          console.error('[PipelineManager] onScenePromptReady 回调异常:', e);
+        }
+      }
+    };
+
+    try {
+      if (!targetChapterKey) {
+        // 全书批量模式：2 并发生成 Prompt
+        this.writeLog("[Pipeline Prompt] 启动全书 Prompt 提炼（2 并发）...");
+        this._pendingDnaSlices = new Set();
+        const llmResult = await this._runLlmProducerWithConcurrency(
+          this.chapters, sceneModel, naiTagsModel, bridgeQueue, 2, autoUpdateCharacterDna
+        );
+        return llmResult && llmResult.paused ? llmResult : { completed: true };
+      } else {
+        // 单章模式
+        const targetNormalized = this.projectProgress.normalizeKey(targetChapterKey);
+        const idx = this.chapters.findIndex(c => {
+          const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+          return this.projectProgress.normalizeKey(ck) === targetNormalized;
+        });
+        if (idx === -1) {
+          throw new Error(`找不到章节: ${targetChapterKey}`);
+        }
+        const chap = this.chapters[idx];
+        this.writeLog(`[Pipeline Prompt] 启动单章 Prompt 提炼: ${chap.chapter}`);
+        const result = await this._processChapterLlmPhase(
+          chap, idx, this.chapters.length, sceneModel, naiTagsModel, bridgeQueue, autoUpdateCharacterDna
+        );
+        return result && result.paused ? result : { completed: true };
+      }
+    } finally {
+      this.isRunning = false;
+    }
+  }
+
+  /**
+   * 单场景重绘前置：仅重新提炼该场景的 Prompt（LLM 阶段），完成后保存为 PROMPT_READY
+   */
+  async prepareSingleSceneForRedraw(chapterKey, sceneIdx) {
+    await this.initialize();
+    const chap = this.chapters.find(c => {
+      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+      return this.projectProgress.normalizeKey(ck) === this.projectProgress.normalizeKey(chapterKey);
+    });
+    if (!chap) throw new Error(`找不到章节: ${chapterKey}`);
+
+    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const currentProgress = this.projectProgress.getCompletedChapters()[chapKey];
+    if (!currentProgress || !Array.isArray(currentProgress.scenes)) {
+      throw new Error(`该章节尚未生成过场景卡片，请先整体生成。`);
+    }
+
+    const scenes = currentProgress.scenes;
+    const scene = scenes.find(s => s.scene_idx === parseInt(sceneIdx));
+    if (!scene) throw new Error(`找不到场景索引: ${sceneIdx}`);
+
+    scene.status = 'PENDING';
+    this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
+    await this.projectProgress.save();
+
+    const llmModel = resolveTaskLlmConfig(this.config, 'naiTags').model;
+    await this.prepareSingleScenePrompt(chap, scene, scenes, chapKey, llmModel);
+    return { chapter: chap.chapter, chapterKey: chapKey, sceneIdx: scene.scene_idx };
+  }
+
+  /**
    * 批量流水线核心循环。
    * - 单章模式（targetChapterKey 非空）：LLM 生成 Prompt + NAI 线性生图，两条流水线解耦。
    * - 批量模式：LLM 2 并发生成 Prompt（完成即持久化）+ NAI 线性生图，两条流水线解耦。
@@ -2246,7 +2337,7 @@ export class PipelineManager {
     };
   }
 
-  async appendSelectedParagraphScenes(chapterKey, selections = []) {
+  async appendSelectedParagraphScenes(chapterKey, selections = [], options = {}) {
     await this.initialize();
     if (this.isRunning) {
       throw new Error("流水线正在运行中，请先暂停后再提交正文选段。");
@@ -2334,7 +2425,22 @@ export class PipelineManager {
       this._emitChapterScenesExtracted(chap, chapKey, scenes);
 
       const selectedScenes = scenes.filter(item => item.source === 'reader_selection' && item.status !== 'SUCCESS');
-      await this._prepareScenesAndRunNaiQueue(chap, selectedScenes, scenes, chapKey, naiTagsModel, naiModel);
+
+      if (typeof options?.onScenePromptReady === 'function') {
+        // 双队列解耦模式：仅跑 Prompt 提炼，完成后通过回调推入全局 Image 队列
+        const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+        const promptQueue = new ConcurrencyQueue(promptConcurrency);
+        for (const scene of selectedScenes) {
+          promptQueue.run(async () => {
+            if (!this.isRunning) return;
+            await this.prepareSingleScenePrompt(chap, scene, scenes, chapKey, naiTagsModel);
+            options.onScenePromptReady({ chapKey, scene, scenes, chap });
+          }).catch(() => {});
+        }
+        await promptQueue.waitIdle();
+      } else {
+        await this._prepareScenesAndRunNaiQueue(chap, selectedScenes, scenes, chapKey, naiTagsModel, naiModel);
+      }
 
       const status = scenes.every(scene => scene.status === 'SUCCESS') ? 'completed' : 'generating';
       this.projectProgress.setChapterStatus(chapKey, status, scenes);

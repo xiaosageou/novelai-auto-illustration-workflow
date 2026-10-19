@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Settings, Plus, BookOpen, User, Play, Square, Download, 
   RefreshCw, CheckCircle2, Sparkles, X, FileText, Clapperboard, Timer,
   Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil, Image as ImageIcon,
   Flame, Heart, Users, MapPin, Camera, ChevronDown, ChevronUp, Check, Terminal,
-  Maximize2, Minimize2
+  Maximize2, Minimize2, Clock
 } from 'lucide-react';
 import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
 import { isNaiLogMessage } from './logClassification.js';
@@ -165,6 +165,31 @@ function App() {
   });
   const [logs, setLogs] = useState([]);
   const [naiLogs, setNaiLogs] = useState([]);
+  const [globalQueueState, setGlobalQueueState] = useState(null);
+
+  const currentProjectQueueInfo = useMemo(() => {
+    if (!activeProject || !globalQueueState) {
+      return { isQueued: false, promptPosition: 0, imagePending: 0, isPromptRunning: false, isImageRunning: false };
+    }
+    const pq = globalQueueState.promptQueue;
+    const iq = globalQueueState.imageQueue;
+    const isPromptRunning = pq?.current?.projectName === activeProject;
+    const promptIndex = pq?.items?.findIndex(i => i.projectName === activeProject) ?? -1;
+    const promptPosition = isPromptRunning ? 0 : (promptIndex !== -1 ? promptIndex + 1 : 0);
+
+    const isImageRunning = iq?.current?.projectName === activeProject;
+    const imagePending = (iq?.items?.filter(i => i.projectName === activeProject)?.length || 0)
+      + (iq?.priorityItems?.filter(i => i.projectName === activeProject)?.length || 0);
+
+    return {
+      isPromptRunning,
+      isPromptQueued: promptIndex !== -1,
+      promptPosition,
+      isImageRunning,
+      imagePending,
+      isQueued: promptIndex !== -1 || (imagePending > 0 && !isImageRunning && !isPromptRunning)
+    };
+  }, [activeProject, globalQueueState]);
 
   // 弹窗状态
   const [isConfigOpen, setIsConfigOpen] = useState(false);
@@ -518,11 +543,26 @@ function App() {
       addLog(data.text, data.type, data);
     });
 
+    eventSource.addEventListener('global_queue_state', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setGlobalQueueState(data);
+      } catch (err) {
+        console.error("解析全局队列状态失败:", err);
+      }
+    });
+
     eventSource.addEventListener('error', (e) => {
       setIsExtractingDna(false);
       const data = JSON.parse(e.data);
       addLog(`⚠️ 系统提示: ${data.message}`, 'warning');
     });
+
+    // 初始拉取一次全局队列状态
+    fetch(`${API_BASE}/api/global-queue/status`)
+      .then(r => r.json())
+      .then(data => setGlobalQueueState(data))
+      .catch(() => {});
 
     return () => {
       eventSource.close();
@@ -2490,7 +2530,16 @@ function App() {
                 <button className="btn-secondary" onClick={() => setIsConfigOpen(true)}>
                   <Settings size={16} /> 配置
                 </button>
-                {workspaceTab !== 'comics' && (pipelineRunning ? (
+                {workspaceTab !== 'comics' && (currentProjectQueueInfo.isPromptQueued ? (
+                  <button
+                    className="btn-secondary"
+                    style={{ color: 'var(--color-orange)', borderColor: 'rgba(249, 115, 22, 0.4)' }}
+                    onClick={stopPipeline}
+                    title="当前前面有其他任务正在提炼 Prompt，点击取消排队"
+                  >
+                    <Clock size={16} /> ⏳ 排队中 (Prompt #{currentProjectQueueInfo.promptPosition})
+                  </button>
+                ) : pipelineRunning ? (
                   <button className="btn-secondary" style={{ color: 'var(--color-orange)' }} onClick={stopPipeline}>
                     <Square size={16} /> 暂停
                   </button>
@@ -3806,6 +3855,23 @@ function App() {
                 ({logs.length} 条流水线 / {naiLogs.length} 条生图)
               </span>
 
+              {globalQueueState && (
+                <div className="log-dock-queue-pills">
+                  <span
+                    className={`queue-badge ${globalQueueState.promptQueue?.running ? 'active' : ''}`}
+                    title={`Prompt 提炼队列：${globalQueueState.promptQueue?.running ? `正在处理「${globalQueueState.promptQueue.current?.projectName}」` : '空闲'}`}
+                  >
+                    ⚙️ Prompt {globalQueueState.promptQueue?.running ? `[${globalQueueState.promptQueue.current?.projectName}${globalQueueState.promptQueue.pendingCount > 0 ? ` +${globalQueueState.promptQueue.pendingCount}` : ''}]` : '就绪'}
+                  </span>
+                  <span
+                    className={`queue-badge ${globalQueueState.imageQueue?.running ? 'active' : ''}`}
+                    title={`NAI 生图队列：${globalQueueState.imageQueue?.running ? `正在绘制「${globalQueueState.imageQueue.current?.projectName}」#${globalQueueState.imageQueue.current?.sceneIdx}` : '空闲'}，待出图共 ${globalQueueState.imageQueue?.totalPendingCount || 0} 张`}
+                  >
+                    🎨 生图 {globalQueueState.imageQueue?.running ? `[${globalQueueState.imageQueue.current?.projectName} 待画${globalQueueState.imageQueue.totalPendingCount}]` : '就绪'}
+                  </span>
+                </div>
+              )}
+
               {cooldown > 0 && (
                 <div
                   className={`cooldown-chip mini active ${cooldownState.mode === 'degraded' ? 'degraded' : ''}`}
@@ -3895,6 +3961,58 @@ function App() {
                 </button>
               </div>
             </div>
+
+            {/* 全局跨项目双队列监控横栏 */}
+            {globalQueueState && (
+              <div className="log-dock-queue-monitor-bar">
+                <div className="queue-monitor-card prompt-card">
+                  <div className="card-header">
+                    <span className="card-title">⚙️ LLM Prompt 提炼队列 (跨项目 FIFO)</span>
+                    <span className={`status-tag ${globalQueueState.promptQueue?.running ? 'running' : 'idle'}`}>
+                      {globalQueueState.promptQueue?.running ? '提炼中' : '空闲'}
+                    </span>
+                  </div>
+                  <div className="card-body">
+                    {globalQueueState.promptQueue?.current ? (
+                      <span className="current-task">
+                        正在提炼: <strong>{globalQueueState.promptQueue.current.projectName}</strong>
+                        {globalQueueState.promptQueue.current.chapterKey ? ` (${globalQueueState.promptQueue.current.chapterKey})` : ' (全书批量)'}
+                      </span>
+                    ) : (
+                      <span className="current-idle">暂无正在提炼的分镜任务</span>
+                    )}
+                    {globalQueueState.promptQueue?.pendingCount > 0 && (
+                      <span className="queue-pending-info">
+                        后续排队: <strong>{globalQueueState.promptQueue.items.map(item => item.projectName).join(', ')}</strong>
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="queue-monitor-card image-card">
+                  <div className="card-header">
+                    <span className="card-title">🎨 NovelAI 严格串行生图队列 (15s/35s 频控)</span>
+                    <span className={`status-tag ${globalQueueState.imageQueue?.running ? 'running' : 'idle'}`}>
+                      {globalQueueState.imageQueue?.running ? '生图中' : '空闲'}
+                    </span>
+                  </div>
+                  <div className="card-body">
+                    {globalQueueState.imageQueue?.current ? (
+                      <span className="current-task">
+                        正在出图: <strong>{globalQueueState.imageQueue.current.projectName}</strong>
+                        <span> [{globalQueueState.imageQueue.current.chapterKey} 场景 #{globalQueueState.imageQueue.current.sceneIdx}]</span>
+                      </span>
+                    ) : (
+                      <span className="current-idle">暂无正在生成的图片</span>
+                    )}
+                    <span className="queue-pending-info">
+                      待出图总数: <strong>{globalQueueState.imageQueue?.totalPendingCount || 0}</strong> 张
+                      {globalQueueState.imageQueue?.priorityPendingCount > 0 && ` (含 ${globalQueueState.imageQueue.priorityPendingCount} 张手动插队)`}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="logs-split-container">
               {/* 左半部分：常规/LLM日志 */}
@@ -4025,7 +4143,16 @@ function App() {
 
           {activeProject && (
             <div className="header-pipeline-controls">
-              {pipelineRunning ? (
+              {currentProjectQueueInfo.isPromptQueued ? (
+                <button
+                  className="btn-secondary"
+                  style={{ color: 'var(--color-orange)', borderColor: 'rgba(249, 115, 22, 0.4)', padding: '5px 12px', fontSize: '0.8rem' }}
+                  onClick={stopPipeline}
+                  title="当前前面有其他任务正在提炼 Prompt，点击取消排队"
+                >
+                  <Clock size={14} /> ⏳ 排队中 (Prompt #{currentProjectQueueInfo.promptPosition})
+                </button>
+              ) : pipelineRunning ? (
                 <button className="btn-secondary" style={{ color: 'var(--color-orange)', padding: '5px 12px', fontSize: '0.8rem' }} onClick={stopPipeline}>
                   <Square size={14} /> 暂停
                 </button>

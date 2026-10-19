@@ -1348,3 +1348,102 @@ h1, h2, h3, h4 {
   margin-top: 30px;
 }
 
+/* 双队列状态胶囊样式 (折叠栏) */
+.log-dock-queue-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+}
+
+.log-dock-queue-pills .queue-badge {
+  font-size: 0.70rem;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.log-dock-queue-pills .queue-badge.active {
+  background: rgba(168, 85, 247, 0.15);
+  border-color: rgba(168, 85, 247, 0.4);
+  color: #c084fc;
+}
+
+/* 双队列监控卡片横栏 (展开视图) */
+.log-dock-queue-monitor-bar {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.queue-monitor-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.queue-monitor-card .card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.queue-monitor-card .card-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.queue-monitor-card .status-tag {
+  font-size: 0.68rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.queue-monitor-card .status-tag.running {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.queue-monitor-card .status-tag.idle {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+}
+
+.queue-monitor-card .card-body {
+  font-size: 0.76rem;
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.queue-monitor-card .current-task strong {
+  color: #e2e8f0;
+}
+
+.queue-monitor-card .current-idle {
+  color: var(--text-muted);
+}
+
+.queue-monitor-card .queue-pending-info {
+  font-size: 0.70rem;
+  color: var(--text-muted);
+}
+
+.queue-monitor-card .queue-pending-info strong {
+  color: #38bdf8;
+}
+

@@ -16,6 +16,7 @@ import { normalizeAdvancedPromptForConfig, normalizeCharacterDnaPromptForConfig 
 import { createAgentRouter } from './services/agent-api.js';
 import { createComicLegacyGuard } from './services/comic-service.js';
 import { createThumbnailMiddleware } from './services/thumbnail-service.js';
+import { GlobalQueueManager } from './services/global-queue-manager.js';
 
 const BASE_DIR = process.cwd();
 const CONFIG_PATH = path.join(BASE_DIR, 'illustrator_config.json');
@@ -174,6 +175,13 @@ const activePipelines = {};
 const redrawQueues = new Map();
 const chapterQueues = new Map();
 
+// 全局两级调度队列管理器（Prompt LLM 队列与 Image NAI 队列完全解耦，支持跨项目排队）
+const globalQueueManager = new GlobalQueueManager({
+  getPipeline,
+  broadcastSSE,
+  cooldownManager: globalCooldownManager
+});
+
 async function safeProjectPath(projectName) {
   const projectsDir = path.resolve(BASE_DIR, 'projects');
   if (!projectName || projectName.includes('/') || projectName.includes('\\') || projectName.startsWith('.')) {
@@ -254,6 +262,9 @@ function getRedrawQueue(projectName) {
 }
 
 function isSceneInRedrawQueue(projectName, chapterKey, sceneIdx) {
+  if (globalQueueManager.isSceneInQueue(projectName, chapterKey, sceneIdx)) {
+    return true;
+  }
   const queue = getRedrawQueue(projectName);
   const normalizedChapterKey = String(chapterKey || '').trim();
   const normalizedSceneIdx = Number(sceneIdx);
@@ -336,41 +347,25 @@ async function processRedrawQueue(projectName, pipeline, queue, { interleaved = 
 }
 
 function enqueueRedraw(projectName, pipeline, chapterKey, effectiveKey, sceneIdx, mode = 'refresh_prompt', agentOptions = {}) {
-  const queue = getRedrawQueue(projectName);
-  const key = redrawJobKey(effectiveKey, sceneIdx, mode);
-  const result = enqueueUniqueJob(queue, {
-    key,
-    busy: pipeline.isRunning,
-    jobFactory: () => ({
-      key,
-      chapterKey,
-      effectiveKey,
+  const normChapKey = effectiveKey || chapterKey;
+  if (mode === 'nai_only') {
+    return globalQueueManager.enqueueImageJob({
+      projectName,
+      chapterKey: normChapKey,
       sceneIdx: Number(sceneIdx),
-      mode,
-      ...agentOptions
-    })
-  });
-
-  if (result.duplicate) {
-    return result;
+      mode: 'nai_only',
+      priority: true,
+      agentOptions
+    });
+  } else {
+    return globalQueueManager.enqueuePromptJob({
+      projectName,
+      type: 'redraw_prompt',
+      chapterKey: normChapKey,
+      payload: { sceneIdx: Number(sceneIdx), mode, ...agentOptions },
+      priority: true
+    });
   }
-
-  broadcastSSE('redraw_queue', {
-    projectName,
-    chapterKey,
-    sceneIdx: Number(sceneIdx),
-    state: 'queued',
-    position: result.position,
-    remaining: queue.items.length,
-    priority: pipeline.isRunning
-  });
-  if (!pipeline.isRunning) {
-    void processRedrawQueue(projectName, pipeline, queue);
-  }
-  return {
-    ...result,
-    priority: pipeline.isRunning
-  };
 }
 
 async function processChapterQueue(projectName) {
@@ -489,31 +484,12 @@ async function processChapterQueue(projectName) {
 }
 
 function enqueueChapterGeneration(projectName, pipeline, chapterKey, effectiveKey) {
-  const queue = getChapterQueue(projectName);
-  const key = chapterJobKey(effectiveKey);
-  const result = enqueueUniqueJob(queue, {
-    key,
-    busy: pipeline.isRunning,
-    jobFactory: () => ({
-      key,
-      chapterKey,
-      effectiveKey
-    })
-  });
-
-  if (result.duplicate) {
-    return result;
-  }
-
-  broadcastSSE('chapter_queue', {
+  const normChapKey = effectiveKey || chapterKey;
+  return globalQueueManager.enqueuePromptJob({
     projectName,
-    chapterKey,
-    state: 'queued',
-    position: result.position,
-    remaining: queue.items.length
+    type: 'chapter_generate',
+    chapterKey: normChapKey
   });
-  void processChapterQueue(projectName);
-  return result;
 }
 
 // === 1. 全局配置 API ===
@@ -933,22 +909,19 @@ app.use('/api/projects/:projectName', createComicLegacyGuard(getPipeline));
 app.post('/api/projects/:projectName/pipeline/start', async (req, res) => {
   try {
     const { projectName } = req.params;
-    const pipeline = await getPipeline(projectName);
-
-    if (pipeline.isRunning) {
-      return res.json({ success: false, message: "流水线已在运行中，请勿重复启动" });
-    }
-
-    // 后台异步跑流水线，避免网关请求超时
-    pipeline.processPipeline(null, { autoUpdateCharacterDna: true }).then((result) => {
-      if (!result?.paused) {
-        broadcastSSE('pipeline_completed', { projectName });
-      }
-    }).catch(err => {
-      broadcastSSE('pipeline_failed', { message: err.message });
+    const queued = globalQueueManager.enqueuePromptJob({
+      projectName,
+      type: 'pipeline',
+      payload: { autoUpdateCharacterDna: true }
     });
 
-    res.json({ success: true, message: "批量生图流水线已启动..." });
+    const message = queued.duplicate
+      ? "流水线已在队列中，请勿重复启动"
+      : queued.state === 'starting'
+        ? "批量生图流水线已启动..."
+        : `批量生图流水线已进入全局队列，当前排在第 ${queued.position} 位`;
+
+    res.json({ success: true, message, ...queued });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -958,37 +931,27 @@ app.post('/api/projects/:projectName/pipeline/start', async (req, res) => {
 app.post('/api/projects/:projectName/pipeline/stop', async (req, res) => {
   try {
     const { projectName } = req.params;
-    const pipeline = await getPipeline(projectName);
-
-    // 1. 触发 Pipeline 瞬时硬刹车，秒级中止在途 LLM/NAI 请求与冷却计时
-    await pipeline.stop();
+    await globalQueueManager.cancelProjectJobs(projectName);
     agentRouter.stopComicProduction(projectName);
 
-    // 2. 清空单章排队队列
+    // 清空老队列记录（兼容旧读取）
     const chapterQ = getChapterQueue(projectName);
     if (chapterQ) {
       chapterQ.items = [];
       chapterQ.current = null;
       chapterQ.running = false;
     }
-
-    // 3. 清空单图重绘队列
     const redrawQ = getRedrawQueue(projectName);
     if (redrawQ) {
       redrawQ.items = [];
       redrawQ.current = null;
       redrawQ.running = false;
     }
-
-    // 4. 清空选段生图队列
     const selectedQ = getSelectedScenesQueue(projectName);
     if (selectedQ) {
       selectedQ.items = [];
       selectedQ.running = false;
     }
-
-    // 5. 广播停止事件给前端，瞬时更新界面
-    broadcastSSE('pipeline_stopped', { projectName, state: 'paused' });
 
     res.json({ success: true, message: "流水线已瞬时停止，所有任务已安全暂停" });
   } catch (error) {
@@ -1170,13 +1133,18 @@ app.post('/api/projects/:projectName/chapters/:chapterKey/selected-scenes', asyn
       return res.status(400).json({ error: "请至少选择一段正文" });
     }
 
-    const queue = getSelectedScenesQueue(projectName);
-    queue.items.push({ chapterKey, selections });
+    const queued = globalQueueManager.enqueuePromptJob({
+      projectName,
+      type: 'selected_scenes',
+      chapterKey,
+      payload: { selections }
+    });
 
-    // 异步执行队列处理
-    void processSelectedScenesQueue(projectName);
-
-    res.json({ success: true, message: `已提交 ${selections.length} 处正文选段，已加入生图队列（当前排队位置: ${queue.items.length}）` });
+    res.json({
+      success: true,
+      message: `已提交 ${selections.length} 处正文选段，已加入全局队列（当前排队位置: ${queued.position}）`,
+      ...queued
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1273,6 +1241,7 @@ app.delete('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx', a
       job => pipeline.projectProgress.normalizeKey(job.effectiveKey) === pipeline.projectProgress.normalizeKey(effectiveKey)
         && Number(job.sceneIdx) === Number(sceneIdx)
     );
+    globalQueueManager.removeQueuedScene(projectName, effectiveKey, sceneIdx);
     const result = await pipeline.deleteScene(effectiveKey, sceneIdx);
     res.json({ success: true, message: `场景 #${sceneIdx} 已删除`, removedQueuedRedraws, ...result });
   } catch (error) {
@@ -1280,37 +1249,21 @@ app.delete('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx', a
   }
 });
 
-// 查询当前状态
+// 查询当前项目流水线与队列状态
 app.get('/api/projects/:projectName/pipeline/status', async (req, res) => {
   try {
     const { projectName } = req.params;
-    const pipeline = await getPipeline(projectName);
-    res.json({
-      isRunning: pipeline.isRunning,
-      projectName: pipeline.projectName,
-      remainingCooldown: globalCooldownManager.getRemainingSeconds(),
-      cooldown: globalCooldownManager.getState(),
-      redrawQueue: {
-        running: Boolean(redrawQueues.get(projectName)?.running),
-        pending: redrawQueues.get(projectName)?.items.length || 0,
-        current: redrawQueues.get(projectName)?.current
-          ? {
-              chapterKey: redrawQueues.get(projectName).current.chapterKey,
-              sceneIdx: redrawQueues.get(projectName).current.sceneIdx
-            }
-          : null
-      },
-      chapterQueue: {
-        running: Boolean(chapterQueues.get(projectName)?.running),
-        pending: chapterQueues.get(projectName)?.items.length || 0,
-        pendingChapterKeys: chapterQueues.get(projectName)?.items.map(item => item.chapterKey) || [],
-        current: chapterQueues.get(projectName)?.current
-          ? {
-              chapterKey: chapterQueues.get(projectName).current.chapterKey
-            }
-          : null
-      }
-    });
+    const state = globalQueueManager.getProjectQueueState(projectName);
+    res.json(state);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 查询全局 Prompt 与 Image 双队列状态快照
+app.get('/api/global-queue/status', (req, res) => {
+  try {
+    res.json(globalQueueManager.getGlobalState());
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1402,18 +1355,10 @@ const agentRouter = createAgentRouter({
   enqueueRedraw,
   notify: broadcastSSE,
   queueState(projectName) {
-    const redraw = getRedrawQueue(projectName);
-    const chapters = getChapterQueue(projectName);
-    const selected = getSelectedScenesQueue(projectName);
-    return {
-      busy: Boolean(redraw.running || redraw.current || redraw.items.length || chapters.running || chapters.current || chapters.items.length || selected.running || selected.items.length),
-      redrawQueue: { running: redraw.running, pending: redraw.items.length, current: redraw.current ? { chapterKey: redraw.current.chapterKey, sceneIdx: redraw.current.sceneIdx } : null },
-      chapterQueue: { running: chapters.running, pending: chapters.items.length },
-      selectedScenesQueue: { running: selected.running, pending: selected.items.length },
-      cooldown: globalCooldownManager.getState()
-    };
+    return globalQueueManager.getProjectQueueState(projectName);
   },
   stopQueues(projectName) {
+    void globalQueueManager.cancelProjectJobs(projectName);
     const queues = [getRedrawQueue(projectName), getChapterQueue(projectName), getSelectedScenesQueue(projectName)];
     const actionIds = queues.flatMap(q => q.items.map(j => j.agentActionId).filter(Boolean));
     const removed = queues.reduce((sum, q) => sum + q.items.length, 0);
