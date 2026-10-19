@@ -12,7 +12,7 @@ import { enqueueUniqueJob, removeQueuedJobs } from './utils/job-queue.js';
 import { readJson, writeJsonAtomic } from './utils/db.js';
 import { parseFile } from './utils/file-parser.js';
 import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL } from './utils/default-prompts.js';
-import { normalizeAdvancedPromptForConfig } from './utils/advanced-prompt-contract.js';
+import { normalizeAdvancedPromptForConfig, normalizeCharacterDnaPromptForConfig } from './utils/advanced-prompt-contract.js';
 import { createAgentRouter } from './services/agent-api.js';
 import { createComicLegacyGuard } from './services/comic-service.js';
 import { createThumbnailMiddleware } from './services/thumbnail-service.js';
@@ -87,6 +87,7 @@ function normalizeConfig(config = {}) {
     }
   }
 
+  normalized.system_prompt_character_dna = normalizeCharacterDnaPromptForConfig(normalized.system_prompt_character_dna);
   normalized.system_prompt_advanced_prompt = normalizeAdvancedPromptForConfig(normalized.system_prompt_advanced_prompt);
 
   return normalized;
@@ -211,7 +212,11 @@ async function getPipeline(projectName) {
     return activePipelines[projectName];
   }
 
-  const config = { ...DEFAULT_CONFIG, ...(await readJson(CONFIG_PATH, {})) };
+  const rawConfig = await readJson(CONFIG_PATH, {});
+  const config = normalizeConfig(rawConfig);
+  if (rawConfig.system_prompt_character_dna && rawConfig.system_prompt_character_dna !== config.system_prompt_character_dna) {
+    writeJsonAtomic(CONFIG_PATH, config).catch(() => {});
+  }
 
   const pipeline = new PipelineManager({ ...config, projectName });
   await pipeline.initialize();
@@ -515,11 +520,24 @@ function enqueueChapterGeneration(projectName, pipeline, chapterKey, effectiveKe
 
 app.get('/api/config', async (req, res) => {
   try {
-    const config = normalizeConfig(await readJson(CONFIG_PATH, {}));
+    const rawConfig = await readJson(CONFIG_PATH, {});
+    const config = normalizeConfig(rawConfig);
+    if (rawConfig.system_prompt_character_dna && rawConfig.system_prompt_character_dna !== config.system_prompt_character_dna) {
+      await writeJsonAtomic(CONFIG_PATH, config).catch(() => {});
+    }
     res.json(config);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+app.get('/api/config/default-prompts', (req, res) => {
+  res.json({
+    system_prompt_extract_scenes: DEFAULT_EXTRACT_SCENES_PROMPT,
+    system_prompt_character_dna: DEFAULT_CHARACTER_DNA_PROMPT,
+    system_prompt_advanced_prompt: DEFAULT_ADVANCED_PROMPT,
+    system_prompt_advanced_prompt_nl: DEFAULT_ADVANCED_PROMPT_V45_NL
+  });
 });
 
 app.post('/api/config', async (req, res) => {

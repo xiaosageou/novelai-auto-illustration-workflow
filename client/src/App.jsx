@@ -3,7 +3,8 @@ import {
   Settings, Plus, BookOpen, User, Play, Square, Download, 
   RefreshCw, CheckCircle2, Sparkles, X, FileText, Clapperboard, Timer,
   Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil, Image as ImageIcon,
-  Flame, Heart, Users, MapPin, Camera, ChevronDown, ChevronUp, Check, Terminal
+  Flame, Heart, Users, MapPin, Camera, ChevronDown, ChevronUp, Check, Terminal,
+  Maximize2, Minimize2
 } from 'lucide-react';
 import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
 import { isNaiLogMessage } from './logClassification.js';
@@ -139,7 +140,9 @@ function App() {
   const [activeProject, setActiveProject] = useState("");
   const [projectDetails, setProjectDetails] = useState(null);
   const [selectedChapter, setSelectedChapter] = useState(null);
-  const [mainTab, setMainTab] = useState('workbench'); // 'books' | 'dna' | 'workbench' | 'logs'
+  const [mainTab, setMainTab] = useState('workbench'); // 'books' | 'dna' | 'workbench'
+  const [isLogsOpen, setIsLogsOpen] = useState(false);
+  const [isLogsMaximized, setIsLogsMaximized] = useState(false);
   const [workspaceTab, setWorkspaceTab] = useState('scenes');
   const [selectedDnaCharacter, setSelectedDnaCharacter] = useState('');
   const [dnaSearchQuery, setDnaSearchQuery] = useState('');
@@ -2238,7 +2241,7 @@ function App() {
                 <button
                   type="button"
                   style={{ fontSize: '0.72rem', color: '#818cf8', textDecoration: 'underline', padding: 0, cursor: 'pointer', border: 'none', background: 'transparent' }}
-                  onClick={() => setMainTab('logs')}
+                  onClick={() => setIsLogsOpen(true)}
                 >
                   实时日志 ➔
                 </button>
@@ -3782,80 +3785,165 @@ function App() {
   };
 
 
-  const renderLogsTab = () => (
-    <div className="logs-tab-view">
-      <div className="tab-view-header">
-        <div>
-          <h2><Terminal size={22} /> 流水线与生图运行日志</h2>
-          <p className="tab-view-subtitle">实时监控后台大模型提取状态、NovelAI 生图请求与频控降级</p>
-        </div>
+  const renderLogDrawer = () => {
+    const lastPipelineLog = logs.length > 0 ? logs[logs.length - 1] : null;
+    const lastNaiLog = naiLogs.length > 0 ? naiLogs[naiLogs.length - 1] : null;
+    const latestLog = (() => {
+      if (!lastPipelineLog && !lastNaiLog) return null;
+      if (lastPipelineLog && !lastNaiLog) return lastPipelineLog;
+      if (!lastPipelineLog && lastNaiLog) return lastNaiLog;
+      return (lastNaiLog.time >= lastPipelineLog.time) ? lastNaiLog : lastPipelineLog;
+    })();
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div
-            className={`cooldown-chip ${cooldown > 0 ? 'active' : ''} ${cooldownState.mode === 'degraded' ? 'degraded' : ''}`}
-            title={cooldownState.mode === 'degraded'
-              ? `429 降级模式：固定 35 秒，成功 ${cooldownState.degradedSuccesses || 0}/5 次后恢复`
-              : `基础间隔 ${cooldownState.baseCooldownSeconds || config.nai_cooldown_seconds || 15} 秒`}
-          >
-            <Timer size={14} />
-            <span>{cooldown > 0 ? `${Math.ceil(cooldown)}s` : `${cooldownState.cooldownSeconds || 15}s`}</span>
-          </div>
+    return (
+      <div className={`log-dock-container ${isLogsOpen ? (isLogsMaximized ? 'maximized' : 'expanded') : 'collapsed'}`}>
+        {!isLogsOpen ? (
+          <div className="log-dock-collapsed-bar" onClick={() => setIsLogsOpen(true)} title="点击展开实时运行日志">
+            <div className="log-dock-bar-left">
+              <Terminal size={14} className="log-dock-icon" />
+              <span className="log-dock-title">实时日志</span>
+              <span className="log-dock-count">
+                ({logs.length} 条流水线 / {naiLogs.length} 条生图)
+              </span>
 
-          <button
-            className="btn-secondary"
-            onClick={() => { setLogs([]); setNaiLogs([]); }}
-            style={{ padding: '6px 12px', fontSize: '0.8rem' }}
-          >
-            <Trash2 size={13} /> 清空日志
-          </button>
-        </div>
-      </div>
-
-      <div className="logs-split-container">
-        {/* 左半部分：常规/LLM日志 */}
-        <div className="log-panel-box glass-panel">
-          <div className="log-panel-header">
-            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>⚙️ 流水线与 LLM 提取日志</span>
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{logs.length} 条记录</span>
-          </div>
-          <div className="log-scroll-area">
-            {logs.length === 0 ? (
-              <div className="log-empty-tip">暂无流水线日志</div>
-            ) : (
-              logs.map((log, idx) => (
-                <div key={idx} className={`log-line ${log.type || ''}`}>
-                  <span className="log-timestamp">[{log.time}]</span>
-                  <span>{log.text}</span>
+              {cooldown > 0 && (
+                <div
+                  className={`cooldown-chip mini active ${cooldownState.mode === 'degraded' ? 'degraded' : ''}`}
+                  title={cooldownState.mode === 'degraded'
+                    ? `429 降级模式：固定 35 秒，成功 ${cooldownState.degradedSuccesses || 0}/5 次后恢复`
+                    : `基础间隔 ${cooldownState.baseCooldownSeconds || config.nai_cooldown_seconds || 15} 秒`}
+                >
+                  <Timer size={11} />
+                  <span>{Math.ceil(cooldown)}s</span>
                 </div>
-              ))
-            )}
-            <div ref={logsEndRef} />
-          </div>
-        </div>
+              )}
 
-        {/* 右半部分：NovelAI 生图日志 */}
-        <div className="log-panel-box glass-panel">
-          <div className="log-panel-header">
-            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>🎨 NovelAI 生图控制台</span>
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{naiLogs.length} 条记录</span>
+              <div className="log-dock-latest-preview">
+                {latestLog ? (
+                  <span className={`latest-text ${latestLog.type || ''}`}>
+                    <span className="latest-time">[{latestLog.time}]</span> {latestLog.text}
+                  </span>
+                ) : (
+                  <span className="latest-empty" style={{ opacity: 0.5 }}>系统就绪，暂无实时日志</span>
+                )}
+              </div>
+            </div>
+
+            <div className="log-dock-bar-right" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                className="btn-secondary log-dock-action-btn"
+                onClick={() => setIsLogsOpen(true)}
+                title="展开实时日志"
+              >
+                <ChevronUp size={13} /> 展开日志
+              </button>
+            </div>
           </div>
-          <div className="log-scroll-area">
-            {naiLogs.length === 0 ? (
-              <div className="log-empty-tip">暂无 NovelAI 生图日志</div>
-            ) : (
-              naiLogs.map((log, idx) => (
-                <div key={idx} className={`log-line ${log.type || ''}`}>
-                  <span className="log-timestamp">[{log.time}]</span>
-                  <span>{log.text}</span>
+        ) : (
+          <div className="log-dock-expanded-view">
+            <div className="log-dock-header">
+              <div className="log-dock-header-left">
+                <div className="log-dock-header-title">
+                  <Terminal size={17} style={{ color: '#a855f7' }} />
+                  <span>流水线与生图运行日志</span>
                 </div>
-              ))
-            )}
-            <div ref={naiLogsEndRef} />
+                <span className="log-dock-header-subtitle">
+                  实时监控后台大模型提取状态、NovelAI 生图请求与频控降级
+                </span>
+              </div>
+
+              <div className="log-dock-header-right">
+                <div
+                  className={`cooldown-chip ${cooldown > 0 ? 'active' : ''} ${cooldownState.mode === 'degraded' ? 'degraded' : ''}`}
+                  title={cooldownState.mode === 'degraded'
+                    ? `429 降级模式：固定 35 秒，成功 ${cooldownState.degradedSuccesses || 0}/5 次后恢复`
+                    : `基础间隔 ${cooldownState.baseCooldownSeconds || config.nai_cooldown_seconds || 15} 秒`}
+                >
+                  <Timer size={14} />
+                  <span>{cooldown > 0 ? `${Math.ceil(cooldown)}s` : `${cooldownState.cooldownSeconds || 15}s`}</span>
+                </div>
+
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => { setLogs([]); setNaiLogs([]); }}
+                  style={{ padding: '4px 10px', fontSize: '0.78rem' }}
+                  title="清空日志"
+                >
+                  <Trash2 size={13} /> 清空日志
+                </button>
+
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setIsLogsMaximized(!isLogsMaximized)}
+                  style={{ padding: '4px 8px', fontSize: '0.78rem' }}
+                  title={isLogsMaximized ? "还原高度" : "全屏放大"}
+                >
+                  {isLogsMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                </button>
+
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setIsLogsOpen(false)}
+                  style={{ padding: '4px 10px', fontSize: '0.78rem', color: '#fca5a5' }}
+                  title="收起日志抽屉"
+                >
+                  <ChevronDown size={14} /> 收起
+                </button>
+              </div>
+            </div>
+
+            <div className="logs-split-container">
+              {/* 左半部分：常规/LLM日志 */}
+              <div className="log-panel-box glass-panel">
+                <div className="log-panel-header">
+                  <span style={{ fontWeight: 600, fontSize: '0.82rem' }}>⚙️ 流水线与 LLM 提取日志</span>
+                  <span style={{ fontSize: '0.70rem', color: 'var(--text-muted)' }}>{logs.length} 条记录</span>
+                </div>
+                <div className="log-scroll-area">
+                  {logs.length === 0 ? (
+                    <div className="log-empty-tip">暂无流水线日志</div>
+                  ) : (
+                    logs.map((log, idx) => (
+                      <div key={idx} className={`log-line ${log.type || ''}`}>
+                        <span className="log-timestamp">[{log.time}]</span>
+                        <span>{log.text}</span>
+                      </div>
+                    ))
+                  )}
+                  <div ref={logsEndRef} />
+                </div>
+              </div>
+
+              {/* 右半部分：NovelAI 生图日志 */}
+              <div className="log-panel-box glass-panel">
+                <div className="log-panel-header">
+                  <span style={{ fontWeight: 600, fontSize: '0.82rem' }}>🎨 NovelAI 生图控制台</span>
+                  <span style={{ fontSize: '0.70rem', color: 'var(--text-muted)' }}>{naiLogs.length} 条记录</span>
+                </div>
+                <div className="log-scroll-area">
+                  {naiLogs.length === 0 ? (
+                    <div className="log-empty-tip">暂无 NovelAI 生图日志</div>
+                  ) : (
+                    naiLogs.map((log, idx) => (
+                      <div key={idx} className={`log-line ${log.type || ''}`}>
+                        <span className="log-timestamp">[{log.time}]</span>
+                        <span>{log.text}</span>
+                      </div>
+                    ))
+                  )}
+                  <div ref={naiLogsEndRef} />
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
+        )}
       </div>
-    </div>
-  );
+    );
+  };
 
 
   return (
@@ -3908,12 +3996,21 @@ function App() {
 
             <button 
               type="button"
-              className={`main-tab-item ${mainTab === 'logs' ? 'active' : ''}`}
-              onClick={() => setMainTab('logs')}
+              className={`main-tab-item log-toggle-tab ${isLogsOpen ? 'active' : ''}`}
+              onClick={() => setIsLogsOpen(!isLogsOpen)}
+              title={isLogsOpen ? "收起底部运行日志" : "在当前工作台展开实时运行日志"}
             >
               <Terminal size={15} />
               <span>实时日志</span>
-              {(pipelineRunning || isExtractingDna) && <span className="tab-pulse-dot" title={isExtractingDna ? "角色 DNA 提炼中" : "流水线运行中"} />}
+              {(logs.length + naiLogs.length > 0) && (
+                <span className="tab-badge" style={{ background: isLogsOpen ? 'rgba(168,85,247,0.3)' : 'rgba(255,255,255,0.08)' }}>
+                  {logs.length + naiLogs.length}
+                </span>
+              )}
+              {(pipelineRunning || isExtractingDna) && (
+                <span className="tab-pulse-dot" title={isExtractingDna ? "角色 DNA 提炼中" : "流水线运行中"} />
+              )}
+              {isLogsOpen ? <ChevronDown size={13} style={{ opacity: 0.7, marginLeft: 2 }} /> : <ChevronUp size={13} style={{ opacity: 0.7, marginLeft: 2 }} />}
             </button>
           </nav>
         </div>
@@ -3979,9 +4076,11 @@ function App() {
       <main className="app-main-viewport">
         {mainTab === 'books' && renderBooksTab()}
         {mainTab === 'dna' && renderDnaTab()}
-        {mainTab === 'workbench' && renderWorkbenchTab()}
-        {mainTab === 'logs' && renderLogsTab()}
+        {(mainTab === 'workbench' || mainTab === 'logs') && renderWorkbenchTab()}
       </main>
+
+      {/* 底部可收起与展开的实时日志抽屉 */}
+      {renderLogDrawer()}
 
       {/* 角色 DNA 切片更新提示 */}
       {dnaUpdatePrompt && (
@@ -4892,36 +4991,90 @@ function App() {
                 </>
               ) : (
                 <>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>1. 分镜场景提取 System Prompt</label>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>用于将小说章节正文切分并提炼为 5-10 个中文分镜描述卡片</div>
-                    <textarea 
-                      value={config.system_prompt_extract_scenes || ""}
-                      onChange={(e) => setConfig({ ...config, system_prompt_extract_scenes: e.target.value })}
-                      style={{ width: '100%', height: '170px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>2. 角色设定 DNA 提取 System Prompt</label>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>用于智能扫描全书主要人物，提取常驻的发型、瞳色、服装等固有 DNA 特征</div>
-                    <textarea 
-                      value={config.system_prompt_character_dna || ""}
-                      onChange={(e) => setConfig({ ...config, system_prompt_character_dna: e.target.value })}
-                      style={{ width: '100%', height: '170px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
-                    />
-                  </div>
+                  {(() => {
+                    const handleResetPrompt = async (promptField, promptLabel) => {
+                      try {
+                        const res = await fetch(`${API_BASE}/api/config/default-prompts`);
+                        if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+                        const defaults = await res.json();
+                        if (defaults && defaults[promptField]) {
+                          setConfig(prev => ({ ...prev, [promptField]: defaults[promptField] }));
+                          alert(`已恢复【${promptLabel}】为官方最新默认提示词！请点击弹窗下方的「保存设置」生效。`);
+                        }
+                      } catch (err) {
+                        alert(`获取默认提示词失败: ${err.message}`);
+                      }
+                    };
 
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px', fontWeight: '500' }}>3. 高级生图参数生成 System Prompt（Danbooru 标签版）</label>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
-                      这是后端实际使用的底稿字段。保存后会写入 `illustrator_config.json` 并热更新运行中的 pipeline；后端会在此基础上补运行时 contract 与校验规则，再按 base | character 分段发给 NAI。
-                    </div>
-                    <textarea 
-                      value={config.system_prompt_advanced_prompt || ""}
-                      onChange={(e) => setConfig({ ...config, system_prompt_advanced_prompt: e.target.value })}
-                      style={{ width: '100%', height: '200px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(168,85,247,0.35)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
-                    />
-                  </div>
+                    return (
+                      <>
+                        <div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                            <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: '500' }}>1. 分镜场景提取 System Prompt</label>
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              style={{ padding: '2px 8px', fontSize: '0.72rem', color: '#c084fc', display: 'flex', alignItems: 'center', gap: '4px' }}
+                              onClick={() => handleResetPrompt('system_prompt_extract_scenes', '分镜场景提取')}
+                              title="恢复最新官方默认提示词"
+                            >
+                              <RefreshCw size={11} /> 恢复官方默认
+                            </button>
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>用于将小说章节正文切分并提炼为 5-10 个中文分镜描述卡片</div>
+                          <textarea 
+                            value={config.system_prompt_extract_scenes || ""}
+                            onChange={(e) => setConfig({ ...config, system_prompt_extract_scenes: e.target.value })}
+                            style={{ width: '100%', height: '170px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
+                          />
+                        </div>
+
+                        <div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                            <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: '500' }}>2. 角色设定 DNA 提取 System Prompt</label>
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              style={{ padding: '2px 8px', fontSize: '0.72rem', color: '#c084fc', display: 'flex', alignItems: 'center', gap: '4px' }}
+                              onClick={() => handleResetPrompt('system_prompt_character_dna', '角色设定 DNA 提取（含同人脸模代理）')}
+                              title="恢复最新官方默认提示词（包含同人脸模代理协议）"
+                            >
+                              <RefreshCw size={11} /> 恢复官方默认 (含同人脸模)
+                            </button>
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>用于智能扫描全书主要人物，提取常驻的发型、瞳色、服装与同人脸模代理等固有 DNA 特征</div>
+                          <textarea 
+                            value={config.system_prompt_character_dna || ""}
+                            onChange={(e) => setConfig({ ...config, system_prompt_character_dna: e.target.value })}
+                            style={{ width: '100%', height: '170px', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
+                          />
+                        </div>
+
+                        <div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                            <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: '500' }}>3. 高级生图参数生成 System Prompt（Danbooru 标签版）</label>
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              style={{ padding: '2px 8px', fontSize: '0.72rem', color: '#c084fc', display: 'flex', alignItems: 'center', gap: '4px' }}
+                              onClick={() => handleResetPrompt('system_prompt_advanced_prompt', '高级生图参数生成')}
+                              title="恢复最新官方默认提示词"
+                            >
+                              <RefreshCw size={11} /> 恢复官方默认
+                            </button>
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                            这是后端实际使用的底稿字段。保存后会写入 `illustrator_config.json` 并热更新运行中的 pipeline；后端会在此基础上补运行时 contract 与校验规则，再按 base | character 分段发给 NAI。
+                          </div>
+                          <textarea 
+                            value={config.system_prompt_advanced_prompt || ""}
+                            onChange={(e) => setConfig({ ...config, system_prompt_advanced_prompt: e.target.value })}
+                            style={{ width: '100%', height: '200px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(168,85,247,0.35)', borderRadius: '6px', padding: '8px', color: 'white', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: '1.4', resize: 'vertical' }}
+                          />
+                        </div>
+                      </>
+                    );
+                  })()}
                   {(() => {
                     const allArtistPresets = [...BUILTIN_ARTIST_PRESETS, ...(config.artist_presets || [])];
                     const matchedPreset = allArtistPresets.find(p => (p.prompt || '').trim() === (config.artistStylePrompt || '').trim());

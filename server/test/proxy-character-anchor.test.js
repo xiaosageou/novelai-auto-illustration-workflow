@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { sanitizeCharacterDnaEntry, LLMExtractor } from '../services/llm-extractor.js';
 import { ProjectProgress } from '../utils/db.js';
+import { normalizeCharacterDnaPromptForConfig } from '../utils/advanced-prompt-contract.js';
+import { DEFAULT_CHARACTER_DNA_PROMPT } from '../utils/default-prompts.js';
 
 test('sanitizeCharacterDnaEntry parses and normalizes proxy_character', () => {
   const rawEntry = {
@@ -190,3 +192,36 @@ test('generateScenePromptAdvanced includes proxy character instructions in chara
     globalThis.fetch = originalFetch;
   }
 });
+
+test('normalizeCharacterDnaPromptForConfig upgrades legacy prompt to DEFAULT_CHARACTER_DNA_PROMPT', () => {
+  const legacyPrompt = `
+  [系统指令] 你现在不是一个 AI 聊天助手。你的身份是一位服务于顶级日本动漫出版社的「资深角色设定美术总监」...
+  角色设定 DNA 资料表
+  输出格式：
+  [ { "name": "角色名", "tags": "..." } ]
+  `;
+  const result = normalizeCharacterDnaPromptForConfig(legacyPrompt);
+  assert.equal(result, DEFAULT_CHARACTER_DNA_PROMPT, 'legacy default prompt should be upgraded to current DEFAULT_CHARACTER_DNA_PROMPT');
+  assert.ok(result.includes('proxy_character'), 'upgraded prompt must include proxy_character');
+  assert.ok(result.includes('同人动漫角色脸模代理'), 'upgraded prompt must include 同人动漫角色脸模代理');
+});
+
+test('normalizeCharacterDnaPromptForConfig preserves modern prompt with proxy_character', () => {
+  const modernPrompt = `
+  自定义提示词
+  同人动漫角色脸模代理
+  "proxy_character": { "danbooru_tag": "asuka" }
+  `;
+  const result = normalizeCharacterDnaPromptForConfig(modernPrompt);
+  assert.equal(result, modernPrompt.trim());
+});
+
+test('normalizeCharacterDnaPromptForConfig appends proxy anchor contract to custom prompt missing it', () => {
+  const customPrompt = `
+  你是一个自制助手，请提取角色 tags。
+  `;
+  const result = normalizeCharacterDnaPromptForConfig(customPrompt);
+  assert.ok(result.includes('同人动漫角色脸模代理'), 'must append proxy anchor');
+  assert.ok(result.includes('"proxy_character"'), 'must include proxy_character schema');
+});
+

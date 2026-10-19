@@ -859,7 +859,7 @@ h1, h2, h3, h4 {
 /* 主视口 */
 .app-main-viewport {
   flex: 1;
-  height: calc(100vh - 56px);
+  min-height: 0;
   overflow: hidden;
   position: relative;
   display: flex;
@@ -1121,14 +1121,171 @@ h1, h2, h3, h4 {
   overflow: hidden;
 }
 
-/* ═════════ 4. 实时日志 Tab ═════════ */
-.logs-tab-view {
+/* ═════════ 4. 底部可收起/展开的实时日志抽屉 ═════════ */
+.log-dock-container {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface-2, #14141b);
+  border-top: 1px solid var(--border-light, rgba(255, 255, 255, 0.08));
+  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.45);
+  transition: height 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 50;
+  flex-shrink: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.log-dock-container.collapsed {
+  height: 36px;
+  min-height: 36px;
+}
+
+.log-dock-container.expanded {
+  height: 340px;
+  min-height: 240px;
+}
+
+.log-dock-container.maximized {
+  height: calc(100vh - 70px);
+}
+
+/* 折叠状态条 */
+.log-dock-collapsed-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 0 16px;
+  cursor: pointer;
+  background: rgba(20, 20, 28, 0.9);
+  backdrop-filter: blur(8px);
+  user-select: none;
+  transition: background 0.2s ease;
+}
+
+.log-dock-collapsed-bar:hover {
+  background: rgba(30, 30, 42, 0.98);
+}
+
+.log-dock-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
   flex: 1;
+}
+
+.log-dock-icon {
+  color: #a855f7;
+  flex-shrink: 0;
+}
+
+.log-dock-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.log-dock-count {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.log-dock-latest-preview {
+  margin-left: 12px;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-title);
+}
+
+.log-dock-latest-preview .latest-time {
+  color: var(--text-muted);
+  margin-right: 6px;
+}
+
+.log-dock-latest-preview .latest-text.error {
+  color: var(--color-pink);
+}
+
+.log-dock-latest-preview .latest-text.warning {
+  color: var(--color-orange);
+}
+
+.log-dock-latest-preview .latest-text.success {
+  color: var(--color-green);
+}
+
+.log-dock-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.log-dock-action-btn {
+  padding: 4px 10px;
+  font-size: 0.74rem;
+  border-radius: 6px;
+}
+
+/* 展开状态控制台 */
+.log-dock-expanded-view {
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: 16px 24px;
+  padding: 10px 16px 14px;
   overflow: hidden;
+  box-sizing: border-box;
+}
+
+.log-dock-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+.log-dock-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.log-dock-header-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.log-dock-header-subtitle {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.log-dock-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cooldown-chip.mini {
+  padding: 2px 6px;
+  font-size: 0.70rem;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .logs-split-container {

@@ -1,5 +1,34 @@
 import { preserveTextForLlm } from './prompt-cleaner.js';
-import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_ADVANCED_PROMPT } from './default-prompts.js';
+import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_ADVANCED_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT } from './default-prompts.js';
+
+export function normalizeCharacterDnaPromptForConfig(taskPrompt) {
+  const prompt = preserveTextForLlm(taskPrompt || DEFAULT_CHARACTER_DNA_PROMPT).trim();
+  const hasProxyCharacter = /["']?proxy_character["']?/i.test(prompt)
+    && /同人动漫角色脸模代理|Proxy Character Anchor/i.test(prompt);
+
+  if (hasProxyCharacter) return prompt;
+
+  // 如果包含旧版默认 DNA 提示词特征，直接无损升级为最新的 DEFAULT_CHARACTER_DNA_PROMPT
+  if (/资深角色设定美术总监|角色设定 DNA 资料表|专业艺术解剖学视角/i.test(prompt)) {
+    return DEFAULT_CHARACTER_DNA_PROMPT;
+  }
+
+  // 自定义提示词缺少 proxy_character 时，追加同人脸模代理规范与样例
+  return `${prompt}
+
+---
+
+## 同人动漫角色脸模代理 (Proxy Character Anchor)
+为了让 NovelAI 在后续长篇多场景生图时保持面部骨相一致性，请根据角色的发型、发色、瞳色、体态和气质，在 Danbooru 知名动漫角色库中挑选最贴近的一线角色作为脸模底模。
+请在每个角色的 JSON 输出中必须包含 "proxy_character" 字段（若角色为怪物或完全无法匹配可填 null）：
+"proxy_character": {
+  "danbooru_tag": "kasugano_sora",
+  "character_name_cn": "春日野穹",
+  "series": "缘之空 (Yosuga no Sora)",
+  "reason": "银白长发、病娇纤细、双马尾/散发、浅色系居家服气质高度契合",
+  "suppress_tags": ["black_dress", "hair_ornament"]
+}`;
+}
 
 export function normalizeAdvancedPromptForConfig(taskPrompt) {
   const prompt = preserveTextForLlm(taskPrompt || DEFAULT_ADVANCED_PROMPT).trim();
