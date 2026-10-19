@@ -7,6 +7,7 @@ import { getExponentialBackoffDelaySeconds } from '../utils/backoff.js';
 import { estimateV45Tokens } from './prompt-builder.js';
 import { ensureAdvancedPromptContract, withSystemPrefix } from '../utils/advanced-prompt-contract.js';
 import { promptReferenceService } from './prompt-reference-service.js';
+import { extractTargetSliceFromContext } from '../utils/chapter-scene-batching.js';
 
 export { ensureAdvancedPromptContract, withSystemPrefix } from '../utils/advanced-prompt-contract.js';
 
@@ -1439,15 +1440,17 @@ function buildSceneExtractionUserContent({
   sceneCount = 1,
   countMetrics = null,
   selectionBlock = '',
-  selectionGuidance = ''
+  selectionGuidance = '',
+  hasTargetSlice = false
 } = {}) {
   const cleanedTitle = preserveTextForLlm(chapterTitle);
   const cleanedText = preserveTextForLlm(text);
   const metrics = countMetrics || getSceneCountMetrics(text);
   const countRule = formatSceneCountRule(metrics);
+  const isSlice = hasTargetSlice || text.includes('=== 【本批次重点提取目标切片');
   const countLabel = metrics.language === 'english'
     ? '本章英文总词数'
-    : '本章有效字符数';
+    : (isSlice ? '本批切片有效字符数' : '本章有效字符数');
 
   const parts = [
     `请通读以下完整章节文本，提炼为精美定格的二次元视觉多场景列表。每个场景都必须是一张瞬间定格的单帧画面。`,
@@ -1459,6 +1462,17 @@ function buildSceneExtractionUserContent({
     `- scene_idx 必须从 1 连续编号到 ${sceneCount}。`,
     `- 完整回复必须使用 ${SCENES_JSON_START} 和 ${SCENES_JSON_END} 包裹 JSON 数组。`
   ];
+
+  if (isSlice) {
+    parts.push(
+      ``,
+      `【切片提取范围硬约束（最高优先级）】`,
+      `- 当前发送的正文中包含本章参考上下文与本批次重点提取目标切片。`,
+      `- 必须且仅在【本批次重点提取目标切片】标记的范围内提炼 ${sceneCount} 个场景！`,
+      `- 每个场景的 trigger_sentence 必须逐字出自该目标切片，严禁使用参考上下文中的句子！`,
+      `- 参考上下文仅供理解角色衣着、身份外貌、前后情节与剧情连续性，禁止为参考上下文内容生成任何场景。`
+    );
+  }
 
   if (selectionGuidance) {
     parts.push(
@@ -1487,10 +1501,10 @@ function buildSceneExtractionUserContent({
     `- 正确示例：'昏暗地铁车厢内，男主站在中央，周围女生像黑色剪影般围住他。'`,
     `- 错误示例：'男主走进车厢后环顾四周，女生们慢慢向他靠近。'`,
     ``,
-    `请覆盖全章不同事件阶段，不要只提取开头段落：`,
+    isSlice ? `请覆盖目标切片范围内的不同事件阶段，不要只提取开头段落：` : `请覆盖全章不同事件阶段，不要只提取开头段落：`,
     ``,
     `【章节名】：${cleanedTitle}`,
-    `【完整正文文本】：`,
+    isSlice ? `【章节正文与提取切片】：` : `【完整正文文本】：`,
     cleanedText
   );
 
@@ -1626,15 +1640,19 @@ export class LLMExtractor {
     const cjkDivisor = Number(sceneCountOptions?.cjkDivisor) || 600;
     const englishDivisor = Number(sceneCountOptions?.englishDivisor) || 350;
 
+    const targetSlice = sceneCountOptions?.targetSlice || extractTargetSliceFromContext(text) || text;
+    const hasTargetSlice = Boolean(targetSlice && targetSlice !== text);
+
     const sceneCount = Number.isInteger(requestedSceneCount) && requestedSceneCount > 0
       ? requestedSceneCount
-      : calculateSceneCount(text, cjkDivisor, englishDivisor);
-    const countMetrics = getSceneCountMetrics(text, cjkDivisor, englishDivisor);
+      : calculateSceneCount(targetSlice, cjkDivisor, englishDivisor);
+    const countMetrics = getSceneCountMetrics(targetSlice, cjkDivisor, englishDivisor);
     const userContent = buildSceneExtractionUserContent({
       chapterTitle,
       text,
       sceneCount,
-      countMetrics
+      countMetrics,
+      hasTargetSlice
     });
 
     const url = `${this.baseUrl}/chat/completions`;

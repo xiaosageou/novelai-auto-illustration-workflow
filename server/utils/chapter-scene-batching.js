@@ -82,30 +82,150 @@ function splitTextForSceneCount(text) {
   return findNearestSentenceBoundary(normalized, Math.floor(normalized.length / 2));
 }
 
-function buildBatchPlan(text, sceneCount, { splitThreshold = 10000, maxScenesPerRequest = 5 } = {}) {
-  const normalized = normalizeTextBlock(text);
-  if (!normalized) return [];
+export const TARGET_SLICE_START = '=== 【本批次重点提取目标切片（必须且仅在此范围内提炼分镜画面与提取 trigger_sentence）】 ===';
+export const TARGET_SLICE_END = '=== 【目标切片结束】 ===';
+export const PRECEDING_CONTEXT_START = '=== 【本章前序参考上下文（仅供理解人物、剧情与状态，禁止在此提取分镜）】 ===';
+export const PRECEDING_CONTEXT_END = '=== 【前序参考上下文结束】 ===';
+export const FOLLOWING_CONTEXT_START = '=== 【本章后序参考上下文（仅供理解剧情与状态，禁止在此提取分镜）】 ===';
+export const FOLLOWING_CONTEXT_END = '=== 【后序参考上下文结束】 ===';
+
+export function extractTargetSliceFromContext(text) {
+  if (typeof text !== 'string') return '';
+  const startIdx = text.indexOf(TARGET_SLICE_START);
+  if (startIdx === -1) return '';
+  const contentStart = startIdx + TARGET_SLICE_START.length;
+  const endIdx = text.indexOf(TARGET_SLICE_END, contentStart);
+  if (endIdx === -1) {
+    return text.slice(contentStart).trim();
+  }
+  return text.slice(contentStart, endIdx).trim();
+}
+
+export function formatBatchTextWithContext({
+  chapterText,
+  startOffset = 0,
+  endOffset = 0,
+  isLongChapter = false,
+  maxLongChapterTotal = 5000
+}) {
+  const normalizedChapter = normalizeTextBlock(chapterText);
+  if (!normalizedChapter) return '';
+
+  const safeStart = Math.max(0, Math.min(startOffset, normalizedChapter.length));
+  const safeEnd = Math.max(safeStart, Math.min(endOffset, normalizedChapter.length));
+  const sliceText = normalizedChapter.slice(safeStart, safeEnd).trim();
+
+  // 若切片本身覆盖全章（单批次提炼），直接返回全章文本，无需包裹标注
+  if (safeStart === 0 && safeEnd >= normalizedChapter.length) {
+    return sliceText;
+  }
+
+  if (isLongChapter) {
+    // 超过1万字：发送本切片 + 前面的总计0.5万字以内的内容（不发送后文）
+    const maxPrecedingLen = Math.max(0, maxLongChapterTotal - sliceText.length);
+    let precedingText = '';
+    if (safeStart > 0 && maxPrecedingLen > 0) {
+      const rawStart = Math.max(0, safeStart - maxPrecedingLen);
+      precedingText = normalizedChapter.slice(rawStart, safeStart).trim();
+    }
+
+    const parts = [];
+    if (precedingText) {
+      parts.push(
+        PRECEDING_CONTEXT_START,
+        precedingText,
+        PRECEDING_CONTEXT_END,
+        ''
+      );
+    }
+    parts.push(
+      TARGET_SLICE_START,
+      sliceText,
+      TARGET_SLICE_END
+    );
+    return parts.join('\n');
+  }
+
+  // 不超过1万字：发送全章，但标出llm需要提取的切片
+  const precedingText = normalizedChapter.slice(0, safeStart).trim();
+  const followingText = normalizedChapter.slice(safeEnd).trim();
+
+  const parts = [];
+  if (precedingText) {
+    parts.push(
+      PRECEDING_CONTEXT_START,
+      precedingText,
+      PRECEDING_CONTEXT_END,
+      ''
+    );
+  }
+  parts.push(
+    TARGET_SLICE_START,
+    sliceText,
+    TARGET_SLICE_END
+  );
+  if (followingText) {
+    parts.push(
+      '',
+      FOLLOWING_CONTEXT_START,
+      followingText,
+      FOLLOWING_CONTEXT_END
+    );
+  }
+  return parts.join('\n');
+}
+
+export function buildBatchPlan(text, sceneCount, { splitThreshold = 10000, maxScenesPerRequest = 5 } = {}) {
+  const normalizedChapter = normalizeTextBlock(text);
+  if (!normalizedChapter) return [];
 
   const numericSceneCount = Number.isInteger(sceneCount) && sceneCount > 0 ? sceneCount : 1;
-  const shouldSplitBySceneCount = numericSceneCount > maxScenesPerRequest;
-  const shouldSplitByLength = normalized.length > splitThreshold;
 
-  if (!shouldSplitBySceneCount && !shouldSplitByLength) {
-    return [{ text: normalized, sceneCount: numericSceneCount }];
+  function recurse(currentText, currentCount, baseOffset) {
+    const shouldSplitBySceneCount = currentCount > maxScenesPerRequest;
+    const shouldSplitByLength = currentText.length > splitThreshold;
+
+    if (!shouldSplitBySceneCount && !shouldSplitByLength) {
+      return [{
+        text: currentText,
+        sceneCount: currentCount,
+        startOffset: baseOffset,
+        endOffset: baseOffset + currentText.length
+      }];
+    }
+
+    const splitBatches = shouldSplitByLength
+      ? splitChapterTextIntoBatches(currentText, splitThreshold)
+      : splitTextForSceneCount(currentText);
+
+    if (splitBatches.length <= 1) {
+      return [{
+        text: currentText,
+        sceneCount: currentCount,
+        startOffset: baseOffset,
+        endOffset: baseOffset + currentText.length
+      }];
+    }
+
+    const childSceneCounts = allocateSceneCounts(currentCount, splitBatches);
+    const results = [];
+    let searchFrom = 0;
+
+    for (let index = 0; index < splitBatches.length; index++) {
+      const batchText = splitBatches[index];
+      const childCount = childSceneCounts[index] || 1;
+      const foundIdx = currentText.indexOf(batchText, searchFrom);
+      const batchOffset = foundIdx >= 0 ? baseOffset + foundIdx : baseOffset + searchFrom;
+      searchFrom = (foundIdx >= 0 ? foundIdx : searchFrom) + batchText.length;
+
+      const subBatches = recurse(batchText, childCount, batchOffset);
+      results.push(...subBatches);
+    }
+
+    return results;
   }
 
-  const splitBatches = shouldSplitByLength
-    ? splitChapterTextIntoBatches(normalized, splitThreshold)
-    : splitTextForSceneCount(normalized);
-  if (splitBatches.length <= 1) {
-    return [{ text: normalized, sceneCount: numericSceneCount }];
-  }
-
-  const childSceneCounts = allocateSceneCounts(numericSceneCount, splitBatches);
-  return splitBatches.flatMap((batchText, index) => {
-    const childSceneCount = childSceneCounts[index] || 1;
-    return buildBatchPlan(batchText, childSceneCount, { splitThreshold, maxScenesPerRequest });
-  });
+  return recurse(normalizedChapter, numericSceneCount, 0);
 }
 
 export function splitChapterTextIntoBatches(text, threshold = 10000) {
@@ -179,12 +299,13 @@ export async function extractChapterScenesInBatches({
     return [];
   }
 
+  const isLongChapter = chapterText.length > 10000;
   const sceneCount = Number.isInteger(requestedSceneCount) && requestedSceneCount > 0
     ? requestedSceneCount
     : null;
   const batchPlan = sceneCount
     ? buildBatchPlan(chapterText, sceneCount, { splitThreshold, maxScenesPerRequest })
-    : [{ text: chapterText, sceneCount: null }];
+    : [{ text: chapterText, sceneCount: null, startOffset: 0, endOffset: chapterText.length }];
 
   if (batchPlan.length <= 1 || !sceneCount || sceneCount <= 1) {
     const scenes = await sceneExtractor.extractChapterScenes(chapterTitle, chapterText, model, onProgressLog, requestedSceneCount, sceneCountOptions);
@@ -206,22 +327,37 @@ export async function extractChapterScenesInBatches({
     const batchTitle = `${chapterTitle}（${index + 1}/${batchPlan.length}）`;
     const batchText = batchPlan[index].text;
     const batchSceneCount = batchPlan[index].sceneCount || 1;
-    onProgressLog?.(`[LLM] 章节「${chapterTitle}」拆分提炼第 ${index + 1}/${batchPlan.length} 段，发送 ${batchText.length} 字，提炼 ${batchSceneCount} 个场景...`);
+    const startOffset = batchPlan[index].startOffset ?? 0;
+    const endOffset = batchPlan[index].endOffset ?? chapterText.length;
+    const contextualText = formatBatchTextWithContext({
+      chapterText,
+      startOffset,
+      endOffset,
+      isLongChapter,
+      maxLongChapterTotal: 5000
+    });
+
+    onProgressLog?.(`[LLM] 章节「${chapterTitle}」拆分提炼第 ${index + 1}/${batchPlan.length} 批，切片 ${batchText.length} 字，附带上下文总计发送 ${contextualText.length} 字，提炼 ${batchSceneCount} 个场景...`);
     const batchInfo = {
       batchIndex: index,
       totalBatches: batchPlan.length,
       requestedSceneCount: batchSceneCount,
       chapterTitle: batchTitle,
-      sourceText: batchText
+      sourceText: batchText,
+      contextualText
     };
     try {
       const batchScenes = await sceneExtractor.extractChapterScenes(
         batchTitle,
-        batchText,
+        contextualText,
         model,
         onProgressLog,
         batchSceneCount,
-        sceneCountOptions
+        {
+          ...sceneCountOptions,
+          targetSlice: batchText,
+          contextualText
+        }
       );
       await onBatchExtracted?.(batchScenes, batchInfo);
       mergedScenes.push(...batchScenes);
