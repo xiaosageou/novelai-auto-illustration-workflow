@@ -46,6 +46,20 @@ function normalizeConfidence(value) {
   return Math.max(0, Math.min(1, n));
 }
 
+function canonicalTagString(value = '') {
+  return uniqueClean(String(value || '').split(/[,，]/)).sort().join(',');
+}
+
+function sameFeatureSet(a = {}, b = {}) {
+  const canonical = (features) => JSON.stringify(
+    DNA_FEATURE_KEYS.map(key => [
+      key,
+      uniqueClean(Array.isArray(features?.[key]) ? features[key] : []).sort()
+    ])
+  );
+  return canonical(a) === canonical(b);
+}
+
 /**
  * 原子化安全地将数据写入 JSON 文件
  * 步骤：先写入随机命名的临时文件，然后再重命名替换目标文件，防止写入中途断电导致文件损坏。
@@ -417,7 +431,9 @@ export class ProjectProgress {
     if (!this.data || !name) return false;
     const char = this.data.global_characters?.[name];
     if (!char) return false;
+    const previousTags = char.tags || "";
     char.tags = uniqueClean(String(tags || '').split(/[,，]/)).join(", ");
+    this._syncBaseTagsToVersions(name, previousTags, char.tags);
     return true;
   }
 
@@ -426,11 +442,27 @@ export class ProjectProgress {
     const char = this.data.global_characters?.[name];
     if (!char) return false;
     const defaultFeatures = Object.fromEntries(DNA_FEATURE_KEYS.map(key => [key, []]));
+    const previousTags = char.tags || "";
+    const previousFeatures = char.features || {};
     const mergedFeatures = mergeFeatureTags(defaultFeatures, features || {});
     char.features = mergedFeatures;
     char.tags = uniqueClean(
       DNA_FEATURE_KEYS.flatMap(key => Array.isArray(mergedFeatures[key]) ? mergedFeatures[key] : [])
     ).join(", ");
+    // 基础 DNA 改动必须同步到「仍保持旧基础值」的外观版本，
+    // 否则 getCharacterDNAForChapter 会让版本快照永远覆盖用户的手动编辑。
+    const versions = this.data.character_dna_versions?.[name];
+    if (Array.isArray(versions)) {
+      for (const version of versions) {
+        if (sameFeatureSet(version.features, previousFeatures)) {
+          version.features = mergedFeatures;
+        }
+        if (canonicalTagString(version.tags) === canonicalTagString(previousTags)) {
+          version.tags = char.tags;
+        }
+        version.updatedAt = Date.now();
+      }
+    }
     return true;
   }
 
@@ -438,7 +470,29 @@ export class ProjectProgress {
     if (!this.data || !name) return false;
     const char = this.data.global_characters?.[name];
     if (!char) return false;
+    const previousProxy = char.proxy_character || null;
     char.proxy_character = proxyCharacter;
+    // 旧数据里版本可能带 proxy_character，需要一起改，否则版本仍然用旧脸模。
+    const versions = this.data.character_dna_versions?.[name];
+    if (Array.isArray(versions)) {
+      for (const version of versions) {
+        if (!version.proxy_character || JSON.stringify(version.proxy_character) === JSON.stringify(previousProxy)) {
+          version.proxy_character = proxyCharacter;
+          version.updatedAt = Date.now();
+        }
+      }
+    }
     return true;
+  }
+
+  _syncBaseTagsToVersions(name, previousTags = "", nextTags = "") {
+    const versions = this.data?.character_dna_versions?.[name];
+    if (!Array.isArray(versions)) return;
+    for (const version of versions) {
+      if (canonicalTagString(version.tags) === canonicalTagString(previousTags)) {
+        version.tags = nextTags;
+        version.updatedAt = Date.now();
+      }
+    }
   }
 }
