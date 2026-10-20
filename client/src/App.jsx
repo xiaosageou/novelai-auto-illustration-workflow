@@ -452,6 +452,14 @@ function App() {
         });
         if (data.remaining === 0 && !data.pipelineRunning) setPipelineRunning(false);
         addLog(`❌ 场景 #${data.sceneIdx} 队列重绘失败: ${data.message || '未知错误'}`, 'error');
+      } else if (data.state === 'skipped') {
+        setLoadingScenes(prev => {
+          const copy = { ...prev };
+          delete copy[sceneKey];
+          return copy;
+        });
+        if (data.remaining === 0 && !data.pipelineRunning) setPipelineRunning(false);
+        addLog(`⏭️ 场景 #${data.sceneIdx} 已跳过：${data.message || '项目已暂停'}`, 'warning');
       }
     });
 

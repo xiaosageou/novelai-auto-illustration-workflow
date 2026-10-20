@@ -251,3 +251,179 @@ test('GlobalQueueManager: 状态快照与向后兼容方法', async () => {
   assert.ok(projState.globalQueue);
   assert.equal(projState.cooldown.remainingSeconds, 12);
 });
+
+test('GlobalQueueManager: 最后一张完成后 remaining=0 且 pipelineRunning=false', async () => {
+  const events = [];
+  const pipeline = {
+    isPausedByUser: false,
+    rendered: 0,
+    async redrawSceneWithSavedPrompt() { this.rendered += 1; return {}; },
+    projectProgress: { getCompletedChapters: () => ({}), save: async () => {} },
+    chapters: []
+  };
+  const manager = new GlobalQueueManager({
+    getPipeline: async () => pipeline,
+    broadcastSSE: (type, data) => events.push([type, data]),
+    cooldownManager: { getState: () => ({}) }
+  });
+
+  manager.enqueueImageJob({ projectName: 'P', chapterKey: 'ch1', sceneIdx: 1 });
+  while (manager.imageQueue.running || manager.imageQueue.current) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+
+  const completed = events.filter(([t, d]) => t === 'redraw_queue' && d.state === 'completed');
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0][1].remaining, 0);
+  assert.equal(completed[0][1].pipelineRunning, false);
+  assert.equal(events.filter(([t]) => t === 'pipeline_completed').length, 1);
+});
+
+test('GlobalQueueManager: 暂停项目跳过批量任务并广播 skipped，不误报完成', async () => {
+  const events = [];
+  const pipeline = {
+    isPausedByUser: true,
+    rendered: 0,
+    async redrawSceneWithSavedPrompt() { this.rendered += 1; return {}; },
+    projectProgress: { getCompletedChapters: () => ({}), save: async () => {} },
+    chapters: []
+  };
+  const manager = new GlobalQueueManager({
+    getPipeline: async () => pipeline,
+    broadcastSSE: (type, data) => events.push([type, data]),
+    cooldownManager: { getState: () => ({}) }
+  });
+
+  manager.enqueueImageJob({ projectName: 'P', chapterKey: 'ch1', sceneIdx: 2 });
+  while (manager.imageQueue.running || manager.imageQueue.current) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+
+  assert.equal(pipeline.rendered, 0);
+  assert.equal(pipeline.isPausedByUser, true);
+  const skipped = events.filter(([t, d]) => t === 'redraw_queue' && d.state === 'skipped');
+  assert.equal(skipped.length, 1);
+  assert.equal(skipped[0][1].remaining, 0);
+  assert.equal(events.filter(([t]) => t === 'pipeline_completed').length, 0);
+});
+
+test('GlobalQueueManager: 暂停状态下的手动插队重绘会解除暂停并正常出图', async () => {
+  const events = [];
+  const pipeline = {
+    isPausedByUser: true,
+    rendered: 0,
+    async redrawSceneWithSavedPrompt() { this.rendered += 1; return {}; },
+    projectProgress: { getCompletedChapters: () => ({}), save: async () => {} },
+    chapters: []
+  };
+  const manager = new GlobalQueueManager({
+    getPipeline: async () => pipeline,
+    broadcastSSE: (type, data) => events.push([type, data]),
+    cooldownManager: { getState: () => ({}) }
+  });
+
+  manager.enqueueImageJob({ projectName: 'P', chapterKey: 'ch1', sceneIdx: 3, mode: 'nai_only', priority: true });
+  while (manager.imageQueue.running || manager.imageQueue.current) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+
+  assert.equal(pipeline.rendered, 1);
+  assert.equal(pipeline.isPausedByUser, false);
+  assert.equal(events.filter(([t, d]) => t === 'redraw_queue' && d.state === 'completed').length, 1);
+});
+
+test('GlobalQueueManager: 最后一张失败时广播 pipeline_failed 而不是 completed', async () => {
+  const events = [];
+  const pipeline = {
+    isPausedByUser: false,
+    async redrawSceneWithSavedPrompt() { throw new Error('nai boom'); },
+    projectProgress: { getCompletedChapters: () => ({}), save: async () => {} },
+    chapters: []
+  };
+  const manager = new GlobalQueueManager({
+    getPipeline: async () => pipeline,
+    broadcastSSE: (type, data) => events.push([type, data]),
+    cooldownManager: { getState: () => ({}) }
+  });
+
+  manager.enqueueImageJob({ projectName: 'P', chapterKey: 'ch1', sceneIdx: 4 });
+  while (manager.imageQueue.running || manager.imageQueue.current) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+
+  const failed = events.filter(([t, d]) => t === 'redraw_queue' && d.state === 'failed');
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0][1].message, 'nai boom');
+  assert.equal(events.filter(([t]) => t === 'pipeline_completed').length, 0);
+  assert.equal(events.filter(([t]) => t === 'pipeline_failed').length, 1);
+});
+
+test('GlobalQueueManager: regenerate_scene 先重构 Prompt，再以优先级进入生图队列', async () => {
+  const steps = [];
+  const pipeline = {
+    isPausedByUser: false,
+    async regenerateScenePromptOnly(chapKey, sceneIdx) {
+      steps.push(`regenerate:${chapKey}:${sceneIdx}`);
+    },
+    async redrawSceneWithSavedPrompt(chapKey, sceneIdx) {
+      steps.push(`draw:${chapKey}:${sceneIdx}`);
+      return {};
+    },
+    projectProgress: { getCompletedChapters: () => ({}), save: async () => {} },
+    chapters: []
+  };
+  const manager = new GlobalQueueManager({
+    getPipeline: async () => pipeline,
+    broadcastSSE: () => {},
+    cooldownManager: { getState: () => ({}) }
+  });
+
+  manager.enqueuePromptJob({
+    projectName: 'P',
+    type: 'regenerate_scene',
+    chapterKey: 'ch1',
+    payload: { sceneIdx: 7 },
+    priority: true
+  });
+
+  while (manager.promptQueue.running || manager.promptQueue.current || manager.promptQueue.items.length > 0
+    || manager.imageQueue.running || manager.imageQueue.current || manager.imageQueue.items.length > 0) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+
+  assert.deepEqual(steps, ['regenerate:ch1:7', 'draw:ch1:7']);
+});
+
+test('GlobalQueueManager: regenerate_scene 失败时广播场景 failed 终态', async () => {
+  const events = [];
+  const pipeline = {
+    isPausedByUser: false,
+    async regenerateScenePromptOnly() { throw new Error('regen boom'); },
+    async redrawSceneWithSavedPrompt() { return {}; },
+    projectProgress: { getCompletedChapters: () => ({}), save: async () => {} },
+    chapters: []
+  };
+  const manager = new GlobalQueueManager({
+    getPipeline: async () => pipeline,
+    broadcastSSE: (type, data) => events.push([type, data]),
+    cooldownManager: { getState: () => ({}) }
+  });
+
+  manager.enqueuePromptJob({
+    projectName: 'P',
+    type: 'regenerate_scene',
+    chapterKey: 'ch1',
+    payload: { sceneIdx: 8 },
+    priority: true
+  });
+
+  while (manager.promptQueue.running || manager.promptQueue.current || manager.promptQueue.items.length > 0) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+
+  const failed = events.filter(([t, d]) => t === 'redraw_queue' && d.state === 'failed');
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0][1].sceneIdx, 8);
+  assert.equal(failed[0][1].message, 'regen boom');
+  assert.equal(events.filter(([t]) => t === 'pipeline_failed').length, 1);
+});

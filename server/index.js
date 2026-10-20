@@ -1192,18 +1192,22 @@ app.post('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx/regen
   try {
     const { projectName, chapterKey, sceneIdx } = req.params;
     const pipeline = await getPipeline(projectName);
-
-    if (pipeline.isRunning) {
-      return res.status(400).json({ error: "流水线已在运行中，请先暂停后再进行操作" });
-    }
-
     const effectiveKey = pipeline.projectProgress.getEffectiveChapKeyByRaw(chapterKey);
-    // 异步执行
-    pipeline.regenerateAndRedrawScene(effectiveKey, sceneIdx).catch(err => {
-      console.error(`[Server] 单场景重构并重绘异常: ${err.message}`);
+
+    // 走全局 Prompt 队列（插队）：先重写分镜描述并重建 Prompt，再以优先级进入串行生图队列
+    const queued = globalQueueManager.enqueuePromptJob({
+      projectName,
+      type: 'regenerate_scene',
+      chapterKey: effectiveKey,
+      payload: { sceneIdx: Number(sceneIdx) },
+      priority: true
     });
 
-    res.json({ success: true, message: `单场景 #${sceneIdx} 描述重构与重绘已在后台启动` });
+    const message = queued.duplicate
+      ? `场景 #${sceneIdx} 的重构任务已在全局队列中`
+      : `场景 #${sceneIdx} 已加入全局队列（插队）：先重构描述与 Prompt，再优先出图`;
+
+    res.json({ success: true, message, ...queued });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

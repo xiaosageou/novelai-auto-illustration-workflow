@@ -90,6 +90,20 @@ export class GlobalQueueManager extends EventEmitter {
     const position = priority ? 1 : this.promptQueue.items.length;
     this.notifyStateChange();
 
+    // 场景级 Prompt 任务：同步广播排队状态，前端据此点亮该场景的 loading
+    if (payload && payload.sceneIdx != null) {
+      this.broadcastSSE?.('redraw_queue', {
+        projectName,
+        chapterKey: normalizedChapterKey,
+        sceneIdx: Number(payload.sceneIdx),
+        state: 'queued',
+        priority: Boolean(priority),
+        position,
+        remaining: this.getProjectPendingImageCount(projectName),
+        message: type === 'regenerate_scene' ? '等待重构描述与 Prompt' : '等待重新提炼 Prompt'
+      });
+    }
+
     // 异步触发调度
     void this._processPromptQueue();
 
@@ -179,9 +193,35 @@ export class GlobalQueueManager extends EventEmitter {
               mode: 'nai_only',
               priority: true
             });
+          } else if (job.type === 'regenerate_scene') {
+            // 单场景描述重构：先重写分镜卡片并重建 Prompt，再插队进入串行生图队列
+            await pipeline.regenerateScenePromptOnly(job.chapterKey, job.payload.sceneIdx);
+            this.enqueueImageJob({
+              projectName: job.projectName,
+              chapterKey: job.chapterKey,
+              sceneIdx: job.payload.sceneIdx,
+              mode: 'nai_only',
+              priority: true
+            });
+            this.broadcastSSE?.('log', {
+              text: `🟢 场景 #${job.payload.sceneIdx} 描述与 Prompt 重构完成，已插入生图队列最前`,
+              type: 'info'
+            });
           }
         } catch (error) {
           console.error(`[GlobalQueue] Prompt 任务执行异常 (${job.projectName} / ${job.type}):`, error);
+          // 场景级 Prompt 任务失败时补发场景终态，避免前端 loading 永久卡住
+          if (job.payload && job.payload.sceneIdx != null) {
+            this.broadcastSSE?.('redraw_queue', {
+              projectName: job.projectName,
+              chapterKey: job.chapterKey,
+              sceneIdx: Number(job.payload.sceneIdx),
+              state: 'failed',
+              message: error.message,
+              remaining: this.getProjectPendingImageCount(job.projectName),
+              pipelineRunning: this.isProjectActive(job.projectName)
+            });
+          }
           this.broadcastSSE?.('pipeline_failed', {
             projectName: job.projectName,
             chapterKey: job.chapterKey,
@@ -320,75 +360,96 @@ export class GlobalQueueManager extends EventEmitter {
         });
 
         let generationError = null;
+        let outcome = 'completed';
+        let outcomeMessage = '';
         try {
           const pipeline = await this.getPipeline(job.projectName);
-          
-          // 如果该项目已经被用户暂停，跳过执行
+
           if (pipeline.isPausedByUser) {
-            console.log(`[GlobalQueue] 项目「${job.projectName}」已暂停，跳过场景 #${job.sceneIdx} 的出图`);
-            continue;
-          }
-
-          // 核心绘制调用：使用已就绪/已保存的 Prompt 出图，严格串行并执行冷却
-          await pipeline.redrawSceneWithSavedPrompt(job.chapterKey, job.sceneIdx, { interleaved: true });
-
-          // 检查该章节是否所有场景均已绘制完成
-          const progress = pipeline.projectProgress.getCompletedChapters()?.[job.chapterKey];
-          if (progress && Array.isArray(progress.scenes) && progress.scenes.length > 0) {
-            const allSuccess = progress.scenes.every(s => s.status === 'SUCCESS');
-            if (allSuccess && progress.status !== 'completed') {
-              const chap = pipeline.chapters.find(c => {
-                const ck = pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
-                return pipeline.projectProgress.normalizeKey(ck) === pipeline.projectProgress.normalizeKey(job.chapterKey);
-              });
-              const content = String(chap?.content || '').trim();
-              pipeline.projectProgress.setChapterStatus(job.chapterKey, 'completed', progress.scenes, {
-                content_length: content.length
-              });
-              await pipeline.projectProgress.save();
-              this.broadcastSSE?.('chapter_queue', {
-                projectName: job.projectName,
-                chapterKey: job.chapterKey,
-                state: 'completed',
-                remaining: 0
-              });
+            if (job.priority) {
+              // 手动插队重绘是用户的显式操作意图：解除暂停后继续，避免点击无反应
+              pipeline.isPausedByUser = false;
+              console.log(`[GlobalQueue] 项目「${job.projectName}」处于暂停态，手动重绘场景 #${job.sceneIdx} 已解除暂停`);
+            } else {
+              outcome = 'skipped';
+              outcomeMessage = '项目已暂停，跳过批量出图';
+              console.log(`[GlobalQueue] 项目「${job.projectName}」已暂停，跳过场景 #${job.sceneIdx} 的出图`);
             }
           }
 
-          this.broadcastSSE?.('redraw_queue', {
-            projectName: job.projectName,
-            chapterKey: job.chapterKey,
-            sceneIdx: job.sceneIdx,
-            state: 'completed',
-            remaining: this.getProjectPendingImageCount(job.projectName),
-            pipelineRunning: this.isProjectActive(job.projectName)
-          });
+          if (outcome === 'completed') {
+            // 核心绘制调用：使用已就绪/已保存的 Prompt 出图，严格串行并执行冷却
+            const drawResult = await pipeline.redrawSceneWithSavedPrompt(job.chapterKey, job.sceneIdx, { interleaved: true });
+            if (drawResult === null) {
+              // 绘制过程中被用户暂停：保留 PROMPT_READY，按 skipped 处理而不是 completed
+              outcome = 'skipped';
+              outcomeMessage = '项目已暂停，出图已中断';
+            }
+          }
+
+          if (outcome === 'completed') {
+            const progress = pipeline.projectProgress.getCompletedChapters()?.[job.chapterKey];
+            if (progress && Array.isArray(progress.scenes) && progress.scenes.length > 0) {
+              const allSuccess = progress.scenes.every(s => s.status === 'SUCCESS');
+              if (allSuccess && progress.status !== 'completed') {
+                const chap = pipeline.chapters.find(c => {
+                  const ck = pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+                  return pipeline.projectProgress.normalizeKey(ck) === pipeline.projectProgress.normalizeKey(job.chapterKey);
+                });
+                const content = String(chap?.content || '').trim();
+                pipeline.projectProgress.setChapterStatus(job.chapterKey, 'completed', progress.scenes, {
+                  content_length: content.length
+                });
+                await pipeline.projectProgress.save();
+                this.broadcastSSE?.('chapter_queue', {
+                  projectName: job.projectName,
+                  chapterKey: job.chapterKey,
+                  state: 'completed',
+                  remaining: 0
+                });
+              }
+            }
+          }
         } catch (error) {
           generationError = error;
+          outcome = 'failed';
+          outcomeMessage = error.message;
           console.error(`[GlobalQueue] 场景生图异常 (${job.projectName} / ${job.chapterKey} / #${job.sceneIdx}):`, error.message);
-          this.broadcastSSE?.('redraw_queue', {
-            projectName: job.projectName,
-            chapterKey: job.chapterKey,
-            sceneIdx: job.sceneIdx,
-            state: 'failed',
-            message: error.message,
-            remaining: this.getProjectPendingImageCount(job.projectName),
-            pipelineRunning: this.isProjectActive(job.projectName)
-          });
         } finally {
           try {
             await job.onFinished?.(generationError);
           } catch (e) {
             console.error('[GlobalQueue] onFinished 回调异常:', e);
           }
+
+          // 先清空 current，再统计剩余量，避免把当前任务重复计入 remaining
           this.imageQueue.current = null;
+          const remaining = this.getProjectPendingImageCount(job.projectName);
+          const pipelineRunning = this.isProjectActive(job.projectName);
+
+          this.broadcastSSE?.('redraw_queue', {
+            projectName: job.projectName,
+            chapterKey: job.chapterKey,
+            sceneIdx: job.sceneIdx,
+            state: outcome,
+            ...(outcomeMessage ? { message: outcomeMessage } : {}),
+            remaining,
+            pipelineRunning
+          });
           this.notifyStateChange();
 
-          // 检查如果所有队列中都无该项目任务，且无 prompt 任务，广播 pipeline_completed
-          if (!this.isProjectActive(job.projectName)) {
+          // 跳过（暂停）不算完成，不能广播 pipeline_completed
+          if (outcome === 'completed' && !pipelineRunning) {
             this.broadcastSSE?.('pipeline_completed', {
               projectName: job.projectName,
               chapterKey: job.chapterKey
+            });
+          } else if (outcome === 'failed' && !pipelineRunning) {
+            this.broadcastSSE?.('pipeline_failed', {
+              projectName: job.projectName,
+              chapterKey: job.chapterKey,
+              type: 'image',
+              message: outcomeMessage || '场景生图失败'
             });
           }
         }
@@ -408,6 +469,10 @@ export class GlobalQueueManager extends EventEmitter {
   async cancelProjectJobs(projectName) {
     let removedPromptCount = 0;
     let removedImageCount = 0;
+
+    // 记录取消前是否有该项目的在途任务；只有真的需要中断时才置暂停
+    const promptInFlight = Boolean(this.promptQueue.current && this.promptQueue.current.projectName === projectName);
+    const imageInFlight = Boolean(this.imageQueue.current && this.imageQueue.current.projectName === projectName);
 
     // 1. 从 Prompt 队列中过滤掉该项目的任务
     const originalPromptLen = this.promptQueue.items.length;
@@ -433,11 +498,14 @@ export class GlobalQueueManager extends EventEmitter {
     this.imageQueue.items = this.imageQueue.items.filter(item => item.projectName !== projectName);
     removedImageCount += (origNormalLen - this.imageQueue.items.length);
 
-    // 4. 如果当前正在画该项目的图，标记 pipeline 为暂停，完成后不会继续下一个该项目任务
-    try {
-      const pipeline = await this.getPipeline(projectName);
-      pipeline.isPausedByUser = true;
-    } catch {}
+    // 4. 如果当前正在跑该项目的任务，标记 pipeline 为暂停，完成后不会继续下一个该项目任务
+    //    仅排队任务被清空时不需要暂停，否则会让后续手动重绘被静默跳过
+    if (promptInFlight || imageInFlight) {
+      try {
+        const pipeline = await this.getPipeline(projectName);
+        pipeline.isPausedByUser = true;
+      } catch {}
+    }
 
     this.notifyStateChange();
     this.broadcastSSE?.('pipeline_stopped', { projectName, state: 'paused' });

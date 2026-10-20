@@ -2056,13 +2056,12 @@ export class PipelineManager {
   }
 
   /**
-   * 单场景描述重构并重绘（LLM重写描述，然后再重绘）
+   * 单场景描述重构（仅 LLM 阶段）。
+   * 重写分镜描述 + 重新生成生图 Prompt，完成后保存为 PROMPT_READY。
+   * 生图由调用方（全局队列）以 nai_only 插队任务执行，避免绕过串行生图队列。
    */
-  async regenerateAndRedrawScene(chapterKey, sceneIdx) {
+  async regenerateScenePromptOnly(chapterKey, sceneIdx) {
     await this.initialize();
-    if (this.isRunning) {
-      throw new Error("流水线正在运行中，请先暂停流水线再进行操作。");
-    }
 
     const chap = this.chapters.find(c => {
       const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
@@ -2084,70 +2083,66 @@ export class PipelineManager {
     this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
     await this.projectProgress.save();
 
-    if (this.uiProgressCallback) {
-      this.uiProgressCallback({
+    this.uiProgressCallback?.({
+      chapter: chap.chapter,
+      chapterKey: chapKey,
+      sceneIdx: scene.scene_idx,
+      totalScenes: scenes.length,
+      imagePath: null // null 表示重构中
+    });
+
+    const sceneModel = resolveTaskLlmConfig(this.config, 'scene').model;
+    const naiTagsModel = resolveTaskLlmConfig(this.config, 'naiTags').model;
+
+    try {
+      this.writeLog(`[Pipeline] 开始重构分镜画面描述: 章节「${chap.chapter}」场景 #${sceneIdx}`);
+
+      // A. 大模型重新提炼描述卡片
+      const newSceneCard = await this.sceneExtractor.regenerateSingleSceneCard(
+        chap.chapter,
+        chap.content,
+        scene.scene_idx,
+        scene.trigger_sentence,
+        sceneModel,
+        '',
+        (logMsg, type, options = {}) => this.writeLog(
+          options.appendToPrevious ? logMsg : `  [场景 ${scene.scene_idx}] ${logMsg}`,
+          type,
+          options
+        )
+      );
+
+      // B. 融合新卡片，清掉旧图与旧 Prompt，避免断点续传沿用过期参数
+      Object.assign(scene, newSceneCard, { status: 'PENDING', image_path: null });
+      delete scene.prepared_prompt;
+      delete scene.final_prompt;
+      delete scene.final_negative;
+      delete scene.base_prompt;
+      delete scene.character_prompts;
+      delete scene.negative_character_prompts;
+      delete scene.character_centers;
+      this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
+      await this.projectProgress.save();
+
+      this.writeLog(`[Pipeline] 描述重构完成，正在重新生成 Prompt: 场景 #${sceneIdx}`);
+      await this.prepareSingleScenePrompt(chap, scene, scenes, chapKey, naiTagsModel);
+
+      return { chapter: chap.chapter, chapterKey: chapKey, sceneIdx: scene.scene_idx };
+    } catch (err) {
+      this.writeLog(`[Pipeline] 单场景描述重构失败: ${err.message}`, "error");
+      scene.status = 'FAILED';
+      this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
+      await this.projectProgress.save();
+      this.uiProgressCallback?.({
         chapter: chap.chapter,
         chapterKey: chapKey,
         sceneIdx: scene.scene_idx,
         totalScenes: scenes.length,
-        imagePath: null // null 表示重构并绘制中
+        imagePath: 'failed',
+        phase: 'scene'
       });
+      throw err;
     }
-
-    // 后台异步执行并广播
-    this.isRunning = true;
-    (async () => {
-      try {
-        const sceneModel = resolveTaskLlmConfig(this.config, 'scene').model;
-        const naiTagsModel = resolveTaskLlmConfig(this.config, 'naiTags').model;
-        const naiModel = this.config.nai_model || "nai-diffusion-4-5-full";
-        this.writeLog(`[Pipeline] 开始重构分镜画面描述: 章节「${chap.chapter}」场景 #${sceneIdx}`);
-
-        // 调用大模型重新提炼描述卡片
-        const newSceneCard = await this.sceneExtractor.regenerateSingleSceneCard(
-          chap.chapter,
-          chap.content,
-          scene.scene_idx,
-          scene.trigger_sentence,
-          sceneModel,
-          '',
-          (logMsg, type, options = {}) => this.writeLog(
-            options.appendToPrevious ? logMsg : `  [场景 ${scene.scene_idx}] ${logMsg}`,
-            type,
-            options
-          )
-        );
-
-        // 把新卡片属性融合到原有 scene 中，重设 status 和清除老图
-        Object.assign(scene, newSceneCard, { status: 'PENDING', image_path: null });
-        this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
-        await this.projectProgress.save();
-
-        this.writeLog(`[Pipeline] 描述重构完成，开始重绘场景 #${sceneIdx}...`);
-        await this._prepareScenesAndRunNaiQueue(chap, [scene], scenes, chapKey, naiTagsModel, naiModel);
-        if (scene.status === 'SUCCESS') {
-          this.writeLog(`[Pipeline] 单场景重构并重绘成功: 章节「${chap.chapter}」场景 #${sceneIdx}`);
-        } else {
-          this.writeLog(`[Pipeline] 单场景重构并重绘失败后已跳过: 章节「${chap.chapter}」场景 #${sceneIdx}`, "warning");
-        }
-      } catch (err) {
-        this.writeLog(`[Pipeline] 单场景重构并重绘失败: ${err.message}`, "error");
-        scene.status = 'FAILED';
-        this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
-        await this.projectProgress.save();
-        if (this.uiProgressCallback) {
-          this.uiProgressCallback({
-            chapter: chap.chapter,
-            sceneIdx: scene.scene_idx,
-            totalScenes: scenes.length,
-            imagePath: 'failed',
-            phase: 'scene'
-          });
-        }
-      } finally {
-        this.isRunning = false;
-      }
-    })();
   }
 
   /**
