@@ -1,5 +1,9 @@
 import { preserveTextForLlm } from './prompt-cleaner.js';
 import { XIAO_AI_SYSTEM_PREFIX, DEFAULT_ADVANCED_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT } from './default-prompts.js';
+import { stripJailbreakProfile, normalizeTaskPromptText } from './jailbreak-profile.js';
+
+const TASK_SECTION_MARKER = '<!-- pipeline_task_contract -->';
+const TASK_SECTION_HEADER_END = '绝对不要添加任何寒暄、解释或代码围栏。';
 
 export function normalizeCharacterDnaPromptForConfig(taskPrompt) {
   const prompt = preserveTextForLlm(taskPrompt || DEFAULT_CHARACTER_DNA_PROMPT).trim();
@@ -95,18 +99,29 @@ Hard requirements:
 }
 
 export function withSystemPrefix(taskPrompt) {
-  const prompt = preserveTextForLlm(taskPrompt)
+  // 幂等：配置里可能残留旧档案的破限块，先剥离再注入，避免双份破限互相稀释
+  const stripped = normalizeTaskPromptText(stripJailbreakProfile(preserveTextForLlm(taskPrompt)
     .replace(/\n*重要：[\s\S]*?<further_mathematics>[\s\S]*?<\/further_mathematics>/gi, '')
-    .trim();
-  if (prompt.startsWith(XIAO_AI_SYSTEM_PREFIX)) return prompt;
+    .trim()));
+
+  // 若传入的是上一次 withSystemPrefix 的产物，剥掉旧的任务包装，只保留任务体
+  const markerIdx = stripped.indexOf(TASK_SECTION_MARKER);
+  const headerEndIdx = markerIdx === -1
+    ? -1
+    : stripped.indexOf(TASK_SECTION_HEADER_END, markerIdx);
+  const taskBody = headerEndIdx === -1
+    ? (markerIdx === -1 ? stripped : stripped.slice(markerIdx + TASK_SECTION_MARKER.length).trim())
+    : stripped.slice(headerEndIdx + TASK_SECTION_HEADER_END.length).trim();
+
   return `${XIAO_AI_SYSTEM_PREFIX}
 
 ---
 
+${TASK_SECTION_MARKER}
 【当前流水线任务】
 以下任务约束与机器可读输出格式优先于上方的通用系统指令。只输出当前任务明确要求的 JSON 或英文视觉短语，绝对不要添加任何寒暄、解释或代码围栏。
 
-${prompt}`;
+${taskBody}`;
 }
 
 export function ensureAdvancedPromptContract(taskPrompt) {

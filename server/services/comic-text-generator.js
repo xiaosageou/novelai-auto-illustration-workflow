@@ -1,6 +1,7 @@
 import { postChatCompletionWith429Retry, readLlmResponse } from './llm-extractor.js';
 import { resolveTaskLlmConfig } from './pipeline-manager.js';
 import { estimateV45Tokens } from './prompt-builder.js';
+import { withSystemPrefix } from '../utils/advanced-prompt-contract.js';
 
 function fail(code, message) { throw Object.assign(new Error(message), { status: 400, code, publicMessage: true }); }
 function json(content) {
@@ -87,7 +88,7 @@ export class ComicTextGenerator {
       url: `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`,
       headers: { 'Content-Type': 'application/json', ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}) },
       payload: { model: config.model, stream: config.streamEnabled, temperature: 0.2, max_tokens: 65536,
-        messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(input) }] },
+        messages: [{ role: 'system', content: withSystemPrefix(system) }, { role: 'user', content: JSON.stringify(input) }] },
       rateLimit: { enabled: config.rateLimitEnabled, rpm: config.rateLimitRpm, key: config.rateLimitKey },
       logPrefix: '[Comic LLM]', idleTimeoutMs: 120000
     });
