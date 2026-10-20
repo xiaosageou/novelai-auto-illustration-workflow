@@ -517,6 +517,37 @@ function flattenLlmText(value) {
 }
 
 /**
+ * 兼容部分网关把 OpenAI 响应包在 { data: { choices } } 里的形态。
+ */
+function unwrapLlmEnvelope(responseData) {
+  if (!responseData || typeof responseData !== 'object') return responseData;
+  if (!Array.isArray(responseData.choices)
+    && responseData.data
+    && typeof responseData.data === 'object'
+    && Array.isArray(responseData.data.choices)) {
+    return responseData.data;
+  }
+  return responseData;
+}
+
+function getLlmChoice(responseData) {
+  return unwrapLlmEnvelope(responseData)?.choices?.[0];
+}
+
+/**
+ * 兼容 reasoning_content / reasoning / reasoning_details 三种思维链字段。
+ */
+function getReasoningText(choice) {
+  const value = choice?.message?.reasoning_content
+    ?? choice?.message?.reasoning
+    ?? choice?.message?.reasoning_details
+    ?? choice?.delta?.reasoning_content
+    ?? choice?.delta?.reasoning
+    ?? choice?.delta?.reasoning_details;
+  return flattenLlmText(value).trim();
+}
+
+/**
  * 将 reasoning_content 包在 /thinking/ 标签里，与正文 content 合并。
  * 用于处理 DeepSeek-R1/Qwen3 等模型分离式输出。
  */
@@ -555,19 +586,18 @@ function extractLlmResponseTextChunk(responseData) {
   if (typeof responseData === 'string') return responseData;
   if (!responseData || typeof responseData !== 'object') return '';
 
-  const choice = responseData.choices?.[0];
-  const reasoningContent = flattenLlmText(
-    choice?.message?.reasoning_content ?? choice?.delta?.reasoning_content
-  );
+  const payloadData = unwrapLlmEnvelope(responseData);
+  const choice = payloadData?.choices?.[0];
+  const reasoningContent = getReasoningText(choice);
   const candidates = [
     choice?.message?.content,
     choice?.delta?.content,
     choice?.text,
-    responseData.output_text,
-    responseData.text,
-    responseData.response,
-    responseData.content,
-    responseData.output
+    payloadData?.output_text,
+    payloadData?.text,
+    payloadData?.response,
+    payloadData?.content,
+    payloadData?.output
   ];
 
   for (const candidate of candidates) {
@@ -624,20 +654,18 @@ export function extractLlmResponseText(responseData) {
   }
 
   if (!responseData || typeof responseData !== 'object') return '';
-  const choice = responseData.choices?.[0];
-  // 提前读取 reasoning_content，以便与正文合并到 /thinking/ 包装
-  const reasoningContent = flattenLlmText(
-    choice?.message?.reasoning_content ?? choice?.delta?.reasoning_content
-  ).trim();
+  const payloadData = unwrapLlmEnvelope(responseData);
+  const choice = payloadData?.choices?.[0];
+  const reasoningContent = getReasoningText(choice);
   const candidates = [
     choice?.message?.content,
     choice?.delta?.content,
     choice?.text,
-    responseData.output_text,
-    responseData.text,
-    responseData.response,
-    responseData.content,
-    responseData.output
+    payloadData?.output_text,
+    payloadData?.text,
+    payloadData?.response,
+    payloadData?.content,
+    payloadData?.output
   ];
 
   for (const candidate of candidates) {
@@ -748,29 +776,56 @@ export async function readLlmResponse(res, options = {}) {
     }
     return {
       responseData,
-      content: extractLlmResponseText(responseData)
+      content: extractLlmResponseText(responseData),
+      finishReason: readFinishReason(responseData)
     };
   }
 
   const responseData = await res.json();
   return {
     responseData,
-    content: extractLlmResponseText(responseData)
+    content: extractLlmResponseText(responseData),
+    finishReason: readFinishReason(responseData)
   };
 }
 
+function readFinishReason(responseData) {
+  if (typeof responseData === 'string') {
+    let finish = null;
+    for (const line of responseData.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      try {
+        const reason = getLlmChoice(JSON.parse(payload))?.finish_reason;
+        if (reason) finish = reason;
+      } catch {}
+    }
+    return finish;
+  }
+  return getLlmChoice(responseData)?.finish_reason ?? null;
+}
+
 function summarizeLlmResponseShape(responseData) {
+  if (typeof responseData === 'string') {
+    return `bodyType=string,length=${responseData.length}`;
+  }
   if (!responseData || typeof responseData !== 'object') {
     return `bodyType=${typeof responseData}`;
   }
-  const choice = responseData.choices?.[0];
+  const data = unwrapLlmEnvelope(responseData);
+  const choice = data?.choices?.[0];
   return JSON.stringify({
     keys: Object.keys(responseData),
+    dataKeys: responseData.data && typeof responseData.data === 'object' ? Object.keys(responseData.data) : null,
     choiceKeys: choice && typeof choice === 'object' ? Object.keys(choice) : [],
     messageKeys: choice?.message && typeof choice.message === 'object'
       ? Object.keys(choice.message)
       : [],
-    finishReason: choice?.finish_reason ?? null
+    finishReason: choice?.finish_reason ?? null,
+    contentLength: flattenLlmText(choice?.message?.content ?? choice?.delta?.content).length,
+    reasoningLength: getReasoningText(choice).length
   });
 }
 
@@ -1671,7 +1726,7 @@ export class LLMExtractor {
         })
       ],
       temperature: 0.4,
-      max_tokens: Math.max(8000, sceneCount * 1200)
+      max_tokens: Math.max(24000, sceneCount * 1600 + 12000)
     };
 
     onProgressLog?.(`[LLM] 正在调用大模型提炼 ${sceneCount} 个场景...`);
@@ -1957,7 +2012,7 @@ export class LLMExtractor {
           })
         ],
         temperature: attempt === 1 ? 0.3 : 0.1,
-        max_tokens: Math.max(6000, normalizedSelections.length * 2500)
+        max_tokens: Math.max(24000, normalizedSelections.length * 2500 + 12000)
       };
 
       try {
@@ -2078,7 +2133,7 @@ export class LLMExtractor {
         })
       ],
       temperature: 0.2,
-      max_tokens: 8000
+      max_tokens: 32768
     };
 
     console.log(`[LLM Extractor] 正在提取全局角色 DNA (切片长度: ${sliceText.length} 字)...`);
@@ -2101,12 +2156,15 @@ export class LLMExtractor {
         throw new Error(`HTTP Error ${res.status}`);
       }
 
-      const { content: rawContent } = await readLlmResponse(res, {
+      const { content: rawContent, finishReason, responseData } = await readLlmResponse(res, {
         onStreamText: streamLogger?.push
       });
       streamLogger?.flush();
       if (!rawContent) {
-        throw new Error("大模型返回内容为空");
+        const finishHint = finishReason === 'length' || finishReason === 'max_tokens'
+          ? `输出预算被思考过程耗尽（finish_reason=${finishReason}），请提高 max_tokens`
+          : '响应未包含可用正文';
+        throw new Error(`大模型返回内容为空：${finishHint}；${summarizeLlmResponseShape(responseData)}`);
       }
 
       const completeness = checkTextCompleteness(rawContent);
@@ -2500,7 +2558,7 @@ export class LLMExtractor {
             throw new Error(`上游响应未包含可用文本；响应结构 ${summarizeLlmResponseShape(responseData)}`);
           }
 
-          const finishReason = responseData?.choices?.[0]?.finish_reason;
+          const finishReason = getLlmChoice(responseData)?.finish_reason;
           const completeness = checkTextCompleteness(rawContent);
           if (finishReason === 'length' || finishReason === 'max_tokens' || !completeness.isComplete) {
             const reason = finishReason === 'length' || finishReason === 'max_tokens'
@@ -2766,7 +2824,7 @@ export class LLMExtractor {
         })
       ],
       temperature: 0.5,
-      max_tokens: 2000
+      max_tokens: 8192
     };
 
     try {
