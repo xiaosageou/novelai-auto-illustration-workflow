@@ -472,3 +472,44 @@ test('GlobalQueueManager: chapter_generate 透传清空重绘 / 补完模式', a
     { chapterKey: 'ch1', resetScenes: false, autoUpdateCharacterDna: false }
   ]);
 });
+
+test('GlobalQueueManager: selected_scenes 等待在途生图落盘后再执行，不再直接报错', async () => {
+  const order = [];
+  const events = [];
+  const pipeline = {
+    isPausedByUser: false,
+    isRunning: true,
+    async appendSelectedParagraphScenes() {
+      order.push('append');
+      this.isRunning = true;
+      await new Promise(r => setTimeout(r, 10));
+      this.isRunning = false;
+      return { chapterKey: 'ch1', added: 1 };
+    }
+  };
+  const manager = new GlobalQueueManager({
+    getPipeline: async () => pipeline,
+    broadcastSSE: (type, data) => events.push([type, data]),
+    cooldownManager: { getState: () => ({ isCooling: false, remainingSeconds: 0 }) }
+  });
+
+  setTimeout(() => {
+    order.push('image_done');
+    pipeline.isRunning = false;
+  }, 60);
+
+  manager.enqueuePromptJob({
+    projectName: 'P',
+    type: 'selected_scenes',
+    chapterKey: 'ch1',
+    payload: { selections: [{ text: '选段' }] }
+  });
+
+  while (manager.promptQueue.running || manager.promptQueue.current || manager.promptQueue.items.length > 0) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+
+  assert.deepEqual(order, ['image_done', 'append']);
+  assert.equal(manager.sceneMutationLock, false);
+  assert.equal(events.filter(([type]) => type === 'pipeline_failed').length, 0);
+});

@@ -2394,9 +2394,6 @@ export class PipelineManager {
 
   async appendSelectedParagraphScenes(chapterKey, selections = [], options = {}) {
     await this.initialize();
-    if (this.isRunning) {
-      throw new Error("流水线正在运行中，请先暂停后再提交正文选段。");
-    }
 
     const chap = this.chapters.find(c => {
       const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
@@ -2430,6 +2427,7 @@ export class PipelineManager {
     const naiTagsModel = resolveTaskLlmConfig(this.config, 'naiTags').model;
     const naiModel = this.config.nai_model || "nai-diffusion-4-5-full";
 
+    const previousRunningState = this.isRunning;
     this.isRunning = true;
     try {
       const generatedScenes = await this.sceneExtractor.regenerateSelectedParagraphScenes(
@@ -2502,7 +2500,7 @@ export class PipelineManager {
       await this.projectProgress.save();
       return { chapterKey: chapKey, added: selectedParagraphs.length };
     } finally {
-      this.isRunning = false;
+      this.isRunning = previousRunningState;
     }
   }
 

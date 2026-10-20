@@ -37,6 +37,11 @@ export class GlobalQueueManager extends EventEmitter {
       items: []          // 常规批量场景生图队列
     };
 
+    // 选段提炼会重写整章的 scenes 数组；与在途生图的落盘互斥，
+    // 避免生图结果用旧数组覆盖刚新增的选段场景。
+    this.imageJobActive = false;
+    this.sceneMutationLock = false;
+
     this._jobSeq = 0;
   }
 
@@ -168,21 +173,40 @@ export class GlobalQueueManager extends EventEmitter {
               }
             });
           } else if (job.type === 'selected_scenes') {
-            // 选段场景提炼
-            const result = await pipeline.appendSelectedParagraphScenes(job.chapterKey, job.payload.selections, {
-              onScenePromptReady: ({ chapKey, scene }) => {
-                this.enqueueImageJob({
-                  projectName: job.projectName,
-                  chapterKey: chapKey,
-                  sceneIdx: scene.scene_idx,
-                  mode: 'pipeline_scene'
+            // 选段场景提炼：与在途生图互斥，避免生图落盘时用旧 scenes 覆盖新增选段
+            this.sceneMutationLock = true;
+            try {
+              if (this.imageJobActive || pipeline.isRunning) {
+                this.broadcastSSE?.('log', {
+                  text: '⏳ 正文选段等待当前生图落盘后再提炼...',
+                  type: 'info'
                 });
               }
-            });
-            this.broadcastSSE?.('log', {
-              text: `🟢 选段 Prompt 提取完毕，已为项目「${job.projectName}」排入生图队列`,
-              type: 'info'
-            });
+              const waitDeadline = Date.now() + 10 * 60 * 1000;
+              while (this.imageJobActive || pipeline.isRunning) {
+                if (Date.now() > waitDeadline) {
+                  throw new Error('当前仍有生图任务在运行，请稍后再提交正文选段。');
+                }
+                await new Promise(resolve => setTimeout(resolve, 200));
+              }
+
+              const result = await pipeline.appendSelectedParagraphScenes(job.chapterKey, job.payload.selections, {
+                onScenePromptReady: ({ chapKey, scene }) => {
+                  this.enqueueImageJob({
+                    projectName: job.projectName,
+                    chapterKey: chapKey,
+                    sceneIdx: scene.scene_idx,
+                    mode: 'pipeline_scene'
+                  });
+                }
+              });
+              this.broadcastSSE?.('log', {
+                text: `🟢 选段 Prompt 提取完毕，已为项目「${job.projectName}」排入生图队列`,
+                type: 'info'
+              });
+            } finally {
+              this.sceneMutationLock = false;
+            }
           } else if (job.type === 'redraw_prompt') {
             // 单场景 Prompt 重新提炼
             await pipeline.prepareSingleSceneForRedraw(job.chapterKey, job.payload.sceneIdx);
@@ -343,11 +367,17 @@ export class GlobalQueueManager extends EventEmitter {
 
     try {
       while (this.imageQueue.priorityItems.length > 0 || this.imageQueue.items.length > 0) {
+        // 选段提炼期间暂停取新图，等它写完 scenes 再继续
+        while (this.sceneMutationLock) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+
         // 优先消费插队队列
         const job = this.imageQueue.priorityItems.length > 0
           ? this.imageQueue.priorityItems.shift()
           : this.imageQueue.items.shift();
 
+        this.imageJobActive = true;
         this.imageQueue.current = job;
         this.notifyStateChange();
 
@@ -417,6 +447,7 @@ export class GlobalQueueManager extends EventEmitter {
           outcomeMessage = error.message;
           console.error(`[GlobalQueue] 场景生图异常 (${job.projectName} / ${job.chapterKey} / #${job.sceneIdx}):`, error.message);
         } finally {
+          this.imageJobActive = false;
           try {
             await job.onFinished?.(generationError);
           } catch (e) {
