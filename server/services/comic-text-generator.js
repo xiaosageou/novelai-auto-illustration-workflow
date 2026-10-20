@@ -2,11 +2,17 @@ import { postChatCompletionWith429Retry, readLlmResponse } from './llm-extractor
 import { resolveTaskLlmConfig } from './pipeline-manager.js';
 import { estimateV45Tokens } from './prompt-builder.js';
 import { withSystemPrefix } from '../utils/advanced-prompt-contract.js';
+import { robustJsonLoads } from '../utils/json-repair.js';
 
 function fail(code, message) { throw Object.assign(new Error(message), { status: 400, code, publicMessage: true }); }
 function json(content) {
-  const clean = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  return JSON.parse(clean);
+  const clean = String(content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  try {
+    return JSON.parse(clean);
+  } catch {
+    // 兼容流式粘连前缀（如 {"{"{…）与少量首尾脏字符
+    return robustJsonLoads(clean);
+  }
 }
 
 // 成人向作品专用：负向提示词里压制裸露/性内容的词会把原文明确描写的情节整段抹掉。

@@ -375,16 +375,22 @@ export class PipelineManager {
     this.writeLog(`[Pipeline] 启动全书角色 DNA 分切片智能提取流水线（共 ${this.chapters.length} 章，每 ${this.dnaSliceSize} 章一组）...`);
 
     const totalSlices = Math.ceil(this.chapters.length / this.dnaSliceSize);
+    let failedSlices = 0;
     for (let sliceIdx = 0; sliceIdx < totalSlices; sliceIdx++) {
       try {
         await this.extractCharacterDnaSlice(sliceIdx, { force: true });
       } catch (error) {
+        failedSlices += 1;
         console.error(`[Pipeline] 切片 ${sliceIdx + 1} 角色 DNA 提取异常:`, error);
         this.writeLog(`[Pipeline] 切片 ${sliceIdx + 1} 角色 DNA 提取异常: ${error.message}`, "error");
       }
     }
 
-    this.writeLog("[Pipeline] 全书全局角色 DNA 大辞典构建完成！", "success");
+    if (failedSlices > 0) {
+      this.writeLog(`[Pipeline] 角色 DNA 构建完成，但有 ${failedSlices}/${totalSlices} 个切片失败，请重试失败切片。`, "warning");
+    } else {
+      this.writeLog("[Pipeline] 全书全局角色 DNA 大辞典构建完成！", "success");
+    }
     return this.projectProgress.getGlobalCharacters();
   }
 
@@ -438,6 +444,7 @@ export class PipelineManager {
     await this.projectProgress.save();
 
     const allExtractedCharacters = [];
+    try {
     for (let batchIndex = 0; batchIndex < chapterBatches.length; batchIndex++) {
       const batchChapters = chapterBatches[batchIndex];
       const batchSourceChapters = batchChapters.map(c => `${c.volume}_${c.chapter}`);
@@ -515,6 +522,22 @@ export class PipelineManager {
       }
 
       await this.projectProgress.save();
+    }
+    } catch (error) {
+      this.projectProgress.setCharacterDnaSliceStatus(info.sliceKey, {
+        status: 'failed',
+        sliceIndex: info.sliceIndex,
+        startIndex: info.startIndex,
+        endIndex: info.endIndex,
+        chapters: sourceChapters,
+        averageChapterChars,
+        batchSize,
+        batchCount: chapterBatches.length,
+        error: String(error?.message || error)
+      });
+      await this.projectProgress.save().catch(() => {});
+      this.writeLog(`[Pipeline] 角色 DNA 切片 ${info.label} 提取失败: ${error.message}`, "error");
+      throw error;
     }
 
     const uniqueCount = new Set(allExtractedCharacters.filter(char => char?.name).map(char => char.name)).size;

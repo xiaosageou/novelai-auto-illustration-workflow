@@ -270,6 +270,20 @@ export function robustJsonLoads(text) {
     } catch {}
   }
 
+  // 处理流式输出开头粘连的垃圾前缀（如 {"{"{"{... 或 {[{[），
+  // 从每个 “数组紧跟对象” 的起点重新尝试解析，命中真正的 JSON 数组。
+  for (const match of cleaned.matchAll(/\[\s*\{/g)) {
+    const candidate = cleaned.slice(match.index).trim();
+    try {
+      const parsed = JSON.parse(candidate);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {}
+    try {
+      const parsed = JSON.parse(fixTruncatedJson(candidate));
+      if (Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+
   throw new Error(`无法从输入文本中解析出有效的 JSON 数据。`);
 }
 

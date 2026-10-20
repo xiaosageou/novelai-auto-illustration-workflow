@@ -1580,7 +1580,7 @@ function buildSceneExtractionUserContent({
 }
 
 export class LLMExtractor {
-  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", streamEnabled = true, rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "" } = {}) {
+  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", streamEnabled = true, rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "", retryDelayMs = 5000 } = {}) {
     this.baseUrl = baseUrl.trim().replace(/\/+$/, "");
     this.apiKey = apiKey.trim();
     this.system_prompt_extract_scenes = system_prompt_extract_scenes;
@@ -1595,6 +1595,7 @@ export class LLMExtractor {
     this.trimUrl = trimUrl.trim().replace(/\/+$/, "");
     this.trimKey = trimKey.trim();
     this.trimModel = trimModel.trim() || "mimo-v2.5";
+    this.retryDelayMs = Number.isFinite(Number(retryDelayMs)) ? Math.max(0, Number(retryDelayMs)) : 5000;
     this.activeControllers = new Set();
   }
 
@@ -2139,8 +2140,10 @@ export class LLMExtractor {
     console.log(`[LLM Extractor] 正在提取全局角色 DNA (切片长度: ${sliceText.length} 字)...`);
     progressCb?.(`[角色 DNA 提炼] 正在调用大模型分析切片 (${sourceChapters.join(', ') || '未知章节'}, 切片长度: ${sliceText.length} 字)...`);
 
-    try {
-      const streamLogger = createThrottledStreamLogger(progressCb, '[角色 DNA 提炼]');
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const streamLogger = createThrottledStreamLogger(progressCb, '[角色 DNA 提炼]');
       const res = await postChatCompletionWith429Retry({
         url,
         headers: this.getHeaders(),
@@ -2199,11 +2202,22 @@ export class LLMExtractor {
         }
       }
       return sanitized;
-    } catch (error) {
-      console.error("[LLM Extractor] 提取角色 DNA 异常:", error);
-      progressCb?.(`[角色 DNA 提炼] 提取异常: ${error.message}`, 'error');
-      return [];
+      } catch (error) {
+        lastError = error;
+        console.error(`[LLM Extractor] 提取角色 DNA 第 ${attempt}/3 次失败:`, error);
+        if (error?.code === 'LLM_429_EXHAUSTED') {
+          break;
+        }
+        if (attempt < 3) {
+          const waitMs = Math.max(0, Number(this.retryDelayMs) || 0) * attempt;
+          progressCb?.(`[角色 DNA 提炼] 第 ${attempt}/3 次失败，${Math.round(waitMs / 1000)} 秒后重试: ${error.message}`, 'warning');
+          if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
+        }
+      }
     }
+
+    progressCb?.(`[角色 DNA 提炼] 连续 3 次失败: ${lastError?.message || '未知错误'}`, 'error');
+    throw lastError || new Error('角色 DNA 提炼连续 3 次失败');
   }
 
   formatStructuredSceneForLlm(sceneInput) {
