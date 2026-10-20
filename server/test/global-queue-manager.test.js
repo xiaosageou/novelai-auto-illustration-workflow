@@ -427,3 +427,48 @@ test('GlobalQueueManager: regenerate_scene 失败时广播场景 failed 终态',
   assert.equal(failed[0][1].message, 'regen boom');
   assert.equal(events.filter(([t]) => t === 'pipeline_failed').length, 1);
 });
+
+test('GlobalQueueManager: chapter_generate 透传清空重绘 / 补完模式', async () => {
+  const calls = [];
+  const pipeline = {
+    isPausedByUser: false,
+    async processPromptPhase(chapterKey, options) {
+      calls.push({
+        chapterKey,
+        resetScenes: Boolean(options.resetScenes),
+        autoUpdateCharacterDna: Boolean(options.autoUpdateCharacterDna)
+      });
+    }
+  };
+  const manager = new GlobalQueueManager({
+    getPipeline: async () => pipeline,
+    broadcastSSE: () => {},
+    cooldownManager: { getState: () => ({ isCooling: false, remainingSeconds: 0 }) }
+  });
+
+  const redraw = manager.enqueuePromptJob({
+    projectName: 'P',
+    type: 'chapter_generate',
+    chapterKey: 'ch1',
+    payload: { mode: 'redraw' }
+  });
+  const complete = manager.enqueuePromptJob({
+    projectName: 'P',
+    type: 'chapter_generate',
+    chapterKey: 'ch1',
+    payload: { mode: 'complete' }
+  });
+
+  // 两个模式是不同的任务，不能被去重合并
+  assert.equal(redraw.duplicate, false);
+  assert.equal(complete.duplicate, false);
+
+  while (manager.promptQueue.running || manager.promptQueue.current || manager.promptQueue.items.length > 0) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+
+  assert.deepEqual(calls, [
+    { chapterKey: 'ch1', resetScenes: true, autoUpdateCharacterDna: false },
+    { chapterKey: 'ch1', resetScenes: false, autoUpdateCharacterDna: false }
+  ]);
+});

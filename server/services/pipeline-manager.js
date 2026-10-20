@@ -676,6 +676,7 @@ export class PipelineManager {
       index
     ]));
     const autoUpdateCharacterDna = Boolean(options.autoUpdateCharacterDna);
+    const resetScenes = Boolean(options.resetScenes);
     const onScenePromptReady = options.onScenePromptReady;
 
     const sceneModel = resolveTaskLlmConfig(this.config, 'scene').model;
@@ -713,7 +714,7 @@ export class PipelineManager {
         const chap = this.chapters[idx];
         this.writeLog(`[Pipeline Prompt] 启动单章 Prompt 提炼: ${chap.chapter}`);
         const result = await this._processChapterLlmPhase(
-          chap, idx, this.chapters.length, sceneModel, naiTagsModel, bridgeQueue, autoUpdateCharacterDna
+          chap, idx, this.chapters.length, sceneModel, naiTagsModel, bridgeQueue, autoUpdateCharacterDna, { resetScenes }
         );
         return result && result.paused ? result : { completed: true };
       }
@@ -1604,12 +1605,42 @@ export class PipelineManager {
   }
 
   /**
+   * 清空指定章节的分镜卡与旧图，状态回到 pending，供“清空重绘”重新提炼。
+   */
+  async _resetChapterScenesForRedraw(chapKey) {
+    const progress = this.projectProgress.getCompletedChapters()?.[chapKey];
+    const scenes = Array.isArray(progress?.scenes) ? progress.scenes : [];
+    const projectRoot = path.resolve(this.projBase);
+
+    for (const scene of scenes) {
+      if (!scene?.image_path) continue;
+      const imagePath = path.resolve(projectRoot, scene.image_path);
+      const relative = path.relative(projectRoot, imagePath);
+      if (relative.startsWith('..') || path.isAbsolute(relative) || !existsSync(imagePath)) continue;
+      try {
+        await fs.unlink(imagePath);
+      } catch (error) {
+        this.writeLog(`[Pipeline LLM] 删除旧图失败（${scene.image_path}）: ${error.message}`, "warning");
+      }
+    }
+
+    this.projectProgress.setChapterStatus(chapKey, 'pending', [], {
+      content_hash: '',
+      content_length: 0,
+      scene_extraction_failures: []
+    });
+    await this.projectProgress.save();
+    this.writeLog(`[Pipeline LLM] 已清空章节「${chapKey}」的 ${scenes.length} 个旧分镜与图片，按当前角色 DNA 重新提炼。`, "warning");
+    this.uiProgressCallback?.({ type: 'chapter_scenes_reset', chapterKey: chapKey });
+  }
+
+  /**
    * 处理单个章节的 LLM 阶段：
    * 1. DNA 切片检查（带并发锁，防止同一切片被多个 worker 重复提取）
    * 2. 提取或恢复场景卡片
    * 3. 逐场景调用 prepareSingleScenePrompt，完成后推入 naiQueue
    */
-  async _processChapterLlmPhase(chap, idx, totalChapters, sceneModel, naiTagsModel, naiQueue, autoUpdateCharacterDna) {
+  async _processChapterLlmPhase(chap, idx, totalChapters, sceneModel, naiTagsModel, naiQueue, autoUpdateCharacterDna, { resetScenes = false } = {}) {
     if (!this.isRunning) return null;
 
     const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
@@ -1658,6 +1689,12 @@ export class PipelineManager {
     }
 
     if (!this.isRunning) return null;
+
+    // 清空重绘：先删旧图与旧分镜，后续走“无场景”分支重新提炼。
+    // 必须放在 DNA 检查之后，DNA 未就绪时暂停而不是先毁掉现有分镜。
+    if (resetScenes) {
+      await this._resetChapterScenesForRedraw(chapKey);
+    }
 
     const completedChapters = this.projectProgress.getCompletedChapters();
     const currentProgress = completedChapters[chapKey];

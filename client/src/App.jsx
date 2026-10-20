@@ -380,6 +380,16 @@ function App() {
         return;
       }
 
+      if (data.type === 'chapter_scenes_reset') {
+        setPipelineRunning(true);
+        addLog(`🧹 章节「${data.chapterKey}」分镜与旧图已清空，正在按当前角色 DNA 重新提炼...`, 'warning');
+        setLoadingScenes({});
+        if (activeProject) {
+          fetchProjectDetails(activeProject);
+        }
+        return;
+      }
+
       if (data.fullProgress) {
         setProjectDetails(prev => mergeProjectProgressSnapshot(prev, data.fullProgress));
       }
@@ -959,20 +969,23 @@ function App() {
     }
   };
 
-  const generateSingleChapter = async (chap) => {
+  const generateSingleChapter = async (chap, mode = 'complete') => {
     if (!activeProject || !chap) return;
     const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
     const chapterStateKey = getChapterQueueStateKey(activeProject, chapKey);
+    const actionLabel = mode === 'redraw' ? '清空重绘' : '补完';
     try {
       setChapterQueueStates(prev => ({ ...prev, [chapterStateKey]: 'queued' }));
-      addLog(`📚 正在将章节「${chap.chapter}」加入单章重画队列...`);
+      addLog(`📚 正在将章节「${chap.chapter}」加入${actionLabel}队列...`);
       const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/chapters/${encodeURIComponent(chapKey)}/generate`, {
-        method: "POST"
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode })
       });
       const data = await res.json();
       if (data.success) {
         setChapterQueueStates(prev => ({ ...prev, [chapterStateKey]: data.state === 'running' ? 'running' : 'queued' }));
-        addLog(data.message || `章节「${chap.chapter}」已提交单章重画任务。`);
+        addLog(data.message || `章节「${chap.chapter}」已提交${actionLabel}任务。`);
       } else {
         setChapterQueueStates(prev => {
           const copy = { ...prev };
@@ -2650,22 +2663,36 @@ function App() {
                           所属分卷: {selectedChapter.volume} | 全章字数: {selectedChapter.wordCount} 字
                         </div>
                       </div>
-                      <div style={{ display: 'flex', gap: '8px' }}>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                         <button 
                           className="btn-secondary" 
                           disabled={isSingleChapterGenerateDisabled({ pipelineRunning, chapterQueueState: selectedChapterQueueState })}
-                          onClick={() => generateSingleChapter(selectedChapter)}
+                          onClick={() => generateSingleChapter(selectedChapter, 'complete')}
                           style={{ display: 'flex', alignItems: 'center', gap: '4px', borderColor: 'var(--color-pink)' }}
+                          title="保留已有分镜，只补齐未出图或缺失的场景"
                         >
                           <Play size={14} style={{ color: 'var(--color-pink)' }} />
-                          {selectedChapterQueueState === 'queued'
-                            ? '单章排队中'
-                            : selectedChapterQueueState === 'running'
-                              ? '单章执行中'
-                              : isSceneExtractionFailed
-                                ? '重试场景提炼'
-                                : '单章重画'}
+                          {isSceneExtractionFailed && !selectedChapterQueueState ? '重试场景提炼' : '补完本章'}
                         </button>
+                        <button
+                          className="btn-secondary"
+                          disabled={pipelineRunning || isSingleChapterGenerateDisabled({ pipelineRunning, chapterQueueState: selectedChapterQueueState })}
+                          onClick={() => {
+                            const confirmed = window.confirm(`确定清空「${selectedChapter.chapter}」的全部分镜与旧图，并按当前角色 DNA 重新提炼、重画吗？`);
+                            if (!confirmed) return;
+                            generateSingleChapter(selectedChapter, 'redraw');
+                          }}
+                          style={{ display: 'flex', alignItems: 'center', gap: '4px', borderColor: 'rgba(248, 113, 113, 0.7)', color: '#fca5a5' }}
+                          title="删除本章分镜与旧图，重新提炼分镜并重读当前角色 DNA"
+                        >
+                          <RefreshCw size={14} />
+                          清空重绘
+                        </button>
+                        {selectedChapterQueueState && (
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                            {selectedChapterQueueState === 'queued' ? '排队中' : '执行中'}
+                          </span>
+                        )}
                         {(() => {
                           const chapterReadyCount = getReadyScenesCount(selectedChapterKey);
                           if (chapterReadyCount === 0) return null;

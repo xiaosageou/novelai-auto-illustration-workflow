@@ -483,12 +483,13 @@ async function processChapterQueue(projectName) {
   }
 }
 
-function enqueueChapterGeneration(projectName, pipeline, chapterKey, effectiveKey) {
+function enqueueChapterGeneration(projectName, pipeline, chapterKey, effectiveKey, mode = 'complete') {
   const normChapKey = effectiveKey || chapterKey;
   return globalQueueManager.enqueuePromptJob({
     projectName,
     type: 'chapter_generate',
-    chapterKey: normChapKey
+    chapterKey: normChapKey,
+    payload: { mode }
   });
 }
 
@@ -1052,15 +1053,17 @@ app.post('/api/projects/:projectName/pipeline/render-ready', async (req, res) =>
 app.post('/api/projects/:projectName/chapters/:chapterKey/generate', async (req, res) => {
   try {
     const { projectName, chapterKey } = req.params;
+    const mode = req.body?.mode === 'redraw' ? 'redraw' : 'complete';
     const pipeline = await getPipeline(projectName);
     const effectiveKey = pipeline.projectProgress.getEffectiveChapKeyByRaw(chapterKey);
-    const queued = enqueueChapterGeneration(projectName, pipeline, chapterKey, effectiveKey);
+    const queued = enqueueChapterGeneration(projectName, pipeline, chapterKey, effectiveKey, mode);
+    const actionLabel = mode === 'redraw' ? '清空重绘' : '补完';
     const message = queued.duplicate
       ? `单章 ${chapterKey} 已在队列中`
       : queued.state === 'running'
-        ? `单章 ${chapterKey} 已开始执行`
-        : `单章 ${chapterKey} 已加入重画队列，当前位置 ${queued.position}`;
-    res.json({ success: true, message, ...queued });
+        ? `单章 ${chapterKey} 已开始${actionLabel}`
+        : `单章 ${chapterKey} 已加入${actionLabel}队列，当前位置 ${queued.position}`;
+    res.json({ success: true, mode, message, ...queued });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

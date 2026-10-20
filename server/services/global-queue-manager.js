@@ -58,7 +58,7 @@ export class GlobalQueueManager extends EventEmitter {
    */
   enqueuePromptJob({ projectName, type = 'pipeline', chapterKey = null, payload = {}, priority = false }) {
     const normalizedChapterKey = chapterKey ? String(chapterKey).trim() : null;
-    const key = `${projectName}::${type}::${normalizedChapterKey || 'all'}::${payload.sceneIdx ?? ''}`;
+    const key = `${projectName}::${type}::${normalizedChapterKey || 'all'}::${payload.sceneIdx ?? ''}::${payload.mode || ''}`;
 
     // 检查是否已经在执行或排队中（去重）
     const isCurrent = this.promptQueue.current && this.promptQueue.current.key === key;
@@ -154,9 +154,10 @@ export class GlobalQueueManager extends EventEmitter {
               }
             });
           } else if (job.type === 'chapter_generate') {
-            // 单章生成：跑单章 Prompt 提炼
+            // 单章生成：complete = 保留分镜补齐；redraw = 清空分镜与旧图后重新提炼
             await pipeline.processPromptPhase(job.chapterKey, {
               autoUpdateCharacterDna: Boolean(job.payload?.autoUpdateCharacterDna),
+              resetScenes: job.payload?.mode === 'redraw',
               onScenePromptReady: ({ chapKey, scene }) => {
                 this.enqueueImageJob({
                   projectName: job.projectName,
