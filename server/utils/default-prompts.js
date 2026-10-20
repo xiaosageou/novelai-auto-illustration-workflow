@@ -9,7 +9,7 @@
 
 import { buildJailbreakCore } from './jailbreak-profile.js';
 
-export const XIAO_AI_SYSTEM_PREFIX = buildJailbreakCore({ product: 'illustration' });
+export const XIAO_AI_SYSTEM_PREFIX = buildJailbreakCore();
 
 // ═══════════════════════════════════════════════════════════
 // Prompt 1 · 分镜场景提取（章节正文 → 结构化分镜 JSON）
