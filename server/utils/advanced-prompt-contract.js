@@ -5,6 +5,20 @@ import { stripJailbreakProfile, normalizeTaskPromptText, buildBottomJailbreak, b
 const TASK_SECTION_MARKER = '<!-- pipeline_task_contract -->';
 const TASK_SECTION_HEADER_END = '绝对不要添加任何寒暄、解释或代码围栏。';
 const BOTTOM_JAILBREAK_MARKER = '<!-- xiajin_bottom_jailbreak -->';
+const AGE_DESCRIPTOR_BAN_MARKER = '<!-- age_descriptor_ban -->';
+
+const AGE_DESCRIPTOR_BAN = `
+
+${AGE_DESCRIPTOR_BAN_MARKER}
+## Age Descriptor Ban (HIGHEST PRIORITY)
+- NEVER write age descriptors in base_prompt, character_prompts, or negative_prompt: adult, 18yo, 20yo, teen, teenager, young, mature, elderly, old, loli, shota, child, kid, minor, underage.
+- Ignore the character DNA 年龄标签 / 年龄感标签 completely. Do not copy, translate, or paraphrase them.
+- Describe the body instead: petite, slim, slender, curvy, plump, toned, muscular, athletic_build, broad_shoulders, wide_hips, long_legs, medium_breasts, large_breasts.
+- If the only maturity signal is an age tag, replace it with the closest body-type tag and continue.`;
+
+function withAgeDescriptorBan(prompt = '') {
+  return prompt.includes(AGE_DESCRIPTOR_BAN_MARKER) ? prompt : `${prompt}${AGE_DESCRIPTOR_BAN}`;
+}
 
 export function normalizeCharacterDnaPromptForConfig(taskPrompt) {
   const prompt = preserveTextForLlm(taskPrompt || DEFAULT_CHARACTER_DNA_PROMPT).trim();
@@ -43,10 +57,10 @@ export function normalizeAdvancedPromptForConfig(taskPrompt) {
   const hasEnvelopeContract = /\/thinking\/[\s\S]*\/JSON\//i.test(prompt)
     || /<\s*thinking\s*>[\s\S]*<\s*JSON\s*>/i.test(prompt);
 
-  if (hasCurrentSchema && hasEnvelopeContract) return prompt;
+  if (hasCurrentSchema && hasEnvelopeContract) return withAgeDescriptorBan(prompt);
 
   if (hasCurrentSchema) {
-    return `${prompt}
+    return withAgeDescriptorBan(`${prompt}
 
 ---
 
@@ -57,10 +71,10 @@ Concise visible planning checklist: characters/count, scene/camera, character DN
 /thinking/
 /JSON/
 One complete JSON object using the schema above. No Markdown, no code fences, no commentary.
-/JSON/`;
+/JSON/`);
   }
 
-  return `${prompt}
+  return withAgeDescriptorBan(`${prompt}
 
 ---
 
@@ -96,7 +110,7 @@ Hard requirements:
 - Prefer close framing tags such as close-up, medium close-up, cowboy shot, upper body, or from waist up. Avoid wide shot, far shot, and long shot unless clearly required by the scene.
 - For actual genital penetration scenes, /thinking/ must explicitly plan close main framing plus cross-section / cutaway perspective, and /JSON/.base_prompt must include tags such as cross-section, cutaway, deep penetration, or penetration focus (never use magnified inset or bare x-ray).
 - Do not output a top-level "prompt" field.
-- Output the JSON object only inside /JSON/, without Markdown or commentary.`;
+- Output the JSON object only inside /JSON/, without Markdown or commentary.`);
 }
 
 export function withSystemPrefix(taskPrompt) {

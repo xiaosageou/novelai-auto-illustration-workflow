@@ -9,6 +9,7 @@ import { ensureAdvancedPromptContract, withSystemPrefix } from '../utils/advance
 import { buildPrefill, buildRetryUserMessage } from '../utils/jailbreak-profile.js';
 import { promptReferenceService } from './prompt-reference-service.js';
 import { extractTargetSliceFromContext } from '../utils/chapter-scene-batching.js';
+import { stripAgeWords } from '../utils/age-tags.js';
 
 export { ensureAdvancedPromptContract, withSystemPrefix } from '../utils/advanced-prompt-contract.js';
 
@@ -2263,7 +2264,7 @@ export class LLMExtractor {
       const sceneCharacters = getSceneCharacters(sceneDesc);
       const charLines = characterAnchors.map(anchor => {
         const name = anchor.name || "未知角色";
-        const reference = String(anchor?.正面提示词 || '').trim();
+        const reference = stripAgeWords(String(anchor?.正面提示词 || '').trim());
         const proxy = anchor?.proxy_character;
         let proxyLine = "";
         if (proxy && proxy.danbooru_tag) {
@@ -2272,7 +2273,7 @@ export class LLMExtractor {
         }
         return `• ${name}：${reference}${proxyLine}`;
       }).filter(line => !/：\s*$/.test(line)).join("\n");
-      const contextLabel = "【本场景角色 DNA 候选参考】以下仅供判断，不是必须逐项继承。结合当前画面，保留可见且有助于角色识别的特征；删除与场景状态冲突、当前不可见、无关或会造成冗余的内容。若角色配置了【同人动漫脸模代理】，必须优先将其作为脸模基底 tag 写入对应角色的 character_prompts 中，同时在角色的 negative_prompt 中压制该代理角色的原著服装/标志性配饰，防止污染当前小说场景。只将最终选中的 tag 写入对应角色段。";
+      const contextLabel = "【本场景角色 DNA 候选参考】以下仅供判断，不是必须逐项继承。结合当前画面，保留可见且有助于角色识别的特征；删除与场景状态冲突、当前不可见、无关或会造成冗余的内容。不要写年龄标签（adult、18yo、young、teen 等），改用体型/身材标签（petite、slim、curvy、toned、muscular、athletic_build、broad_shoulders、long_legs 等）描述。若角色配置了【同人动漫脸模代理】，必须优先将其作为脸模基底 tag 写入对应角色的 character_prompts 中，同时在角色的 negative_prompt 中压制该代理角色的原著服装/标志性配饰，防止污染当前小说场景。只将最终选中的 tag 写入对应角色段。";
       characterContext = charLines ? `\n\n${contextLabel}\n${charLines}` : "";
     }
 

@@ -252,6 +252,37 @@ test('GlobalQueueManager: 状态快照与向后兼容方法', async () => {
   assert.equal(projState.cooldown.remainingSeconds, 12);
 });
 
+test('GlobalQueueManager: isSceneRunning 只对正在处理的场景返回 true，排队等待的不算', async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const pipeline = {
+    isPausedByUser: false,
+    async redrawSceneWithSavedPrompt() { await gate; return {}; },
+    projectProgress: { getCompletedChapters: () => ({}), save: async () => {} },
+    chapters: []
+  };
+  const manager = new GlobalQueueManager({
+    getPipeline: async () => pipeline,
+    broadcastSSE: () => {},
+    cooldownManager: { getState: () => ({}) }
+  });
+
+  manager.enqueueImageJob({ projectName: 'P', chapterKey: 'ch1', sceneIdx: 1 });
+  while (!manager.imageQueue.current) await new Promise(r => setTimeout(r, 10));
+  manager.enqueueImageJob({ projectName: 'P', chapterKey: 'ch1', sceneIdx: 2 });
+
+  assert.equal(manager.isSceneRunning('P', 'ch1', 1), true);
+  assert.equal(manager.isSceneRunning('P', 'ch1', 2), false);
+  // 等待中的场景仍在队列里（用于其他调度判断），但不属于「正在处理」
+  assert.equal(manager.isSceneInQueue('P', 'ch1', 2), true);
+
+  release();
+  while (manager.imageQueue.running || manager.imageQueue.current || manager.imageQueue.items.length > 0) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+  assert.equal(manager.isSceneRunning('P', 'ch1', 1), false);
+});
+
 test('GlobalQueueManager: 最后一张完成后 remaining=0 且 pipelineRunning=false', async () => {
   const events = [];
   const pipeline = {

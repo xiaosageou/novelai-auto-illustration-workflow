@@ -799,11 +799,16 @@ test('updateSceneCard persists edited structured scene fields', async () => {
   assert.deepEqual(saved.completed_chapters['第一卷_第一章'].scenes[0].prepared_prompt.characterPrompts, ['woman, white_robe, standing', 'man, black_robe, looking_at_viewer']);
   assert.deepEqual(saved.completed_chapters['第一卷_第一章'].scenes[0].negative_character_prompts, ['avoid_long_hair', 'avoid_armor']);
 
-  pipeline.markSceneQueued('第一卷_第一章', 1);
+  pipeline.markSceneProcessing('第一卷_第一章', 1);
   await assert.rejects(
     () => pipeline.updateSceneCard('第一卷_第一章', 1, { visual_description: '不应保存的修改' }),
-    /正在队列中处理/
+    /正在处理中/
   );
+
+  // 场景只是在队列里等待（未被标记为处理中）时应允许编辑
+  pipeline.clearSceneProcessing('第一卷_第一章', 1);
+  const edited = await pipeline.updateSceneCard('第一卷_第一章', 1, { visual_description: '等待出图时也能改' });
+  assert.equal(edited.scene.visual_description, '等待出图时也能改');
 });
 
 test('updateSceneCard clears stale derived context when lightweight scene fields change', async () => {
@@ -907,6 +912,9 @@ test('config-facing advanced prompt normalization upgrades legacy prompt text', 
   assert.match(normalized, /"base_prompt"/);
   assert.match(normalized, /"character_prompts"/);
   assert.match(normalized, /legacy schema containing only "prompt" is obsolete/i);
+  assert.match(normalized, /age_descriptor_ban/);
+  assert.match(normalized, /NEVER write age descriptors/i);
+  assert.match(normalized, /Describe the body instead/i);
 });
 
 test('advanced prompt parses thinking and JSON slash envelopes', async () => {

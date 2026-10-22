@@ -6,6 +6,7 @@ import {
   removeNonEnglishPromptTokens,
   normalizeDanbooruPromptSegment
 } from '../utils/prompt-cleaner.js';
+import { stripAgeWords } from '../utils/age-tags.js';
 
 /**
  * V4.5 自然语言模式权重守卫
@@ -48,7 +49,7 @@ export function clampNaturalLanguageWeights(prompt, maxWeight = 1.3, maxCount = 
 const 自动去水印负面提示词 = 'text, watermark, signature, logo, subtitles, qr code';
 const 全局无文字正向提示词 = 'single coherent image, natural subject focus, clear silhouette';
 const 部位特写单图正向提示词 = 'single image, one frame, one subject only, extreme close-up macro crop, target fills the frame, plain blurred background, cohesive macro composition';
-const NSFW部位特写画质增强提示词 = 'adult character only, target anatomy only, macro anatomical close-up, ultra tight crop, wet skin texture, glistening moisture, natural skin folds, soft rim light, specular highlights, subsurface scattering, single private anatomy focus, no minors';
+const NSFW部位特写画质增强提示词 = 'target anatomy only, macro anatomical close-up, ultra tight crop, wet skin texture, glistening moisture, natural skin folds, soft rim light, specular highlights, subsurface scattering, single private anatomy focus';
 const 部位特写反拼贴负面提示词 = 'multiple views, split screen, panel layout, comic panel, comic page, manga panel, collage, contact sheet, character sheet, duplicate anatomy, mirrored anatomy, multiple organs, extra organs, extra nipples';
 const 默认NovelAI负面提示词 = 'artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, logo, too many watermarks, negative space, blank page, gigantic breasts';
 const 默认表情稳定负面提示词 = 'bared teeth, clenched teeth, crazy grin, distorted mouth, grimace';
@@ -780,6 +781,8 @@ export function 构建角色锚点注入提示词(anchor, options) {
     const fragments = keys
       .flatMap((key) => (Array.isArray(features[key]) ? features[key] : []))
       .map((item) => String(item || '').trim())
+      .filter(Boolean)
+      .map((token) => stripAgeWords(token))
       .filter(Boolean);
     return 去除镜头构图词(去重提示词片段(fragments)).slice(0, Math.max(0, limit));
   };
@@ -787,26 +790,27 @@ export function 构建角色锚点注入提示词(anchor, options) {
   const 从原始提示词挑选 = (params) => {
     if (!positive) return [];
     if (/::/.test(positive)) return []; // 含权重语法时不做逗号拆分，以免破坏结构
-    const tokens = 去除镜头构图词(去重提示词片段(按逗号拆分提示词(positive)));
+    const tokens = 去除镜头构图词(去重提示词片段(按逗号拆分提示词(positive)))
+      .map((token) => stripAgeWords(token))
+      .filter(Boolean);
     const filtered = tokens.filter((token) => params.allow.test(token) && !params.deny.test(token));
     return filtered.slice(0, Math.max(0, params.limit ?? 24));
   };
 
-  // 头像构图：仅抽取面部、发型、发色、眼睛、肤色和年龄等面部特征标签，剔除衣服和道具
+  // 头像构图：仅抽取面部、发型、发色、眼睛、肤色和体型等特征标签，剔除衣服、道具和年龄
   if (composition === '头像') {
     const tokensFromFeatures = 从结构化特征挑选([
-      '年龄标签',
       '外貌标签',
+      '身材标签',
       '发型标签',
       '发色标签',
       '眼睛标签',
       '肤色标签',
-      '年龄感标签',
       '特殊特征标签'
     ], 20);
     if (tokensFromFeatures.length > 0) return tokensFromFeatures.join(', ');
 
-    const allow = /(1girl|1boy|girl|boy|woman|man|female|male|young|adult|teen|hair|eyes?|iris|pupil|eyebrow|eyelash|face|lips?|mouth|nose|skin|complexion|freckle|mole|beauty mark|scar|tattoo|makeup|ear|neck)/i;
+    const allow = /(1girl|1boy|girl|boy|woman|man|female|male|hair|eyes?|iris|pupil|eyebrow|eyelash|face|lips?|mouth|nose|skin|complexion|freckle|mole|beauty mark|scar|tattoo|makeup|ear|neck)/i;
     const deny = /(breast|bust|cleavage|waist|hip|thigh|leg|feet|nude|dress|robe|hanfu|armor|outfit|clothing|sleeve|glove|stocking|boots|pants|skirt|kimono|cape|cloak|weapon|sword|background|scenery|environment|landscape)/i;
     return 从原始提示词挑选({ allow, deny, limit: 16 }).join(', ');
   }
@@ -815,20 +819,20 @@ export function 构建角色锚点注入提示词(anchor, options) {
   if (composition === '部位特写') {
     const part = options.部位;
     if (part === '胸部') {
-      const allow = /(breast|breasts|bust|cup|cleavage|nipple|nipples|areola|chest|skin|complexion|pale|fair|tan|young|adult|teen)/i;
+      const allow = /(breast|breasts|bust|cup|cleavage|nipple|nipples|areola|chest|skin|complexion|pale|fair|tan)/i;
       const deny = /(face|eyes?|hair|lips?|mouth|nose|dress|robe|hanfu|armor|outfit|clothing|upper body|waist|portrait|full body)/i;
 
-      const tokens = 从结构化特征挑选(['胸部标签', 'NSFW标签', '肤色标签', '年龄标签', '年龄感标签'], 14)
+      const tokens = 从结构化特征挑选(['胸部标签', 'NSFW标签', '肤色标签'], 14)
         .filter((token) => allow.test(token) && !deny.test(token));
       if (tokens.length > 0) return tokens.join(', ');
 
       return 从原始提示词挑选({ allow, deny, limit: 10 }).join(', ');
     }
 
-    const allow = /(skin|complexion|pale|fair|tan|young|adult|teen)/i;
+    const allow = /(skin|complexion|pale|fair|tan)/i;
     const deny = /(face|eyes?|hair|dress|robe|hanfu|armor|outfit|clothing|upper body|waist|portrait|full body|standing|sitting|kneeling|feet)/i;
 
-    const safe = 从结构化特征挑选(['肤色标签', '年龄标签', '年龄感标签'], 8)
+    const safe = 从结构化特征挑选(['肤色标签'], 8)
       .filter((token) => allow.test(token) && !deny.test(token));
     if (safe.length > 0) return safe.join(', ');
 
@@ -838,7 +842,6 @@ export function 构建角色锚点注入提示词(anchor, options) {
   // 半身/立绘/场景：保留稳定外貌，但当前服装、裸体和披发状态优先于 DNA 常驻设定。
   if (features) {
     const keys = [
-      '年龄标签',
       '外貌标签',
       '身材标签',
       '胸部标签',
@@ -846,7 +849,6 @@ export function 构建角色锚点注入提示词(anchor, options) {
       '发色标签',
       '眼睛标签',
       '肤色标签',
-      '年龄感标签',
       '服装基底标签',
       '特殊特征标签'
     ];
@@ -857,10 +859,14 @@ export function 构建角色锚点注入提示词(anchor, options) {
       .flatMap(key => Array.isArray(features[key]) ? features[key] : [])
       .map(item => String(item || '').trim())
       .filter(Boolean)
+      .map(token => stripAgeWords(token))
+      .filter(Boolean)
       .filter(token => !应删除的Dna标签(token, state));
     if (tokens.length > 0) return 去重提示词片段(tokens).join(', ');
   }
   return 按逗号拆分提示词(positive)
+    .map(token => stripAgeWords(token))
+    .filter(Boolean)
     .filter(token => !应删除的Dna标签(token, state))
     .join(', ');
 }

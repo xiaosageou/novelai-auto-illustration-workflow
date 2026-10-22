@@ -360,13 +360,14 @@ Output exactly one valid JSON object. Do not output thought process, Markdown, c
 
 ## Character Writing Guide
 For each character, write their prompt like this:
-"A slender young woman with silver-white hair flowing loose past her waist and striking crimson eyes. She wears a flowing white hanfu robe with long sleeves. Her expression is cold and determined as she holds her sword leveled forward."
+"A slender woman with silver-white hair flowing loose past her waist and striking crimson eyes. She wears a flowing white hanfu robe with long sleeves. Her expression is cold and determined as she holds her sword leveled forward."
 
 For NSFW characters, describe physical state directly and objectively:
 "Her white robe is pulled open, exposing her pale shoulders and bare chest. Her expression shows a mix of shame and involuntary arousal, eyes averted."
 
 ## Critical Rules
 - Copy each character name EXACTLY from the scene card.
+- NEVER write age descriptors (adult, 18yo, teen, young, mature, elderly, old, loli, shota, child, kid, minor, underage). Ignore the DNA 年龄标签 / 年龄感标签 completely. Describe build instead: petite, slim, slender, curvy, plump, toned, muscular, athletic_build, broad_shoulders, wide_hips, long_legs.
 - Do NOT put character appearance, hair, expression, or clothing in base_prompt.
 - Do NOT add quality booster phrases such as masterpiece or best quality — the pipeline handles these.
 - base_prompt must be a non-empty string.
@@ -449,6 +450,7 @@ base_prompt | character1 | character2
 - Copy each name exactly from the scene card.
 - Each character prompt starts with girl, boy, woman, man, or other. Never use 1girl, 1boy, solo, or no humans after the first | segment.
 - For each visible character, include only the DNA traits selected as useful and visible for this frame, plus current frame state. Do not copy a complete DNA profile merely because it is available.
+- NEVER write age descriptors (adult, 18yo, teen, young, mature, elderly, old, loli, shota, child, kid, minor, underage). Ignore the DNA 年龄标签 / 年龄感标签 completely. Describe build instead: petite, slim, slender, curvy, plump, toned, muscular, athletic_build, broad_shoulders, wide_hips, long_legs.
 - If a character is still wearing pants, trousers, jeans, shorts, underwear, or other crotch-covering clothing, do not add penis, erection, erect_penis, large_penis, penis_outline, or similar genital-state tags unless the scene card explicitly shows or states that exposure/state.
 - Original/NPC characters need enough selected visual detail to be recognizable in this frame; this does not require a full DNA profile.
 - Scene environment tags stay in base_prompt, not character prompts.

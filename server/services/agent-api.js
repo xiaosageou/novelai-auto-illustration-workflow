@@ -305,7 +305,7 @@ export function createAgentRouter({ baseDir, getPipeline, enqueueRedraw, queueSt
       requireValue(comicInternal || !pipeline.comicProductionJob, 409, 'BUSY', '漫画创作任务正在运行');
       requireValue(sceneHash(target) === args.expectedSceneHash, 409, 'STALE_SCENE', '场景版本已变化，请重新读取');
       const queues = queueState(args.projectName);
-      requireValue(!queues.busy && !pipeline.isSceneQueued(chapterKey, args.sceneIdx), 409, 'BUSY', '队列已有任务，待完成后提交');
+      requireValue(!queues.busy && !pipeline.isSceneProcessing(chapterKey, args.sceneIdx), 409, 'BUSY', '队列已有任务，待完成后提交');
       if (name === 'scenes.render') requireValue(target.final_prompt, 409, 'PROMPT_REQUIRED', '先用 prompts.write 保存最终 Prompt');
       const queued = enqueueRedraw(args.projectName, pipeline, chapterKey, chapterKey, args.sceneIdx,
         name === 'scenes.render' ? 'nai_only' : 'refresh_prompt', {

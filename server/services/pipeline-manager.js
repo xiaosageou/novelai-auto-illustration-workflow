@@ -12,6 +12,7 @@ import { findOriginalTriggerSentence } from '../utils/prompt-cleaner.js';
 import { globalCooldownManager } from '../utils/cooldown.js';
 import { extractChapterScenesInBatches } from '../utils/chapter-scene-batching.js';
 import { ConcurrencyQueue } from '../utils/job-queue.js';
+import { stripAgeWords } from '../utils/age-tags.js';
 
 const CHARACTER_DNA_LONG_CHAPTER_THRESHOLD = 5000;
 const CHARACTER_DNA_LONG_CHAPTER_BATCH_SIZE = 5;
@@ -142,8 +143,9 @@ export class PipelineManager {
     this.rebuildLlmExtractors();
 
     this.isRunning = false;
-    // 仅记录当前已进入 LLM/NAI 工作队列的场景；用于允许编辑同一流水线中尚未排队的其他场景卡。
-    this.activeSceneQueue = new Set();
+    // 仅记录「此刻正在被处理」的场景（LLM 提炼进行中，或 NAI 生图进行中）。
+    // 场景提炼完 Prompt、在生图队列里等待时不算处理中，因此仍允许编辑该场景卡。
+    this.processingScenes = new Set();
     this.chapters = [];
     this.projectProgress = null;
     this.uiCooldownCallback = null;
@@ -199,16 +201,16 @@ export class PipelineManager {
     return `${normalizedChapterKey}::${Number(sceneIdx)}`;
   }
 
-  markSceneQueued(chapterKey, sceneIdx) {
-    this.activeSceneQueue.add(this.getSceneQueueKey(chapterKey, sceneIdx));
+  markSceneProcessing(chapterKey, sceneIdx) {
+    this.processingScenes.add(this.getSceneQueueKey(chapterKey, sceneIdx));
   }
 
-  clearSceneQueued(chapterKey, sceneIdx) {
-    this.activeSceneQueue.delete(this.getSceneQueueKey(chapterKey, sceneIdx));
+  clearSceneProcessing(chapterKey, sceneIdx) {
+    this.processingScenes.delete(this.getSceneQueueKey(chapterKey, sceneIdx));
   }
 
-  isSceneQueued(chapterKey, sceneIdx) {
-    return this.activeSceneQueue.has(this.getSceneQueueKey(chapterKey, sceneIdx));
+  isSceneProcessing(chapterKey, sceneIdx) {
+    return this.processingScenes.has(this.getSceneQueueKey(chapterKey, sceneIdx));
   }
 
   createLlmExtractor(task) {
@@ -592,7 +594,7 @@ export class PipelineManager {
         matchedAnchors.push({
           name,
           aliases,
-          正面提示词: effectiveDna.tags || "",
+          正面提示词: stripAgeWords(effectiveDna.tags || ""),
           负面提示词: effectiveDna.supersededNegative || "",
           结构化特征: effectiveDna.features,
           身高等级: effectiveDna.height_class || charData.height_class || "",
@@ -645,9 +647,9 @@ export class PipelineManager {
     this.naiClient?.abortAll?.();
     globalCooldownManager.interruptCooldown();
 
-    // 3. 清空当前活跃生图队列
-    if (this.activeSceneQueue) {
-      this.activeSceneQueue.clear();
+    // 3. 清空当前正在处理的场景标记
+    if (this.processingScenes) {
+      this.processingScenes.clear();
     }
 
     // 4. 安全落盘已处理状态
@@ -1368,18 +1370,30 @@ export class PipelineManager {
       ? scene.interaction_actions
       : inferSceneInteractionActions(scene);
 
-    const promptResult = buildFinalImagePrompt(advancedParams.base_prompt || advancedParams.prompt, {
+    // 生图 Prompt 不写年龄：即使 LLM 忽略了系统提示，这里也做最后一道剔除。
+    const sanitizedAdvancedParams = {
+      ...advancedParams,
+      base_prompt: stripAgeWords(advancedParams.base_prompt || advancedParams.prompt || ''),
+      negative_prompt: stripAgeWords(advancedParams.negative_prompt || ''),
+      character_prompts: (advancedParams.character_prompts || []).map(item => ({
+        ...item,
+        prompt: stripAgeWords(item?.prompt || ''),
+        negative_prompt: stripAgeWords(item?.negative_prompt || '')
+      }))
+    };
+
+    const promptResult = buildFinalImagePrompt(sanitizedAdvancedParams.base_prompt, {
       composition,
       size: requestedSize,
       extraPositive: this.config.extra_prompt || "",
-      extraNegative: [this.config.negative_prompt || "", advancedParams.negative_prompt || ""].filter(Boolean).join(", "),
+      extraNegative: [this.config.negative_prompt || "", sanitizedAdvancedParams.negative_prompt].filter(Boolean).join(", "),
       sceneCharacters: scene.characters || [],
       sceneNsfwRating: scene.nsfw_rating || 'sfw',
       sceneEnvironment: scene.environment || '',
       sceneDescription: scene.visual_description || scene.scene_desc || '',
       sceneInteractions: scene.interactions || '',
       sceneInteractionActions: mergedInteractionActions,
-      structuredCharacterPrompts: advancedParams.character_prompts || [],
+      structuredCharacterPrompts: sanitizedAdvancedParams.character_prompts,
       sceneMustShow: scene.must_show || [],
       sceneMustNotShow: scene.must_not_show || [],
       artistStylePrompt: this.config.artistStylePrompt || "",
@@ -1500,51 +1514,56 @@ export class PipelineManager {
   }
 
   async _prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue) {
-    this.markSceneQueued(chapKey, scene.scene_idx);
-    if (scene.status === 'SUCCESS' && scene.image_path && existsSync(path.join(this.projBase, scene.image_path))) {
-      this.writeLog(`  [场景 ${scene.scene_idx}] 插画已存在，跳过 LLM 处理。`);
-      this.clearSceneQueued(chapKey, scene.scene_idx);
-      return;
-    }
+    this.markSceneProcessing(chapKey, scene.scene_idx);
+    try {
+      if (scene.status === 'SUCCESS' && scene.image_path && existsSync(path.join(this.projBase, scene.image_path))) {
+        this.writeLog(`  [场景 ${scene.scene_idx}] 插画已存在，跳过 LLM 处理。`);
+        return;
+      }
 
-    if (scene.status === 'PROMPT_READY' && scene.prepared_prompt?.finalPositive) {
-      this.writeLog(`  [场景 ${scene.scene_idx}] Prompt 已就绪（断点续传），直接推入 NAI 队列。`);
-      naiQueue.push({ chap, scene, scenes, chapKey });
-      return;
-    }
+      if (scene.status === 'PROMPT_READY' && scene.prepared_prompt?.finalPositive) {
+        this.writeLog(`  [场景 ${scene.scene_idx}] Prompt 已就绪（断点续传），直接推入 NAI 队列。`);
+        // 先解除「处理中」再入队：等待出图期间允许编辑该场景卡
+        this.clearSceneProcessing(chapKey, scene.scene_idx);
+        naiQueue.push({ chap, scene, scenes, chapKey });
+        return;
+      }
 
-    let prepared = false;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      if (!this.isRunning) break;
-      try {
-        await this.prepareSingleScenePrompt(chap, scene, scenes, chapKey, naiTagsModel);
-        prepared = true;
-        break;
-      } catch (error) {
-        if (attempt < 3) {
-          this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理第 ${attempt}/3 次失败，将重试: ${error.message}`, "warning");
-        } else {
-          this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理连续 3 次失败，跳过该场景: ${error.message}`, "warning");
-          scene.status = 'FAILED';
-          this.clearSceneQueued(chapKey, scene.scene_idx);
-          this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
-          await this.projectProgress.save();
-          this.uiProgressCallback?.({
-            chapter: chap.chapter,
-            chapterKey: chapKey,
-            sceneIdx: scene.scene_idx,
-            totalScenes: scenes.length,
-            imagePath: 'failed',
-            phase: 'llm'
-          });
+      let prepared = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        if (!this.isRunning) break;
+        try {
+          await this.prepareSingleScenePrompt(chap, scene, scenes, chapKey, naiTagsModel);
+          prepared = true;
+          break;
+        } catch (error) {
+          if (attempt < 3) {
+            this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理第 ${attempt}/3 次失败，将重试: ${error.message}`, "warning");
+          } else {
+            this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理连续 3 次失败，跳过该场景: ${error.message}`, "warning");
+            scene.status = 'FAILED';
+            this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
+            await this.projectProgress.save();
+            this.uiProgressCallback?.({
+              chapter: chap.chapter,
+              chapterKey: chapKey,
+              sceneIdx: scene.scene_idx,
+              totalScenes: scenes.length,
+              imagePath: 'failed',
+              phase: 'llm'
+            });
+          }
         }
       }
-    }
 
-    if (prepared) {
-      naiQueue.push({ chap, scene, scenes, chapKey });
-    } else {
-      this.clearSceneQueued(chapKey, scene.scene_idx);
+      if (prepared) {
+        // 先解除「处理中」再入队：等待出图期间允许编辑该场景卡
+        this.clearSceneProcessing(chapKey, scene.scene_idx);
+        naiQueue.push({ chap, scene, scenes, chapKey });
+      }
+    } finally {
+      // 无论成功、跳过还是失败，离开本函数即不再处于「处理中」
+      this.clearSceneProcessing(chapKey, scene.scene_idx);
     }
   }
 
@@ -1841,6 +1860,9 @@ export class PipelineManager {
       await this.runPriorityJobs();
       if (!this.isRunning) break;
 
+      // 真正轮到该场景出图，标记为「处理中」；出图结束即解除
+      this.markSceneProcessing(chapKey, scene.scene_idx);
+
       // NAI 消费开始前，通知前端进入加载中状态
       this.uiProgressCallback?.({
         chapter: chap.chapter,
@@ -1881,7 +1903,7 @@ export class PipelineManager {
         });
       }
 
-      this.clearSceneQueued(chapKey, scene.scene_idx);
+      this.clearSceneProcessing(chapKey, scene.scene_idx);
 
       await this.runPriorityJobs();
 
@@ -1899,7 +1921,7 @@ export class PipelineManager {
         this.writeLog(`[Pipeline NAI] 章节「${chap.chapter}」所有多图配图已锁定。`);
       }
     }
-    if (!this.isRunning) this.activeSceneQueue.clear();
+    if (!this.isRunning) this.processingScenes.clear();
   }
 
   /**
@@ -2264,8 +2286,10 @@ export class PipelineManager {
 
   async updateSceneCard(chapterKey, sceneIdx, updates = {}) {
     await this.initialize();
-    if (this.isSceneQueued(chapterKey, sceneIdx)) {
-      throw new Error("该场景正在队列中处理，完成或移出队列后再编辑。");
+    // 仅当该场景此刻正在被处理（LLM 提炼或 NAI 出图进行中）时才拦截编辑；
+    // 只是排在队列里等待的其他场景，仍允许编辑。
+    if (this.isSceneProcessing(chapterKey, sceneIdx)) {
+      throw new Error("该场景正在处理中，完成后再编辑。");
     }
 
     const chap = this.chapters.find(c => {

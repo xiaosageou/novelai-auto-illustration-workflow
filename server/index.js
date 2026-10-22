@@ -261,16 +261,18 @@ function getRedrawQueue(projectName) {
   return redrawQueues.get(projectName);
 }
 
-function isSceneInRedrawQueue(projectName, chapterKey, sceneIdx) {
-  if (globalQueueManager.isSceneInQueue(projectName, chapterKey, sceneIdx)) {
+// 仅判断该场景此刻是否正在被处理（队列里等待不算），用于放行编辑其他/等待中的场景
+function isSceneRunningInRedrawQueue(projectName, chapterKey, sceneIdx) {
+  if (globalQueueManager.isSceneRunning(projectName, chapterKey, sceneIdx)) {
     return true;
   }
   const queue = getRedrawQueue(projectName);
   const normalizedChapterKey = String(chapterKey || '').trim();
   const normalizedSceneIdx = Number(sceneIdx);
-  return [queue.current, ...queue.items].some(job => job
-    && String(job.effectiveKey || '').trim() === normalizedChapterKey
-    && Number(job.sceneIdx) === normalizedSceneIdx);
+  const current = queue.current;
+  return Boolean(current
+    && String(current.effectiveKey || '').trim() === normalizedChapterKey
+    && Number(current.sceneIdx) === normalizedSceneIdx);
 }
 
 function getChapterQueue(projectName) {
@@ -1222,9 +1224,10 @@ app.put('/api/projects/:projectName/chapters/:chapterKey/scenes/:sceneIdx', asyn
     const pipeline = await getPipeline(projectName);
 
     const effectiveKey = pipeline.projectProgress.getEffectiveChapKeyByRaw(chapterKey);
-    if (pipeline.isSceneQueued(effectiveKey, sceneIdx)
-      || isSceneInRedrawQueue(projectName, effectiveKey, sceneIdx)) {
-      return res.status(409).json({ error: "该场景正在队列中处理，完成或移出队列后再编辑" });
+    // 只有该场景此刻正在被处理时才拒绝编辑；仅排队等待的场景允许编辑
+    if (pipeline.isSceneProcessing(effectiveKey, sceneIdx)
+      || isSceneRunningInRedrawQueue(projectName, effectiveKey, sceneIdx)) {
+      return res.status(409).json({ error: "该场景正在处理中，完成后再编辑" });
     }
     const result = await pipeline.updateSceneCard(effectiveKey, sceneIdx, req.body || {});
     res.json({ success: true, message: `场景 #${sceneIdx} 已保存`, ...result });

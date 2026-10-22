@@ -49,20 +49,23 @@ test('LLM Extractor post-processing defaults missing age to adult', () => {
   assert.deepEqual(processed[2].features['年龄标签'], ['mature female']);
 });
 
-test('构建角色锚点注入提示词 includes age tags from character features', () => {
+test('构建角色锚点注入提示词 不写年龄，改用身材标签', () => {
   const anchor = {
     角色名: '林月',
     性别: 'girl',
     正面提示词: 'black hair',
     结构化特征: {
       '外貌标签': ['beautiful'],
+      '身材标签': ['slim'],
       '发色标签': ['black hair'],
       '年龄标签': ['18yo']
     }
   };
 
   const injected = 构建角色锚点注入提示词(anchor, { mode: 'avatar' });
-  assert.ok(injected.includes('18yo'), `Injected prompt should include age tag, got: ${injected}`);
+  assert.doesNotMatch(injected, /18yo/i, `Injected prompt should not include age tag, got: ${injected}`);
+  assert.doesNotMatch(injected, /\badult\b/i, `Injected prompt should not include adult, got: ${injected}`);
+  assert.match(injected, /slim/i, `Injected prompt should include body tag, got: ${injected}`);
 });
 
 test('Scene readiness logic correctly identifies scenes waiting for render', () => {

@@ -551,6 +551,32 @@ export class GlobalQueueManager extends EventEmitter {
 
   // ==================== 4. 状态查询与通知 ====================
 
+  /**
+   * 该场景此刻是否正被处理（Prompt 提炼或生图正在执行）。
+   * 仅「正在执行」返回 true；只是在队列里等待、尚未轮到时不返回 true，
+   * 这样编辑其他/等待中的场景卡不会被拦截。
+   */
+  isSceneRunning(projectName, chapterKey, sceneIdx) {
+    const normalizedChapterKey = String(chapterKey || '').trim();
+    const normalizedSceneIdx = Number(sceneIdx);
+
+    if (this.promptQueue.current
+      && this.promptQueue.current.projectName === projectName
+      && String(this.promptQueue.current.chapterKey || '').trim() === normalizedChapterKey
+      && Number(this.promptQueue.current.payload?.sceneIdx) === normalizedSceneIdx) {
+      return true;
+    }
+
+    if (this.imageQueue.current
+      && this.imageQueue.current.projectName === projectName
+      && String(this.imageQueue.current.chapterKey || '').trim() === normalizedChapterKey
+      && Number(this.imageQueue.current.sceneIdx) === normalizedSceneIdx) {
+      return true;
+    }
+
+    return false;
+  }
+
   isSceneInQueue(projectName, chapterKey, sceneIdx) {
     const normalizedChapterKey = String(chapterKey || '').trim();
     const normalizedSceneIdx = Number(sceneIdx);
