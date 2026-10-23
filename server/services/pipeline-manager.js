@@ -11,6 +11,7 @@ import { normalizeSceneCard, serializeSceneForMatching } from '../utils/scene-st
 import { findOriginalTriggerSentence } from '../utils/prompt-cleaner.js';
 import { globalCooldownManager } from '../utils/cooldown.js';
 import { extractChapterScenesInBatches } from '../utils/chapter-scene-batching.js';
+import { parseChapterHeading, isVolumeHeading, selectBareNumberHeadings } from '../utils/chapter-heading.js';
 import { ConcurrencyQueue } from '../utils/job-queue.js';
 import { stripAgeWords } from '../utils/age-tags.js';
 
@@ -287,45 +288,6 @@ export class PipelineManager {
       let currentChapter = "正文";
       let currentContent = [];
 
-      const numberPattern = '[一二三四五六七八九十百千万两〇零\\d]+';
-      const volPattern = new RegExp(`^\\s*(第\\s*${numberPattern}\\s*[卷篇部集])\\s*(.*)$`);
-      const strictChapPattern = new RegExp(`^\\s*(第\\s*${numberPattern}\\s*(?:[:：]\\s*)?[章节回节])\\s*(.*)$`);
-      const prefixedChapPattern = new RegExp(`^\\s*(.{1,40}?)\\s+(第\\s*${numberPattern}\\s*(?:[:：]\\s*)?[章节回节])\\s*(.*)$`);
-      const specialChapPattern = /^\s*(?:正文\s+)?(序章|楔子|引子|序幕|尾声|后记|结局|终章|番外(?:篇)?(?:\s*[:：]?\s*.*)?)\s*$/;
-      const prefixedSpecialChapPattern = /^\s*(.{1,40}?)\s+(序章|楔子|引子|序幕|尾声|后记|结局|终章|番外(?:篇)?(?:\s*[:：]?\s*.*)?)\s*$/;
-      const westernChapPattern = /^\s*(?:chapter|chap\.?)\s*\d+\b[\s:：.-]*(.*)$/i;
-      const parenthesesChapPattern = new RegExp(`^\\s*([（(]\\s*${numberPattern}\\s*[）)])\\s*(.*)$`);
-
-      const parseChapterHeading = (stripped) => {
-        if (!stripped || stripped.length > 100) return null;
-        const strict = stripped.match(strictChapPattern);
-        if (strict) return stripped;
-
-        const parens = stripped.match(parenthesesChapPattern);
-        if (parens) return stripped;
-
-        const prefixed = stripped.match(prefixedChapPattern);
-        if (prefixed) {
-          const prefix = prefixed[1].trim();
-          // 常见来源站点行或正文长句不应被当成章节；书名 + 第X章 这种短标题允许。
-          if (/[,，。！？!?；;：“”"'、]/.test(prefix)) return null;
-          return `${prefixed[2].replace(/\s+/g, '')}${prefixed[3] ? ` ${prefixed[3].trim()}` : ''}`.trim();
-        }
-
-        const special = stripped.match(specialChapPattern);
-        if (special) return special[1].trim();
-
-        const prefixedSpecial = stripped.match(prefixedSpecialChapPattern);
-        if (prefixedSpecial) {
-          const prefix = prefixedSpecial[1].trim();
-          if (/[,，。！？!?；;：“”"'、]/.test(prefix)) return null;
-          return prefixedSpecial[2].trim();
-        }
-
-        if (westernChapPattern.test(stripped)) return stripped;
-        return null;
-      };
-
       const saveChapter = (volume, chapter, contentLines) => {
         if (contentLines.length > 0) {
           this.chapters.push({
@@ -336,13 +298,17 @@ export class PipelineManager {
         }
       };
 
-      for (const line of lines) {
+      const bareNumberHeadingIndexes = selectBareNumberHeadings(lines);
+
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+        const line = lines[lineIndex];
         const stripped = line.trim();
         if (!stripped) continue;
 
-        const chapterHeading = parseChapterHeading(stripped);
+        const chapterHeading = parseChapterHeading(stripped)
+          || (bareNumberHeadingIndexes.has(lineIndex) ? stripped : null);
 
-        if (volPattern.test(stripped) && !chapterHeading) {
+        if (isVolumeHeading(stripped) && !chapterHeading) {
           saveChapter(currentVolume, currentChapter, currentContent);
           currentContent = [];
           currentVolume = stripped;
