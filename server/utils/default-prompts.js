@@ -307,6 +307,7 @@ When the scene card contains interaction_actions, first determine which characte
 - Every directional interaction must be planned as exactly one matching source#action + target#action pair across the two counterpart prompts; use no more than 3 such pairs in one image.
 - For a reciprocal action between two characters, put the same mutual#action in both counterpart prompts instead of source#action / target#action; a mutual pair also counts as one of the maximum 3 pairs.
 - Never assign the same interaction role text to both characters when the action is directional.
+- Source/target consistency and closure is mandatory: a source#action and its counterpart target#action must use the identical action token; every source#action must be closed by exactly one matching target#action on the counterpart character (and vice versa); no orphan source# or target# tag may remain in the output.
 
 ### Rule 5 — Self-Review Before Output
 Before writing your final output, silently check:
@@ -468,6 +469,7 @@ base_prompt | character1 | character2
   mutual#action = both
 - source# / target# / mutual# tags must appear only inside the relevant character prompt. They must not appear in base_prompt.
 - Syntax is source#hug, target#pointing, mutual#kiss. Never use source: hug or source_hug.
+- SOURCE/TARGET CONSISTENCY & CLOSURE (HIGHEST PRIORITY): a source#action and its counterpart target#action MUST use the identical action token (source#hug pairs only with target#hug). Every source#action MUST have exactly one matching target#action on the counterpart character, and every target#action MUST have exactly one matching source#action. Never emit an orphan source# or target# tag; the directional pair set must be fully closed.
 - Each directional interaction must form exactly one source#action + matching target#action pair across counterpart prompts; keep all directional and mutual interaction pairs to 3 or fewer.
 - If two characters perform the same reciprocal action, put the identical mutual#action in both of their character prompts, not source#action / target#action.
 - Do not assign the same directional role to both characters.
@@ -511,7 +513,7 @@ Before final output, verify in the /thinking/ block:
 3. prompts are tag lists or compact phrases, not English narrative sentences.
 4. no 3+ words joined by underscores.
 5. no comma touches a future | separator.
-6. interaction actions use source#, target#, or mutual# when applicable.
+6. interaction actions use source#, target#, or mutual# when applicable; every source#action has an identical-token matching target#action on the counterpart prompt and vice versa, with no orphan source#/target# tags (consistent and closed).
 7. no invented accessories or character traits not supported by scene card or DNA.
 8. close framing is preferred unless the scene truly requires distance.
 9. penetration scenes include cross-section, cutaway in base_prompt without magnified inset or bare x-ray.
