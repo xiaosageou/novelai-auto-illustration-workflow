@@ -24,6 +24,16 @@ test('stripAgeWords 不影响正常体型与外貌标签', () => {
   assert.equal(stripAgeWords('broad_shoulders'), 'broad_shoulders');
 });
 
+// 专有名词回归：脸模 danbooru_tag 与作品名被削掉前缀就彻底失效，不能当年龄描述剔除。
+test('stripAgeWords 保留专有名词标签中的 age 词根', () => {
+  assert.equal(stripAgeWords('old_face_model'), 'old_face_model');
+  assert.equal(stripAgeWords('teen_titans'), 'teen_titans');
+  assert.equal(stripAgeWords('young justice'), 'young justice');
+  assert.equal(stripAgeWords('hutao'), 'hutao');
+  assert.equal(stripAgeWords('asuka_langley_soryu'), 'asuka_langley_soryu');
+  assert.equal(stripAgeWords('old_face_model, long hair'), 'old_face_model, long hair');
+});
+
 test('stripAgeDescriptors 清洗标签数组', () => {
   assert.deepEqual(
     stripAgeDescriptors(['adult', '18yo', 'young_woman', 'slim']),

@@ -316,6 +316,16 @@ Before writing your final output, silently check:
 3. Is any concept repeated across base_prompt and a character_prompt? If yes, remove the duplicate.
 4. Are the character interaction relationships clearly readable in natural language?
 5. Are ALL words separated by normal spaces? Words like "Girlwithlonghair" are WRONG — it must be "Girl with long hair".
+6. Is any character both nude and fully dressed at the same time? "nude" together with dress, shirt, skirt, uniform or robe is a contradiction. Nude plus thighhighs, gloves or jewellery is fine.
+7. Does every partial-undress phrase keep its garment? "open shirt" needs a shirt, "skirt lifted" needs a skirt.
+8. Does the number of people in base_prompt match the number of character segments? Never write "solo" while describing two characters.
+9. Does one character stand, sit and lie down at once, or carry two incompatible camera angles or expressions? Keep one posture, one framing and one expression state per character.
+10. Is the setting consistent? Indoors with outdoors, or night with sunlight, cannot coexist in one frame.
+11. Is explicit content contradicted by the negative side? If the positive text says nude or names body parts, the negative text must not repeat those words as suppressors.
+12. Is anything repeated or bloated? Drop repeated concepts, near-synonyms such as "long hair" plus "very long hair", more than three quality words, and empty weights such as (tag:1).
+13. Would the whole prompt fit roughly 400 estimated tokens, hard cap 460? Trim quality words, mood words and duplicate adjectives before touching the character count or the core action.
+14. Is anything un-drawable? Atmosphere, mood, inner thoughts, backstory, causality, sound, smell, time skips and meta labels are invisible to a camera. Replace them with visible evidence: "tense atmosphere" becomes a furrowed brow, clenched fists and hard shadows.
+15. Is any constraint written as a negation ("no clothes")? State what is present instead ("nude").
 
 ## NSFW Rating Handling (MANDATORY — same as before)
 
@@ -517,7 +527,24 @@ Before final output, verify in the /thinking/ block:
 7. no invented accessories or character traits not supported by scene card or DNA.
 8. close framing is preferred unless the scene truly requires distance.
 9. penetration scenes include cross-section, cutaway in base_prompt without magnified inset or bare x-ray.
-10. /JSON/ contains exactly one complete JSON object and no Markdown/code fence.`;
+10. /JSON/ contains exactly one complete JSON object and no Markdown/code fence.
+
+## Self Check II — Contradiction, Redundancy and Un-Drawable Content
+Before final output, audit the prompt you just assembled and fix what this list names:
+11. No contradictory clothing state inside one character segment: nude, completely_nude or naked must not coexist with dress, shirt, skirt, pants, jeans, uniform, hanfu, robe, armor, coat or jacket; topless must not coexist with shirt or bra; bottomless must not coexist with skirt or pants. Legal exceptions that stay allowed: nude with thighhighs, gloves, necklace, earrings, hair_ornament or choker.
+12. Partial-undress tags keep their base garment: open_shirt needs shirt, skirt_lift needs skirt, panties_around_one_leg needs panties. Never leave them floating without the garment they act on.
+13. Character count matches structure: the canonical count tag in base_prompt equals the number of character_prompts segments; solo never coexists with multiple character segments; 1girl and 2girls never appear in the same segment.
+14. One body posture per character: standing, sitting, lying, on_back, on_stomach, kneeling and squatting must not be combined on the same character.
+15. Camera framing stays consistent: close-up with full_body, from_above with from_below, and portrait with wide_shot are contradictions. from_behind with looking_at_viewer is legal (looking back).
+16. Expressions stay consistent: smile with crying, open_mouth with closed_mouth, and eyes_closed with looking_at_viewer are contradictions unless one_eye_closed is used.
+17. Location and time stay consistent: indoors with outdoors, night with sunlight, and bedroom with forest are contradictions.
+18. Explicit content is never cancelled by the negative side: when the positive side contains nude, nipples, breasts, pussy or penis, neither negative_prompt nor negative_character_prompts may contain the same suppressing word.
+19. Redundancy is removed before output: no repeated tag; no synonym stacking (black_hair with dark_hair, smile with smiling, long_hair with very_long_hair, blue_eyes with eyes — keep only one or the stronger one); no more than 3 quality tags; no meaningless weights such as (tag:1), {tag} or [tag].
+20. Budget: base_prompt plus all character_prompts stays near 400 estimated tokens and never exceeds 460. Cut quality words, atmosphere words and repeated modifiers first, then minor props; never cut the character count, the core action, or a source#/target# pair.
+21. Nothing un-drawable: no mood or atmosphere abstractions (tense atmosphere, romantic mood, dangerous aura), no inner thoughts (thinking, remembering, regret, hesitation), no plot abstractions (love triangle, betrayal, revenge), no time or causality (years later, meanwhile, because, suddenly), no sound or text (sound of, sfx, dialogue, BGM), no smell or scent, no meta information (character names, series titles, chapter, panel, comic, page). Replace them with what a camera can see: tense atmosphere becomes furrowed_brow, clenched_fist, tense_expression, dramatic_shadows.
+22. No negative phrasing: rewrite no clothes / without weapon / not smiling as positive tags (nude / unarmed / expressionless).
+23. Language and script: positive and negative sides contain only English Danbooru tags, ASCII digits and ASCII punctuation. No Chinese characters, no pseudo-underscore hybrids such as 中文_english.
+24. When items 11-23 change the prompt, the /thinking/ block must state what was removed or rewritten; do not silently drop a DNA feature tag, the character count, the core action, or an interaction pair to satisfy a budget.`;
 
 // DEFAULT_ADVANCED_PROMPT 默认指向 Danbooru 标签分段版
 export const DEFAULT_ADVANCED_PROMPT = DEFAULT_ADVANCED_PROMPT_DANBOORU_TAGS;

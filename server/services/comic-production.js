@@ -16,6 +16,16 @@ const promptSchema = { type: 'object', properties: {
   negativeCharacterPrompts: { type: 'array', items: { type: 'string' } }
 }, required: ['basePrompt', 'negativePrompt', 'characterPrompts', 'negativeCharacterPrompts'], additionalProperties: false };
 
+// 旧 Prompt 里没有当前 DNA 绑定的脸模 tag → 判定为过期，必须重算而不是断点续传。
+export function faceModelStale(finalPrompt, dna, characterNames = []) {
+  const text = String(finalPrompt || '').toLowerCase();
+  if (!text) return false;
+  return characterNames.some(name => {
+    const tag = String(dna?.[name]?.proxy_character?.danbooru_tag || '').trim().toLowerCase().replace(/\s+/g, '_');
+    return Boolean(tag) && !text.includes(tag);
+  });
+}
+
 export class ComicProduction {
   constructor(comic, { locked, finish, submit, validate, generator }) {
     Object.assign(this, { comic, locked, finish, submit, validate });
@@ -100,10 +110,13 @@ export class ComicProduction {
     const input = await this.locked(async () => {
       const loc = await this.current(job); const panel = this.comic.panel(loc.episode, pid);
       const ctx = await this.comic.scene(job.args, panel);
-      if (ctx.target.final_prompt && !rewrite) return null;
-      return { pipeline: job.pipeline, plan: structuredClone(panel.plan),
-        dna: Object.fromEntries(panel.plan.characterNames.map(name => [name,
-          job.pipeline.projectProgress.getCharacterDNAForChapter(name, job.pipeline.chapters.indexOf(ctx.chap))])),
+      const dna = Object.fromEntries(panel.plan.characterNames.map(name => [name,
+        job.pipeline.projectProgress.getCharacterDNAForChapter(name, job.pipeline.chapters.indexOf(ctx.chap))]));
+      // 断点续传复用已保存 Prompt 前，先确认 DNA 里的同人脸模仍然落在旧 Prompt 里。
+      // 用户在 DNA 面板换了脸模、旧 Prompt 还带着上一个脸模时，必须重算，
+      // 不能因为 final_prompt 已存在就跳过（那是「改了脸模不生效」的直接原因）。
+      if (ctx.target.final_prompt && !rewrite && !faceModelStale(ctx.target.final_prompt, dna, panel.plan.characterNames)) return null;
+      return { pipeline: job.pipeline, plan: structuredClone(panel.plan), dna,
         entryState: this.comic.entryState(loc.episode, pid), validate: value => this.validate(promptSchema, value) };
     });
     if (!input) return;

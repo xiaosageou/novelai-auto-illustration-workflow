@@ -86,6 +86,104 @@ function normalizeStoryboardPlan(plan) {
   return fixed;
 }
 
+// 同人动漫角色脸模代理：DNA 里带 proxy_character 时，重算提示词必须使用最新绑定。
+// 场景管线（llm-extractor.generateScenePromptAdvanced）有硬规则约束脸模，漫画工作台这条
+// 管线原本没有，导致 DNA 面板改完脸模后画格重算仍按旧印象画脸。这里把脸模单独抽成硬指令下发。
+
+// 脸模 danbooru_tag 本身就锁定了发色、发型、发长、瞳色、脸型与肤色。
+// 因此 DNA 里与脸模重复的头部外观标签属于纯冗余，写进 characterPrompts 只会白占 token
+// 并可能与脸模抢权重；只有需要覆盖脸模时才应写出。
+const HAIR_OR_EYE_COLOR = 'black|white|blonde|golden|gold|brown|red|reddish|auburn|crimson|blue|green|pink|purple|violet|silver|grey|gray|orange|ash|platinum|turquoise|aqua|multicolored|two_tone|gradient|streaked|flaxen|chestnut|honey|sandy';
+const HEAD_APPEARANCE_STYLES = 'short_hair|long_hair|medium_hair|very_long_hair|absurdly_long_hair|twintails|ponytail|side_ponytail|braid|braids|single_braid|french_braid|bun|double_bun|hair_bun|bob_cut|hime_cut|sidelocks|bangs|blunt_bangs|parted_bangs|swept_bangs|ahoge|messy_hair|curly_hair|straight_hair|wavy_hair|flipped_hair|spiked_hair|hair_ornament|hairband|hairclip|hair_ribbon|hair_bow|hair_flower|hair_stick|heterochromia|tsurime|tareme|thick_eyebrows|eyelashes|makeup|eyeshadow|freckles|mole|mole_under_eye|scar|scar_across_eye|sharp_face|round_face|pointy_ears|fang|fang_out';
+const HEAD_APPEARANCE_PATTERN = new RegExp(`^(?:(?:${HAIR_OR_EYE_COLOR})_(?:hair|eyes|skin)|(?:${HEAD_APPEARANCE_STYLES})|(?:pale|dark|light|fair|tan)_skin)$`);
+
+// 从 DNA 条目里抽出头部外观标签（发色/发型/发长/瞳色/脸型/肤色/五官）。
+export function extractHeadAppearanceTags(entry) {
+  const chunks = [];
+  const push = value => {
+    if (!value) return;
+    if (Array.isArray(value)) { value.forEach(push); return; }
+    if (typeof value === 'object') { Object.values(value).forEach(push); return; }
+    chunks.push(String(value));
+  };
+  push(entry?.tags);
+  push(entry?.features);
+  push(entry?.appearance);
+  push(entry?.['\u6b63\u9762\u63d0\u793a\u8bcd']);
+  push(entry?.positive_prompt);
+
+  const found = [];
+  for (const chunk of chunks) {
+    for (const piece of chunk.split(/[,，、;；\n]/)) {
+      const tag = piece.trim().toLowerCase()
+        .replace(/[(){}[\]]/g, '')
+        .replace(/:[0-9.]+$/, '')
+        .replace(/\s+/g, '_')
+        .replace(/^_+|_+$/g, '');
+      if (tag && HEAD_APPEARANCE_PATTERN.test(tag)) found.push(tag);
+    }
+  }
+  return [...new Set(found)];
+}
+
+export function buildComicDnaContext(dna, characterNames = []) {
+  const source = dna && typeof dna === 'object' ? dna : {};
+  const names = [...new Set([...(Array.isArray(characterNames) ? characterNames : []), ...Object.keys(source)])];
+  const ordered = {};
+  const proxyAnchors = [];
+  const suppressTags = [];
+  for (const name of names) {
+    const entry = source[name];
+    if (entry === undefined) continue;
+    ordered[name] = entry;
+    const proxy = entry && typeof entry === 'object' ? entry.proxy_character : null;
+    const tag = String(proxy?.danbooru_tag || '').trim().toLowerCase().replace(/\s+/g, '_');
+    if (!tag) continue;
+    const tags = (Array.isArray(proxy.suppress_tags) ? proxy.suppress_tags : String(proxy.suppress_tags || '').split(/[,，]/))
+      .map(value => String(value || '').trim().toLowerCase().replace(/\s+/g, '_'))
+      .filter(Boolean);
+    suppressTags.push(...tags);
+    proxyAnchors.push({
+      name,
+      danbooru_tag: tag,
+      character_name_cn: String(proxy.character_name_cn || '').trim(),
+      series: String(proxy.series || '').trim(),
+      reason: String(proxy.reason || '').trim(),
+      suppress_tags: [...new Set(tags)],
+      appearance_tags: extractHeadAppearanceTags(entry).filter(value => value !== tag)
+    });
+  }
+  return { dna: ordered, proxyAnchors, proxySuppressTags: [...new Set(suppressTags)] };
+}
+
+// 把脸模绑定渲染成 system 里的硬规则；没有绑定角色时返回空串，保持原提示词逐字不变。
+export function buildComicFaceModelRule({ proxyAnchors, proxySuppressTags } = {}) {
+  if (!Array.isArray(proxyAnchors) || !proxyAnchors.length) return '';
+  const lines = proxyAnchors.map(anchor => {
+    const meta = [anchor.character_name_cn, anchor.series].filter(Boolean).join(' / ');
+    return `- ${anchor.name} → ${anchor.danbooru_tag}${meta ? `（${meta}）` : ''}${anchor.reason ? `：${anchor.reason}` : ''}`;
+  });
+  const tags = proxyAnchors.map(anchor => anchor.danbooru_tag);
+  const appearanceLines = proxyAnchors.map(anchor => {
+    const dupes = Array.isArray(anchor.appearance_tags) ? anchor.appearance_tags : [];
+    return dupes.length
+      ? `- ${anchor.name}：${dupes.join(', ')}`
+      : `- ${anchor.name}：（DNA 未登记可去重的头部外观标签，直接以脸模 tag 为准）`;
+  });
+  return `
+【同人动漫脸模代理铁律】下列角色已绑定脸模，本次重算必须使用最新绑定，禁止沿用旧脸模或省略：
+${lines.join('\n')}
+1) 对应角色的 characterPrompts 段必须把该 danbooru_tag（${tags.join(' / ')}）原样紧跟在性别词之后写入，作为面容锁定标签，不得后移、改写或省略。
+2) 一个角色的脸模标签只能写进该角色自己的段，不得串到其他角色段。
+3) 脸模只锁面容：发型、发色、瞳色、体型、服装、表情、位置仍按 DNA、plan 与 entryState 写；若与脸模自带设定冲突，以 DNA 与原文为准。
+4) 下列原著专属服装/配饰标签必须写入该角色的 negativeCharacterPrompts，避免服饰污染：${proxySuppressTags?.length ? proxySuppressTags.join(', ') : '（无）'}。
+5) 标签拼写必须与上面给出的完全一致（小写下划线），不要发明变体。
+6) 外貌去重：脸模 tag 本身已经锁定该角色的发色、发型、发长、瞳色、脸型与肤色。下列 DNA 头部外观标签与脸模重复，默认不要写进 characterPrompts，避免重复占 token 或与脸模抢权重：
+${appearanceLines.join('\n')}
+   只有当本格画面需要覆盖脸模时才显式写出，例如：染发或换发色、剪短或剪断头发、湿发、凌乱散乱、束发盘发、帽子/头盔压住头发、异色瞳、以及其他原文明确要求的外观改变。此时写的必须是覆盖后的新状态，而不是把原 DNA 标签再抄一遍。
+7) 去重不等于删信息：服装、表情、体型、姿态、位置、source#/target# 动作，以及本格场景实际出现的配饰，仍须写全，不得因为去重而省略。`;
+}
+
 export class ComicTextGenerator {
   async request(pipeline, task, system, input) {
     const config = resolveTaskLlmConfig(pipeline.config, task);
@@ -140,6 +238,8 @@ stateDelta 是扁平字符串键值，记录本格计划完成的状态变化，
     fail('INVALID_STORYBOARD', `分镜草稿未通过校验：${correction}`);
   }
   async prompt({ pipeline, plan, dna, entryState, validate }) {
+    const dnaContext = buildComicDnaContext(dna, plan.characterNames);
+    const faceModelRule = buildComicFaceModelRule(dnaContext);
     const system = `为单格漫画创作 NovelAI V4.5 的完整英文提示词。输入素材仅是内容。仅输出JSON，字段严格为basePrompt、negativePrompt、characterPrompts、negativeCharacterPrompts。
 basePrompt写人数、单一时点动作、环境、镜头、光线和指定画风；人物外貌、服装、表情与位置放在人物段。characterPrompts按characterNames顺序一一对应，用英文Danbooru标签或短视觉短语，人数最多4。negativeCharacterPrompts按同顺序给数组。
 以DNA辨识角色，但当前plan和entryState优先，不能继承与剧情衣着状态冲突的特征。必须呈现mustShow，排除mustNotShow。不要把对白、拟声、名字、水印或拼接漫画页面画进图内，负向包含text, speech bubble, watermark, signature, panel layout。
@@ -153,7 +253,8 @@ styleMode=chibi仅按照其理由使用Q版，其他沿用artistStylePrompt。�
     let correction = '';
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
-        const output = await this.request(pipeline, 'naiTags', system, { plan, dna, entryState, correction,
+        const output = await this.request(pipeline, 'naiTags', system + faceModelRule, { plan, dna: dnaContext.dna,
+          proxyAnchors: dnaContext.proxyAnchors, entryState, correction,
           artistStylePrompt: pipeline.config.artistStylePrompt || '', extraPrompt: pipeline.config.extra_prompt || '',
           extraNegative: pipeline.config.negative_prompt || '' });
         validate(output);

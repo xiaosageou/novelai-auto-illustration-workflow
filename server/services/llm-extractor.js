@@ -2269,11 +2269,11 @@ export class LLMExtractor {
         let proxyLine = "";
         if (proxy && proxy.danbooru_tag) {
           const suppress = Array.isArray(proxy.suppress_tags) ? proxy.suppress_tags.join(', ') : (proxy.suppress_tags || '');
-          proxyLine = ` 【同人动漫脸模代理】: ${proxy.danbooru_tag}${proxy.character_name_cn ? ` (${proxy.character_name_cn})` : ''}。规则：将 ${proxy.danbooru_tag} 紧跟在性别词后写入该角色的 prompt 锁定面容；当前场景若非其原著服装，必须在角色的 negative_prompt 中写入压制 tags: ${suppress || '原著服装/标志饰品'}`;
+          proxyLine = ` 【同人动漫脸模代理】: ${proxy.danbooru_tag}${proxy.character_name_cn ? ` (${proxy.character_name_cn})` : ''}。规则：将 ${proxy.danbooru_tag} 紧跟在性别词后写入该角色的 prompt 锁定面容；当前场景若非其原著服装，必须在角色的 negative_prompt 中写入压制 tags: ${suppress || '原著服装/标志饰品'}。外貌去重：该角色 DNA 中与其脸模重复的发色、发型、发长、瞳色、脸型、肤色标签不要重复写入（脸模 tag 已锁定这些外观），除非本场需要覆盖脸模（染发、剪短或剪断、湿发、散乱、束发、帽子压发、异色瞳）；服装、表情、体型、姿态与动作仍须写全`;
         }
         return `• ${name}：${reference}${proxyLine}`;
       }).filter(line => !/：\s*$/.test(line)).join("\n");
-      const contextLabel = "【本场景角色 DNA 候选参考】以下仅供判断，不是必须逐项继承。结合当前画面，保留可见且有助于角色识别的特征；删除与场景状态冲突、当前不可见、无关或会造成冗余的内容。不要写年龄标签（adult、18yo、young、teen 等），改用体型/身材标签（petite、slim、curvy、toned、muscular、athletic_build、broad_shoulders、long_legs 等）描述。若角色配置了【同人动漫脸模代理】，必须优先将其作为脸模基底 tag 写入对应角色的 character_prompts 中，同时在角色的 negative_prompt 中压制该代理角色的原著服装/标志性配饰，防止污染当前小说场景。只将最终选中的 tag 写入对应角色段。";
+      const contextLabel = "【本场景角色 DNA 候选参考】以下仅供判断，不是必须逐项继承。结合当前画面，保留可见且有助于角色识别的特征；删除与场景状态冲突、当前不可见、无关或会造成冗余的内容。不要写年龄标签（adult、18yo、young、teen 等），改用体型/身材标签（petite、slim、curvy、toned、muscular、athletic_build、broad_shoulders、long_legs 等）描述。若角色配置了【同人动漫脸模代理】，必须优先将其作为脸模基底 tag 写入对应角色的 character_prompts 中，同时在角色的 negative_prompt 中压制该代理角色的原著服装/标志性配饰，防止污染当前小说场景。有脸模的角色，其 DNA 里的发色、发型、发长、瞳色、脸型、肤色标签与脸模重复，默认省略不写；只有本场需要覆盖脸模（染发、剪短、湿发、散乱、束发、帽子压发、异色瞳）时才写覆盖后的新状态。只将最终选中的 tag 写入对应角色段。";
       characterContext = charLines ? `\n\n${contextLabel}\n${charLines}` : "";
     }
 
@@ -2382,7 +2382,7 @@ export class LLMExtractor {
       "示例：若 interaction_actions 里是 {\"action\":\"undressing\",\"source\":\"钰慧\",\"target\":\"阿宾\"}，则钰慧的 character prompt 使用 source#undressing；阿宾的 character prompt 使用 target#undressing。不要把两人的动作职责写成一样。",
       "不要输出 interaction 或 interaction_actions 这样的角色级结构化字段；互动关系只需要落实到对应角色 prompt 的 source#动作、target#动作、mutual#动作 标签中。",
       "Danbooru 标签的判断标准：它应该像 white_dress、long_hair、looking_at_viewer、from_behind、cowboy shot 这样的短视觉标签，而不是完整英文句子。若一个概念没有把握对应单标签，就拆成多个可见标签，不要写解释性 prose。",
-      "若角色配置了【同人动漫脸模代理】(如 kasugano_sora)，必须把该 tag 放在对应角色 prompt 的开头（紧跟在 girl/boy 等性别词后）以锁定五官骨相与神韵；同时在该角色的 negative_prompt 中写入压制其原著服装/标志性道具 tags（suppress_tags），严禁原著服装污染小说场景衣着。",
+      "若角色配置了【同人动漫脸模代理】(如 kasugano_sora)，必须把该 tag 放在对应角色 prompt 的开头（紧跟在 girl/boy 等性别词后）以锁定五官骨相与神韵；同时在该角色的 negative_prompt 中写入压制其原著服装/标志性道具 tags（suppress_tags），严禁原著服装污染小说场景衣着。该角色 DNA 中与其脸模一致的发色、发型、发长、瞳色、脸型、肤色标签不要重复写进 prompt（脸模 tag 已锁定这些外观，重复写只会白占 token 并与脸模抢权重）；只有本场需要覆盖脸模时才写，例如染发、剪短或剪断、湿发、散乱、束发盘发、帽子压发、异色瞳，且必须写覆盖后的新状态而不是把原 DNA 标签再拄一遍。服装、表情、体型、姿态、位置与 source#/target# 动作不得因此省略。",
       "除非场景卡明确表示已经露出或明确点出 penis/erection 状态，否则只要角色仍穿着 pants、trousers、jeans、shorts、underwear 等裆部遮挡衣物，或者 clothing 仍是 未指明 / unspecified / unknown，就不要写 penis、erection、erect_penis、large_penis、penis_outline、big_penis 等标签，也不要从 DNA 参考继承这类私密体征。",
       "要求：base_prompt 只能包含精确人物总数、全局环境、镜头、氛围、角色间动作关系、NSFW全局描述（若适用）；禁止在 base_prompt 重复任何单个角色的发色、身材、服装、表情和个人姿势。character_prompts 必须按角色拆分。每个角色只保留一个符合剧情的主情绪 tag，优先使用 restrained、clear 的表情 tags，禁止把所有角色都写成 calm_expression、expressionless 或 natural_expression。禁止无端生成 bared_teeth, clenched_teeth, sharp_teeth, fangs, crazy_grin, distorted_mouth 等夸张或不合时宜的嘴部表情。多人场景不要输出 solo，保持同一地面、自然比例与轻微相对身高差。两个或更多角色时优先 square 或 landscape。禁止自然语言句子，并用正常空格分隔 tags，禁止粘连单词。",
       "【电影级构图与景别科学分流】立绘穿搭与双人体态优先 cowboy shot (七分身) 或 medium shot (半身)，兼顾服装细节与精致五官；强烈情绪与微表情使用 close-up / portrait；宏大战场或环境探索使用 wide shot, scenery focus 且必须搭配 solo focus 或 small [char] 防止人物被吞没；动势突袭或失衡惊悚使用 dutch angle (倾斜角) 与冲向镜头时的 foreshortening (透视缩短)；在 base_prompt 构筑三层纵深（前景框架遮挡 + 中景主体 + 背景虚化 bokeh），并加入 1.3::rim light:: 轮廓光将角色从背景中立体剥离。负面词必须包含 -1.5::multiple views:: 防切片。",
