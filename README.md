@@ -64,9 +64,13 @@ cd ..
 - `vibeBundlePath`: 启用 Vibe Transfer 时使用的 bundle 文件
 
 仓库提供 `illustrator_config.example.json` 模板。
-本地使用时复制为根目录 `illustrator_config.json` 后再填写自己的 key 和 token。
 
-`illustrator_config.json` 与 `server/illustrator_config.json` 不应提交到仓库。
+配置拆成两个文件：
+
+- `illustrator_config.json`：普通配置（模型名、采样参数、画风词、system prompt 等）。**不含密钥，可以正常提交与版本管理。**
+- `illustrator_config.secrets.json`：只放密钥（`llm_key`、`llm_scene_key`、`nai_token` 等，以及 `llm_api_presets` 里每个预设的 `key`）。已被 `.gitignore` 忽略。
+
+首次使用把 `illustrator_config.example.json` 复制为 `illustrator_config.json`，密钥在面板里填写即可——后端会自动把密钥写进 `illustrator_config.secrets.json`，主文件保持无密钥状态。旧版单文件配置在首次读取时会自动拆分，并在主配置旁留下 `.bak-split` 备份。
 
 ## 运行流程
 

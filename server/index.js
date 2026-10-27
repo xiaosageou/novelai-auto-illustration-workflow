@@ -9,7 +9,7 @@ import { PipelineManager } from './services/pipeline-manager.js';
 import { EPUBBuilder, insertIllustrationsAfterParagraphs } from './services/epub-builder.js';
 import { globalCooldownManager } from './utils/cooldown.js';
 import { enqueueUniqueJob, removeQueuedJobs } from './utils/job-queue.js';
-import { readJson, writeJsonAtomic } from './utils/db.js';
+import { readConfig, writeConfig } from './utils/config-store.js';
 import { parseFile } from './utils/file-parser.js';
 import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL } from './utils/default-prompts.js';
 import { normalizeAdvancedPromptForConfig, normalizeCharacterDnaPromptForConfig } from './utils/advanced-prompt-contract.js';
@@ -134,12 +134,9 @@ function applyProxy(proxyUrl) {
   try {
     let proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
     if (existsSync(CONFIG_PATH)) {
-      const content = await fs.readFile(CONFIG_PATH, 'utf8');
-      if (content.trim()) {
-        const config = JSON.parse(content);
-        if (config.proxy_url) {
-          proxyUrl = config.proxy_url;
-        }
+      const config = await readConfig(CONFIG_PATH);
+      if (config.proxy_url) {
+        proxyUrl = config.proxy_url;
       }
     }
     if (proxyUrl) {
@@ -220,10 +217,10 @@ async function getPipeline(projectName) {
     return activePipelines[projectName];
   }
 
-  const rawConfig = await readJson(CONFIG_PATH, {});
+  const rawConfig = await readConfig(CONFIG_PATH);
   const config = normalizeConfig(rawConfig);
   if (rawConfig.system_prompt_character_dna && rawConfig.system_prompt_character_dna !== config.system_prompt_character_dna) {
-    writeJsonAtomic(CONFIG_PATH, config).catch(() => {});
+    writeConfig(CONFIG_PATH, config).catch(() => {});
   }
 
   const pipeline = new PipelineManager({ ...config, projectName });
@@ -499,10 +496,10 @@ function enqueueChapterGeneration(projectName, pipeline, chapterKey, effectiveKe
 
 app.get('/api/config', async (req, res) => {
   try {
-    const rawConfig = await readJson(CONFIG_PATH, {});
+    const rawConfig = await readConfig(CONFIG_PATH);
     const config = normalizeConfig(rawConfig);
     if (rawConfig.system_prompt_character_dna && rawConfig.system_prompt_character_dna !== config.system_prompt_character_dna) {
-      await writeJsonAtomic(CONFIG_PATH, config).catch(() => {});
+      await writeConfig(CONFIG_PATH, config).catch(() => {});
     }
     res.json(config);
   } catch (error) {
@@ -521,8 +518,10 @@ app.get('/api/config/default-prompts', (req, res) => {
 
 app.post('/api/config', async (req, res) => {
   try {
-    const newConfig = normalizeConfig(req.body);
-    await writeJsonAtomic(CONFIG_PATH, newConfig);
+    const submitted = normalizeConfig(req.body);
+    await writeConfig(CONFIG_PATH, submitted);
+    // 前端可能未回传密钥（或只改了画风词），统一读回合并后的完整配置再下发
+    const newConfig = normalizeConfig(await readConfig(CONFIG_PATH));
     
     // 动态应用网络代理配置
     if (newConfig.proxy_url) {

@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { readConfig } from './config-store.js';
 
 async function readStreamedText(res) {
   const raw = await res.text();
@@ -19,7 +20,7 @@ async function readStreamedText(res) {
 }
 
 async function test() {
-  const config = JSON.parse(await fs.readFile('illustrator_config.json', 'utf8'));
+  const config = await readConfig('illustrator_config.json');
   const url = `${config.llm_url.replace(/\/+$/, '')}/chat/completions`;
   const headers = {
     'Content-Type': 'application/json',

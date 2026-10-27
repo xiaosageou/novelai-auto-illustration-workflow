@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { readConfig } from './config-store.js';
 import { preserveTextForLlm } from './prompt-cleaner.js';
 import { getSceneCountMetrics } from '../services/llm-extractor.js';
 
@@ -46,7 +47,7 @@ const DEFAULT_EXTRACT_SCENES_PROMPT = `
 `;
 
 async function test() {
-  const config = JSON.parse(await fs.readFile('illustrator_config.json', 'utf8'));
+  const config = await readConfig('illustrator_config.json');
   const bookText = await fs.readFile('projects/神话生物攻略手册/book.txt', 'utf8');
   
   const startIdx = bookText.indexOf('第四章 伊甸园');

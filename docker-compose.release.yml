@@ -10,7 +10,10 @@ services:
       - "5001:5001"
     volumes:
       - ./projects:/app/projects
+      # 主配置（不含密钥，可提交到仓库）
       - ./illustrator_config.json:/app/illustrator_config.json
+      # 密钥文件（务必保留在宿主机，不要提交）；首次启动前先创建空文件或填好密钥
+      - ./illustrator_config.secrets.json:/app/illustrator_config.secrets.json
     restart: always
     environment:
       - PORT=5001

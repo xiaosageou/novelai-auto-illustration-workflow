@@ -296,7 +296,7 @@ You may use the :: weight syntax ONLY for 1–2 elements that are extremely easy
 Never describe the same concept twice. If you wrote "night", do NOT also write "dark sky" or "stars overhead". If you wrote "pale skin", do NOT also write "fair complexion".
 
 ### Rule 4 — Strict Base / Character Separation
-- base_prompt: Describe ONLY the global scene — art style quality prefix, environment, lighting, atmosphere, camera angle, and multi-character spatial/interaction relationships. Do NOT describe any single character's hair, clothing, or expression here.
+- base_prompt: Describe ONLY the global scene — art style quality prefix, environment, lighting, atmosphere, camera angle, and multi-character spatial/interaction relationships. Do NOT describe any single character's hair, clothing, expression, body posture, or individual pose here. A pose belongs to the character who performs it.
 - character_prompts[].prompt: Describe ONLY that character — physical appearance, hair, eyes, clothing, pose, expression, emotional state. Use natural sentences.
 
 ### Rule 4.5 — Multi-Character Interaction Mapping
@@ -337,7 +337,7 @@ Before writing your final output, silently check:
 | nsfw_explicit   | Add "nsfw, explicit, uncensored" in base_prompt. Describe the explicit physical state in direct, objective language. Match the source exactly — do NOT invent acts not in the source. |
 
 ## Penetration Inset Rule (OPTIONAL)
-For scenes with actual genital penetration, describe a main external scene plus one localized magnified inset only when a normal external view cannot make the contact point readable. Write this in natural language in base_prompt only when needed, e.g., "The main scene shows a full external view, with a single magnified inset revealing the penetration contact point in cross-section."
+For scenes with actual genital penetration, describe a main external scene plus one localized cross-section / cutaway view only when a normal external view cannot make the contact point readable. Write this in natural language in base_prompt only when needed, e.g., "The main scene shows a full external view, plus a single cross-section view revealing the penetration contact point." Never use magnified inset or bare x-ray: magnified inset splits the canvas into floating panels, and bare x-ray turns skin into a transparent green skeleton. Use cross-section, cutaway, deep penetration, penetration focus instead.
 
 ## NSFW Perspective & Camera
 For non-sfw scenes, base_prompt should include a clear camera description: e.g., "viewed from a three-quarter angle", "shot from slightly above", "side view showing both characters". Include a spatial depth cue such as "with foreground/background depth" or "foreshortening visible" only when it improves contact readability.
@@ -544,7 +544,9 @@ Before final output, audit the prompt you just assembled and fix what this list 
 21. Nothing un-drawable: no mood or atmosphere abstractions (tense atmosphere, romantic mood, dangerous aura), no inner thoughts (thinking, remembering, regret, hesitation), no plot abstractions (love triangle, betrayal, revenge), no time or causality (years later, meanwhile, because, suddenly), no sound or text (sound of, sfx, dialogue, BGM), no smell or scent, no meta information (character names, series titles, chapter, panel, comic, page). Replace them with what a camera can see: tense atmosphere becomes furrowed_brow, clenched_fist, tense_expression, dramatic_shadows.
 22. No negative phrasing: rewrite no clothes / without weapon / not smiling as positive tags (nude / unarmed / expressionless).
 23. Language and script: positive and negative sides contain only English Danbooru tags, ASCII digits and ASCII punctuation. No Chinese characters, no pseudo-underscore hybrids such as 中文_english.
-24. When items 11-23 change the prompt, the /thinking/ block must state what was removed or rewritten; do not silently drop a DNA feature tag, the character count, the core action, or an interaction pair to satisfy a budget.`;
+24. When items 11-23 change the prompt, the /thinking/ block must state what was removed or rewritten; do not silently drop a DNA feature tag, the character count, the core action, or an interaction pair to satisfy a budget.
+25. base_prompt carries no individual pose or body posture: standing, sitting, kneeling, squatting, crouching, lying, on_back, arms_up, spread_legs, arched_back, leaning and similar belong to exactly one character_prompts segment. Global spatial relations stay allowed in base_prompt (side by side, on the left, on the right, face-to-face, from behind).
+26. base_prompt uses one canonical count tag (1girl, 2girls, 1girl, 1boy) and never a loose statistic next to it: 3 people, 3 characters, 2 persons, multiple girls and similar are removed.`;
 
 // DEFAULT_ADVANCED_PROMPT 默认指向 Danbooru 标签分段版
 export const DEFAULT_ADVANCED_PROMPT = DEFAULT_ADVANCED_PROMPT_DANBOORU_TAGS;

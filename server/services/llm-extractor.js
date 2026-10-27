@@ -18,6 +18,15 @@ export const SCENES_JSON_END = '<SCENES_JSON_END>';
 const NAI_PROMPT_TOKEN_LIMIT = 400;
 const llmResponseAbortControllers = new WeakMap();
 
+// 只有真正带 base_prompt 或 character_prompts 数组的对象才算「高级参数结果」。
+// 旧条件把 parsed.prompt / parsed.orientation 也当通行证：角色子对象和 thinking 草稿
+// 都长这样，一旦放行就会解析出没有 base_prompt 的对象，报出「缺少非空 base_prompt」。
+function isStructuredAdvancedJson(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  if (typeof parsed.base_prompt === 'string' && parsed.base_prompt.trim()) return true;
+  return Array.isArray(parsed.character_prompts) && parsed.character_prompts.length > 0;
+}
+
 function isCandidateLikelyAdvancedJson(str) {
   if (!str || typeof str !== 'string') return false;
   const trimmed = str.trim();
@@ -26,19 +35,10 @@ function isCandidateLikelyAdvancedJson(str) {
   if (firstBrace === -1 || lastBrace <= firstBrace) return false;
   const slice = trimmed.substring(firstBrace, lastBrace + 1);
   try {
-    const parsed = JSON.parse(slice);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      if (parsed.base_prompt || parsed.prompt || parsed.orientation || Array.isArray(parsed.character_prompts)) {
-        return true;
-      }
-    }
+    if (isStructuredAdvancedJson(JSON.parse(slice))) return true;
   } catch {
     const valid = extractValidJson(slice);
-    if (valid.success && valid.parsed && typeof valid.parsed === 'object' && !Array.isArray(valid.parsed)) {
-      if (valid.parsed.base_prompt || valid.parsed.prompt || valid.parsed.orientation || Array.isArray(valid.parsed.character_prompts)) {
-        return true;
-      }
-    }
+    if (valid.success && isStructuredAdvancedJson(valid.parsed)) return true;
   }
   return false;
 }
@@ -54,10 +54,8 @@ export function findLastAdvancedJsonObject(str) {
     const candidate = trimmed.substring(firstBrace, lastBrace + 1);
     try {
       const parsed = JSON.parse(candidate);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        if (parsed.base_prompt || parsed.prompt || parsed.orientation || Array.isArray(parsed.character_prompts)) {
-          return parsed;
-        }
+      if (isStructuredAdvancedJson(parsed)) {
+        return parsed;
       }
     } catch {}
   }
@@ -81,10 +79,8 @@ export function findLastAdvancedJsonObject(str) {
       }
       try {
         const parsed = JSON.parse(candidate);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          if (parsed.base_prompt || parsed.prompt || parsed.orientation || Array.isArray(parsed.character_prompts)) {
-            return parsed;
-          }
+        if (isStructuredAdvancedJson(parsed)) {
+          return parsed;
         }
       } catch {}
     }
@@ -92,76 +88,80 @@ export function findLastAdvancedJsonObject(str) {
   return null;
 }
 
+// 行级标记：只有独占一行的 /JSON/ 或 /thinking/ 才算结构标记。
+// 旧实现用全局非贪婪正则配对，thinking 正文里只要提到一次 /JSON/，
+// 就会把真正的输出块整个吞掉，然后靠降级路径乱抓一遇。
+const LINE_JSON_MARKER = /^[ \t]*\/JSON\/[ \t]*$/gim;
+const LINE_THINK_MARKER = /^[ \t]*\/(?:thinking|think)\/[ \t]*$/gim;
+
+function collectLineMarkerOffsets(text, pattern) {
+  const offsets = [];
+  pattern.lastIndex = 0;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    offsets.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return offsets;
+}
+
+function pickEnvelopeFromLineMarkers(text) {
+  if (!text) return null;
+  const marks = collectLineMarkerOffsets(text, LINE_JSON_MARKER);
+  if (!marks.length) return null;
+  // 从后往前配对相邻的行级 /JSON/：最后一段就是正式输出
+  for (let i = marks.length - 1; i >= 1; i--) {
+    const body = text.slice(marks[i - 1].end, marks[i].start).trim();
+    if (body && isCandidateLikelyAdvancedJson(body)) return body;
+  }
+  // 只有一个标记：取它之后的全部内容
+  const tail = text.slice(marks[marks.length - 1].end).trim();
+  return tail || null;
+}
+
 export function extractAdvancedJsonEnvelope(content = '') {
   const raw = String(content || '').trim();
   if (!raw) return '';
 
-  // 1. 如果包含思考闭合标签 </think> 或 </thinking>，优先在思考结束之后的文本中寻找
-  let postThinkText = '';
-  const thinkEndIdx = Math.max(
-    raw.lastIndexOf('</think>'),
-    raw.lastIndexOf('</thinking>')
-  );
-  if (thinkEndIdx !== -1) {
-    postThinkText = raw.substring(thinkEndIdx + 8).trim();
+  // 1. 行级 /thinking/ 标记 → 只保留最后一个之后的文本。
+  //    模型会在正文里复述「/thinking/ 包裹分析」这类话，但那不是独占行，不会误判。
+  const thinkMarks = collectLineMarkerOffsets(raw, LINE_THINK_MARKER);
+  if (thinkMarks.length) {
+    const postThink = raw.slice(thinkMarks[thinkMarks.length - 1].end).trim();
+    const found = pickEnvelopeFromLineMarkers(postThink);
+    if (found) return found;
   }
 
-  // 辅助函数：从给定文本中提取所有候选块并倒序寻找有效 JSON
-  const findValidEnvelopeInText = (text) => {
-    if (!text) return null;
-    const candidates = [];
-    const slashMatches = [...text.matchAll(/\/JSON\/\s*([\s\S]*?)\s*\/JSON\//gi)];
-    for (const m of slashMatches) {
-      if (m[1]?.trim()) candidates.push(m[1].trim());
-    }
-    const xmlMatches = [...text.matchAll(/<\s*JSON\s*>\s*([\s\S]*?)\s*<\s*\/\s*JSON\s*>/gi)];
-    for (const m of xmlMatches) {
-      if (m[1]?.trim()) candidates.push(m[1].trim());
-    }
-
-    // 从后往前寻找符合高级 JSON 结构的候选块
-    for (let i = candidates.length - 1; i >= 0; i--) {
-      if (isCandidateLikelyAdvancedJson(candidates[i])) {
-        return candidates[i];
-      }
-    }
-    // 降级：如果未严格命中 isCandidateLikelyAdvancedJson，返回最后一个包含大括号的候选块
-    for (let i = candidates.length - 1; i >= 0; i--) {
-      if (candidates[i].includes('{') && candidates[i].includes('}')) {
-        return candidates[i];
-      }
-    }
-    return null;
-  };
-
-  // 优先在 postThinkText 中寻找
-  if (postThinkText) {
-    const postThinkFound = findValidEnvelopeInText(postThinkText);
-    if (postThinkFound) return postThinkFound;
+  // 2. XML 风格思考块收尾（用真实标记长度截断，旧代码固定 +8 会把 </thinking> 留下 3 个字符）
+  const xmlThinkingEnd = raw.lastIndexOf('</thinking>');
+  const xmlThinkEnd = raw.lastIndexOf('</think>');
+  if (xmlThinkingEnd !== -1 && xmlThinkingEnd + 11 > xmlThinkEnd) {
+    const postThink = raw.slice(xmlThinkingEnd + 11).trim();
+    const found = pickEnvelopeFromLineMarkers(postThink);
+    if (found) return found;
+  } else if (xmlThinkEnd !== -1) {
+    const postThink = raw.slice(xmlThinkEnd + 8).trim();
+    const found = pickEnvelopeFromLineMarkers(postThink);
+    if (found) return found;
   }
 
-  // 其次在全文中寻找
-  const fullFound = findValidEnvelopeInText(raw);
+  // 3. 全文行级 /JSON/ 标记
+  const fullFound = pickEnvelopeFromLineMarkers(raw);
   if (fullFound) return fullFound;
 
-  // 如果依然未匹配到 /JSON/ 候选块，彻底剥离所有思考标签后再查找
-  let cleaned = raw
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
-    .replace(/\/thinking\/[\s\S]*?\/thinking\//gi, '')
-    .replace(/\/think\/[\s\S]*?\/think\//gi, '')
-    .trim();
-
-  // 若剩余内容中包含 /think/ 截断残留，取最后一个 /think/ 之后
-  if (cleaned.includes('/think/')) {
-    const lastIdx = cleaned.lastIndexOf('/think/');
-    cleaned = cleaned.substring(lastIdx + 7).trim();
+  // 4. XML 风格 <JSON> 包裹
+  const xmlMatches = [...raw.matchAll(/<\s*JSON\s*>\s*([\s\S]*?)\s*<\s*\/\s*JSON\s*>/gi)];
+  for (let i = xmlMatches.length - 1; i >= 0; i--) {
+    const body = xmlMatches[i][1].trim();
+    if (body && isCandidateLikelyAdvancedJson(body)) return body;
   }
 
-  // 剥离孤立的 /JSON/ 标记
-  cleaned = cleaned.replace(/<\/?JSON>/gi, '').replace(/\/JSON\//gi, '').trim();
-
-  return cleaned;
+  // 5. 兜底：剥掉行级思考段后整段交给 findLastAdvancedJsonObject
+  let cleaned = raw;
+  const cleanedThinkMarks = collectLineMarkerOffsets(cleaned, LINE_THINK_MARKER);
+  if (cleanedThinkMarks.length) {
+    cleaned = cleaned.slice(cleanedThinkMarks[cleanedThinkMarks.length - 1].end);
+  }
+  return cleaned.replace(/<\/?JSON>/gi, '').replace(/\/JSON\//gi, '').trim();
 }
 
 function normalizeInteractionMarkerAction(action = '') {
@@ -2371,7 +2371,7 @@ export class LLMExtractor {
 
     const userMessage = [
       "请为以下中文小说插画场景生成 NovelAI Danbooru 标签生图参数。",
-      "输出格式必须严格分两段：先写 /thinking/ 包裹的简明可见分析清单，再写 /JSON/ 包裹的唯一 JSON 对象。全篇只允许输出唯一一个 /JSON/ ... /JSON/ 结构。绝对禁止在 /thinking/ 或思考过程中书写任何大括号 {}、草稿 JSON 或 /JSON/ 标记！输出完唯一的 /JSON/ 块后必须立即终止生成。",
+      "输出格式固定两段：第一段是 /thinking/ 包裹的中文规划清单，第二段是 /JSON/ 包裹的唯一 JSON 对象。全篇只保留一个 /JSON/ 块。规划清单段内只写中文规划句子，不写字段名、不写花括号、不写草稿对象；正式 JSON 从独占一行的 /JSON/ 开始，到独占一行的 /JSON/ 结束。输出完 JSON 后立即停止生成。",
       "你现在负责把轻量场景卡扩展成可生图参数。场景 LLM 只负责选帧；你负责补全环境、镜头、人物外观与负面限制，但不得改写这一帧的核心事件。",
       `本场景可见角色数量固定为 ${getSceneCharacters(sceneDesc).length}，不得添加任何路人、背景人物或重复角色。character_prompts 数量必须等于可见角色数量。`,
       "如果 scene card 里有 core_action，请把它当作补全细节的主要依据：可以补全这一帧看得见的环境、姿态和接触点，但不要把连续过程动作写进 prompt。",
@@ -2437,7 +2437,7 @@ export class LLMExtractor {
       // 2. 其次使用具有强抗脏字符能力的 extractValidJson 提取 JSON
       if (!parsed) {
         const extractRes = extractValidJson(rawContent);
-        if (extractRes.success) {
+        if (extractRes.success && isStructuredAdvancedJson(extractRes.parsed)) {
           parsed = extractRes.parsed;
         }
       }
@@ -2463,6 +2463,9 @@ export class LLMExtractor {
       const orientation = VALID_ORIENTATIONS.has(parsed?.orientation) ? parsed.orientation : "default";
       const base_prompt = normalizeDanbooruPromptSegment(parsed?.base_prompt || "");
       if (!base_prompt) {
+        const parsedKeys = parsed && typeof parsed === 'object' ? Object.keys(parsed).join(',') : typeof parsed;
+        const preview = String(content || '').replace(/\s+/g, ' ').slice(0, 800);
+        console.warn(`[LLM Extractor] 解析结果缺少 base_prompt；parsed keys=${parsedKeys || '无'}；原始响应前 800 字：${preview}`);
         throw new Error("缺少非空 base_prompt；旧式 prompt 单字段不再接受");
       }
       const character_prompts = Array.isArray(parsed?.character_prompts)
@@ -2520,7 +2523,7 @@ export class LLMExtractor {
     try {
       const retryUserMessage = [
         "上一次输出为空、截断或 JSON 结构无效。请重新生成，必须先输出 /thinking/ 包裹的简明分析，再输出 /JSON/ 包裹的完整 JSON 对象。",
-        "全篇只允许输出唯一一个 /JSON/ ... /JSON/ 结构。绝对禁止在 /thinking/ 或思考过程中书写任何大括号 {}、草稿 JSON 或 /JSON/ 标记！不要 Markdown，不要颜文字。/JSON/ 外不要放任何 JSON 片段。",
+        "全篇只保留一个 /JSON/ 块。规划清单段内只写中文规划句子，不写字段名、花括号和草稿对象。不要 Markdown，不要颜文字。/JSON/ 外不放任何 JSON 片段。",
         "必须包含 orientation、base_prompt、character_prompts、negative_prompt。",
         `若场景可见角色数量 >= 2，则每个 character_prompts 项必须包含 name、prompt、negative_prompt。不要输出 interaction 或 interaction_actions 字段。`,
         `character_prompts 优先包含 ${expectedSceneCharacters.length} 项，按以下顺序且 name 原样复制：${expectedSceneCharacters.map(char => char.name).join("、") || "无角色"}`,
