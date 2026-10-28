@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import { readConfig } from './config-store.js';
 import { preserveTextForLlm } from './prompt-cleaner.js';
 import { getSceneCountMetrics } from '../services/llm-extractor.js';
+import { scrubChatPayload } from './age-text-scrubber.js';
 
 async function readStreamedText(res) {
   const raw = await res.text();
@@ -92,7 +93,7 @@ ${cleanedText}`;
     const res = await fetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload)
+      body: JSON.stringify(scrubChatPayload(payload))
     });
     console.log('Status:', res.status);
     const content = await readStreamedText(res);

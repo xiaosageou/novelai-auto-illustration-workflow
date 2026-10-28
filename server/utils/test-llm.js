@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { readConfig } from './config-store.js';
+import { scrubChatPayload } from './age-text-scrubber.js';
 
 async function readStreamedText(res) {
   const raw = await res.text();
@@ -44,7 +45,7 @@ async function test() {
     const res = await fetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload)
+      body: JSON.stringify(scrubChatPayload(payload))
     });
     console.log('Status:', res.status);
     const text = await readStreamedText(res);

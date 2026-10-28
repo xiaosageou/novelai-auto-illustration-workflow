@@ -10,6 +10,7 @@ import { buildPrefill, buildRetryUserMessage } from '../utils/jailbreak-profile.
 import { promptReferenceService } from './prompt-reference-service.js';
 import { extractTargetSliceFromContext } from '../utils/chapter-scene-batching.js';
 import { stripAgeWords } from '../utils/age-tags.js';
+import { scrubChatPayload } from '../utils/age-text-scrubber.js';
 
 export { ensureAdvancedPromptContract, withSystemPrefix } from '../utils/advanced-prompt-contract.js';
 
@@ -1012,6 +1013,10 @@ function getRateLimiter({ enabled = true, rpm = 3, key = 'default' } = {}) {
 }
 
 export async function postChatCompletionWith429Retry({ url, headers, payload, idleTimeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null, signal = null }) {
+  // 出站正文脱敏：小说原文 / 场景描述里「十五岁的少女」「她才 15 岁」这类未成年年龄表达
+  // 在发请求前物理删除，生成 prompt 的 LLM 看不到；18 岁及以上原样保留。
+  // 幂等，重试安全；不改动调用方 payload。
+  const safePayload = scrubChatPayload(payload);
   if (signal?.aborted) {
     const err = new Error("Operation aborted by user");
     err.name = "AbortError";
@@ -1042,11 +1047,11 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
     }
 
     try {
-      const streamEnabled = payload?.stream !== false;
+      const streamEnabled = safePayload?.stream !== false;
       const res = await fetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify({ ...payload, stream: streamEnabled }),
+        body: JSON.stringify({ ...safePayload, stream: streamEnabled }),
         signal: controller.signal
       });
       llmResponseAbortControllers.set(res, controller);
