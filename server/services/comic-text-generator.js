@@ -4,6 +4,7 @@ import { estimateV45Tokens } from './prompt-builder.js';
 import { withSystemPrefix } from '../utils/advanced-prompt-contract.js';
 import { robustJsonLoads } from '../utils/json-repair.js';
 import { normalizeCharacterKey, proxyDnaEntryForLlm, resolveRealAgeTags } from '../utils/age-proxy.js';
+import { resolveLlmRetryLimits } from '../utils/llm-retry.js';
 
 function fail(code, message) { throw Object.assign(new Error(message), { status: 400, code, publicMessage: true }); }
 function json(content) {
@@ -304,7 +305,8 @@ stateDelta 是扁平字符串键值，记录本格计划完成的状态变化，
 - 原文写到赤裸、性器官、性行为时，storyboardDescription 与 mustShow 必须如实描述该时点的裸露状态与身体部位，用直白措辞，不得用剪影、遮挡、毛巾或衣物掩盖，不得降级为暗示。
 - 每格只表达一个主要时点，性行为过程要按原文顺序拆成多格，不得把前后动作压在同一格。`;
     let correction = '';
-    for (let attempt = 0; attempt < 2; attempt++) {
+    const maxAttempts = resolveLlmRetryLimits(pipeline.config).maxRetries;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         const output = await this.request(pipeline, 'scene', system, { chapterKey, source, title, language, initialState,
           count, batchPosition: `${previous.length + 1}-${previous.length + count}`, previous, instructions, correction,
@@ -337,7 +339,8 @@ basePrompt写人数、单一时点动作、环境、镜头、光线和指定画�
 - mustNotShow 只用于"不要提前泄露后续剧情"和"不要出现原文没有的人物或道具"，不得用于压制原文已发生的裸露与性内容。
 styleMode=chibi仅按照其理由使用Q版，其他沿用artistStylePrompt。将给定画风与extraPrompt中有用的视觉约束纳入正向，将extraNegative中有用的视觉约束纳入全局负向（同样过滤上述压制词）；positive总预算目标<=400、上限460估算tokens，删除重复次要修饰，不删人数和关键动作。不要额外字段。`;
     let correction = '';
-    for (let attempt = 0; attempt < 4; attempt++) {
+    const maxAttempts = resolveLlmRetryLimits(pipeline.config).maxRetries;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         const output = await this.request(pipeline, 'naiTags', system + faceModelRule, { plan: pickPlanForImagePrompt(plan), dna: dnaContext.dna,
           proxyAnchors: dnaContext.proxyAnchors, entryState, correction,

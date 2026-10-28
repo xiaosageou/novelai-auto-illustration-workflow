@@ -10,6 +10,7 @@ import { buildPrefill, buildRetryUserMessage } from '../utils/jailbreak-profile.
 import { promptReferenceService } from './prompt-reference-service.js';
 import { extractTargetSliceFromContext } from '../utils/chapter-scene-batching.js';
 import { stripAgeWords } from '../utils/age-tags.js';
+import { DEFAULT_LLM_MAX_RETRIES, DEFAULT_LLM_429_MAX_RETRIES, LLM_MAX_RETRIES_CEILING, LLM_429_MAX_RETRIES_CEILING, clampLlmRetries } from '../utils/llm-retry.js';
 import { scrubChatPayload } from '../utils/age-text-scrubber.js';
 
 export { ensureAdvancedPromptContract, withSystemPrefix } from '../utils/advanced-prompt-contract.js';
@@ -1586,7 +1587,7 @@ function buildSceneExtractionUserContent({
 }
 
 export class LLMExtractor {
-  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", streamEnabled = true, rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "", retryDelayMs = 5000 } = {}) {
+  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", streamEnabled = true, rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "", maxRetries = DEFAULT_LLM_MAX_RETRIES, max429Retries = DEFAULT_LLM_429_MAX_RETRIES, retryDelayMs = 5000 } = {}) {
     this.baseUrl = baseUrl.trim().replace(/\/+$/, "");
     this.apiKey = apiKey.trim();
     this.system_prompt_extract_scenes = system_prompt_extract_scenes;
@@ -1601,6 +1602,8 @@ export class LLMExtractor {
     this.trimUrl = trimUrl.trim().replace(/\/+$/, "");
     this.trimKey = trimKey.trim();
     this.trimModel = trimModel.trim() || "mimo-v2.5";
+    this.maxRetries = clampLlmRetries(maxRetries, DEFAULT_LLM_MAX_RETRIES, 1, LLM_MAX_RETRIES_CEILING);
+    this.max429Retries = clampLlmRetries(max429Retries, DEFAULT_LLM_429_MAX_RETRIES, 0, LLM_429_MAX_RETRIES_CEILING);
     this.retryDelayMs = Number.isFinite(Number(retryDelayMs)) ? Math.max(0, Number(retryDelayMs)) : 5000;
     this.activeControllers = new Set();
   }
@@ -1620,7 +1623,7 @@ export class LLMExtractor {
     return controller;
   }
 
-  updateConfig(baseUrl, apiKey, system_prompt_extract_scenes, system_prompt_character_dna, system_prompt_advanced_prompt, system_prompt_regenerate_scene, _unused7, system_prompt_advanced_prompt_nl, _unused9, rateLimitEnabled, rateLimitRpm, rateLimitKey) {
+  updateConfig(baseUrl, apiKey, system_prompt_extract_scenes, system_prompt_character_dna, system_prompt_advanced_prompt, system_prompt_regenerate_scene, _unused7, system_prompt_advanced_prompt_nl, _unused9, rateLimitEnabled, rateLimitRpm, rateLimitKey, maxRetries, max429Retries) {
     this.baseUrl = (baseUrl || "").trim().replace(/\/+$/, "");
     this.apiKey = (apiKey || "").trim();
     if (system_prompt_extract_scenes !== undefined) this.system_prompt_extract_scenes = system_prompt_extract_scenes;
@@ -1631,6 +1634,8 @@ export class LLMExtractor {
     if (rateLimitEnabled !== undefined) this.rateLimitEnabled = rateLimitEnabled !== false;
     if (rateLimitRpm !== undefined) this.rateLimitRpm = Number(rateLimitRpm) || 3;
     if (rateLimitKey !== undefined) this.rateLimitKey = String(rateLimitKey || "default");
+    if (maxRetries !== undefined) this.maxRetries = clampLlmRetries(maxRetries, this.maxRetries, 1, LLM_MAX_RETRIES_CEILING);
+    if (max429Retries !== undefined) this.max429Retries = clampLlmRetries(max429Retries, this.max429Retries, 0, LLM_429_MAX_RETRIES_CEILING);
   }
 
   getRateLimitConfig() {
@@ -1742,12 +1747,12 @@ export class LLMExtractor {
     const reqController = this._createRequestController();
     let lastError = null;
     try {
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
         if (reqController.signal.aborted) {
           throw new Error("Operation aborted by user");
         }
       try {
-        onProgressLog?.(`[LLM] 场景提炼第 ${attempt}/3 次请求...`);
+        onProgressLog?.(`[LLM] 场景提炼第 ${attempt}/${this.maxRetries} 次请求...`);
         const streamLogger = createThrottledStreamLogger(onProgressLog, '[LLM]');
         const attemptPayload = attempt === 1 ? payload : {
           ...payload,
@@ -1760,7 +1765,7 @@ export class LLMExtractor {
           headers: this.getHeaders(),
           payload: this.withStreamPreference(attemptPayload),
           idleTimeoutMs: 180000,
-          max429Retries: 5,
+          max429Retries: this.max429Retries,
           initialDelaySeconds: 10,
           logPrefix: "[LLM Extractor] 场景提炼",
           rateLimit: this.getRateLimitConfig(),
@@ -1796,23 +1801,23 @@ export class LLMExtractor {
           throw new Error(`scene_idx 未按 1-${sceneCount} 连续编号`);
         }
 
-        onProgressLog?.(`[LLM] 第 ${attempt}/3 次场景提炼成功，共 ${parsed.length} 个场景。\n${parsed.map(s => `• 场景 ${s.scene_idx} -> 触发句: 「${s.trigger_sentence}」\n  分镜画面描述: ${buildSceneDescription(s)}`).join("\n")}`);
+        onProgressLog?.(`[LLM] 第 ${attempt}/${this.maxRetries} 次场景提炼成功，共 ${parsed.length} 个场景。\n${parsed.map(s => `• 场景 ${s.scene_idx} -> 触发句: 「${s.trigger_sentence}」\n  分镜画面描述: ${buildSceneDescription(s)}`).join("\n")}`);
         return parsed;
       } catch (error) {
         lastError = error;
         if (error?.code === 'LLM_429_EXHAUSTED') {
           break;
         }
-        if (attempt < 3) {
-          onProgressLog?.(`[LLM] 第 ${attempt}/3 次场景提炼失败，优先重试: ${error.message}`, "warning");
-          console.warn(`[LLM Extractor] 场景提炼第 ${attempt}/3 次失败: ${error.message}`);
+        if (attempt < this.maxRetries) {
+          onProgressLog?.(`[LLM] 第 ${attempt}/${this.maxRetries} 次场景提炼失败，优先重试: ${error.message}`, "warning");
+          console.warn(`[LLM Extractor] 场景提炼第 ${attempt}/${this.maxRetries} 次失败: ${error.message}`);
         }
       }
     }
 
-    const failureMessage = `场景提炼连续 3 次失败: ${lastError?.message || "未知错误"}`;
+    const failureMessage = `场景提炼连续 ${this.maxRetries} 次失败: ${lastError?.message || "未知错误"}`;
     onProgressLog?.(`[LLM] ${failureMessage}。已记录为失败，等待手动重试。`, "error");
-    console.error(`[LLM Extractor] 场景提炼连续 3 次失败:`, lastError);
+    console.error(`[LLM Extractor] 场景提炼连续 ${this.maxRetries} 次失败:`, lastError);
     const failure = new Error(failureMessage);
     failure.code = 'SCENE_EXTRACTION_EXHAUSTED';
     failure.cause = lastError;
@@ -1874,7 +1879,7 @@ export class LLMExtractor {
       };
 
       let lastError = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
         const payload = {
           model,
           messages: [
@@ -1900,7 +1905,7 @@ export class LLMExtractor {
             headers: this.getHeaders(),
             payload: this.withStreamPreference(payload),
             idleTimeoutMs: 120000,
-            max429Retries: 5,
+            max429Retries: this.max429Retries,
             initialDelaySeconds: 10,
             logPrefix: "[LLM Extractor]",
             rateLimit: this.getRateLimitConfig()
@@ -1935,13 +1940,13 @@ export class LLMExtractor {
           if (error?.code === 'LLM_429_EXHAUSTED') {
             break;
           }
-          if (attempt < 3) {
-            console.warn(`[LLM Extractor] 单场景描述重构第 ${attempt}/3 次失败，优先重试（下一次使用精简上下文）: ${error.message}`);
+          if (attempt < this.maxRetries) {
+            console.warn(`[LLM Extractor] 单场景描述重构第 ${attempt}/${this.maxRetries} 次失败，优先重试（下一次使用精简上下文）: ${error.message}`);
           }
         }
       }
 
-      console.warn(`[LLM Extractor] 单场景描述重构连续 3 次失败，使用兜底场景: ${lastError?.message || '未知错误'}`);
+      console.warn(`[LLM Extractor] 单场景描述重构连续 ${this.maxRetries} 次失败，使用兜底场景: ${lastError?.message || '未知错误'}`);
       const fallback = buildFallbackSingleSceneCard({
         sceneIdx,
         triggerSentence,
@@ -2008,7 +2013,7 @@ export class LLMExtractor {
     });
 
     let lastError = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       const payload = {
         model,
         messages: [
@@ -2029,7 +2034,7 @@ export class LLMExtractor {
           headers: this.getHeaders(),
           payload: this.withStreamPreference(payload),
           idleTimeoutMs: 180000,
-          max429Retries: 5,
+          max429Retries: this.max429Retries,
           initialDelaySeconds: 10,
           logPrefix: "[LLM Extractor]",
           rateLimit: this.getRateLimitConfig()
@@ -2072,13 +2077,13 @@ export class LLMExtractor {
         if (error?.code === 'LLM_429_EXHAUSTED') {
           break;
         }
-        if (attempt < 3) {
-          console.warn(`[LLM Extractor] 正文选段批量重构第 ${attempt}/3 次失败，优先重试（下一次使用精简上下文）: ${error.message}`);
+        if (attempt < this.maxRetries) {
+          console.warn(`[LLM Extractor] 正文选段批量重构第 ${attempt}/${this.maxRetries} 次失败，优先重试（下一次使用精简上下文）: ${error.message}`);
         }
       }
     }
 
-    console.warn(`[LLM Extractor] 正文选段批量重构连续 3 次失败，使用兜底场景: ${lastError?.message || '未知错误'}`);
+    console.warn(`[LLM Extractor] 正文选段批量重构连续 ${this.maxRetries} 次失败，使用兜底场景: ${lastError?.message || '未知错误'}`);
     return normalizedSelections.map((selection, index) => {
       const fallback = buildFallbackSelectedParagraphScene(selection, index + 1, chapterTitle, chapterContent);
       fallback.scene_idx = index + 1;
@@ -2147,7 +2152,7 @@ export class LLMExtractor {
     progressCb?.(`[角色 DNA 提炼] 正在调用大模型分析切片 (${sourceChapters.join(', ') || '未知章节'}, 切片长度: ${sliceText.length} 字)...`);
 
     let lastError = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
         const streamLogger = createThrottledStreamLogger(progressCb, '[角色 DNA 提炼]');
       const res = await postChatCompletionWith429Retry({
@@ -2155,7 +2160,7 @@ export class LLMExtractor {
         headers: this.getHeaders(),
         payload: this.withStreamPreference(payload),
         idleTimeoutMs: 180000,
-        max429Retries: 5,
+        max429Retries: this.max429Retries,
         initialDelaySeconds: 10,
         logPrefix: "[LLM Extractor] 角色DNA提取",
         rateLimit: this.getRateLimitConfig()
@@ -2210,20 +2215,20 @@ export class LLMExtractor {
       return sanitized;
       } catch (error) {
         lastError = error;
-        console.error(`[LLM Extractor] 提取角色 DNA 第 ${attempt}/3 次失败:`, error);
+        console.error(`[LLM Extractor] 提取角色 DNA 第 ${attempt}/${this.maxRetries} 次失败:`, error);
         if (error?.code === 'LLM_429_EXHAUSTED') {
           break;
         }
-        if (attempt < 3) {
+        if (attempt < this.maxRetries) {
           const waitMs = Math.max(0, Number(this.retryDelayMs) || 0) * attempt;
-          progressCb?.(`[角色 DNA 提炼] 第 ${attempt}/3 次失败，${Math.round(waitMs / 1000)} 秒后重试: ${error.message}`, 'warning');
+          progressCb?.(`[角色 DNA 提炼] 第 ${attempt}/${this.maxRetries} 次失败，${Math.round(waitMs / 1000)} 秒后重试: ${error.message}`, 'warning');
           if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
         }
       }
     }
 
-    progressCb?.(`[角色 DNA 提炼] 连续 3 次失败: ${lastError?.message || '未知错误'}`, 'error');
-    throw lastError || new Error('角色 DNA 提炼连续 3 次失败');
+    progressCb?.(`[角色 DNA 提炼] 连续 ${this.maxRetries} 次失败: ${lastError?.message || '未知错误'}`, 'error');
+    throw lastError || new Error(`角色 DNA 提炼连续 ${this.maxRetries} 次失败`);
   }
 
   formatStructuredSceneForLlm(sceneInput) {
@@ -2542,7 +2547,7 @@ export class LLMExtractor {
       ].join("\n");
       let lastAttemptError = null;
 
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
         const attemptPayload = attempt === 1
           ? this.withStreamPreference(payload)
           : {
@@ -2565,7 +2570,7 @@ export class LLMExtractor {
             headers: this.getHeaders(),
             payload: this.withStreamPreference(attemptPayload),
             idleTimeoutMs: 120000,
-            max429Retries: 5,
+            max429Retries: this.max429Retries,
             initialDelaySeconds: 10,
             logPrefix: "[LLM Extractor] 高级参数生成",
             rateLimit: this.getRateLimitConfig()
@@ -2576,7 +2581,7 @@ export class LLMExtractor {
             onStreamText: streamLogger?.push
           });
           streamLogger?.flush();
-          onProgressLog?.(`[LLM] 第 ${attempt}/3 次生成结果:\n${rawContent}`);
+          onProgressLog?.(`[LLM] 第 ${attempt}/${this.maxRetries} 次生成结果:\n${rawContent}`);
           if (!rawContent) {
             throw new Error(`上游响应未包含可用文本；响应结构 ${summarizeLlmResponseShape(responseData)}`);
           }
@@ -2678,7 +2683,7 @@ export class LLMExtractor {
           if (estimatedTokens > NAI_PROMPT_TOKEN_LIMIT) {
             const trimPercent = Math.round((1 - NAI_PROMPT_TOKEN_LIMIT / estimatedTokens) * 100);
             onProgressLog?.(
-              `[LLM] 第 ${attempt}/3 次参数生成超出预算（估算 ${estimatedTokens} > ${NAI_PROMPT_TOKEN_LIMIT} token），需精简 ${trimPercent}%，发送至 mimo 精简...`,
+              `[LLM] 第 ${attempt}/${this.maxRetries} 次参数生成超出预算（估算 ${estimatedTokens} > ${NAI_PROMPT_TOKEN_LIMIT} token），需精简 ${trimPercent}%，发送至 mimo 精简...`,
               "warning"
             );
 
@@ -2766,16 +2771,16 @@ export class LLMExtractor {
               onProgressLog?.(`[LLM] mimo 精简失败，保留原结果: ${trimErr.message}`, "warning");
             }
           }
-          onProgressLog?.(`[LLM] 第 ${attempt}/3 次解析成功: ${JSON.stringify(normalized, null, 2)}`);
+          onProgressLog?.(`[LLM] 第 ${attempt}/${this.maxRetries} 次解析成功: ${JSON.stringify(normalized, null, 2)}`);
           return normalized;
         } catch (attemptError) {
           lastAttemptError = attemptError;
           if (attemptError?.code === 'LLM_429_EXHAUSTED') {
             break;
           }
-          if (attempt < 3) {
+          if (attempt < this.maxRetries) {
             onProgressLog?.(
-              `[LLM] 第 ${attempt}/3 次参数生成失败，优先重试（下一次使用精简上下文）: ${attemptError.message}`,
+              `[LLM] 第 ${attempt}/${this.maxRetries} 次参数生成失败，优先重试（下一次使用精简上下文）: ${attemptError.message}`,
               "warning"
             );
           } else {
@@ -2856,7 +2861,7 @@ export class LLMExtractor {
         headers: this.getHeaders(),
         payload: this.withStreamPreference(payload),
         idleTimeoutMs: 120000,
-        max429Retries: 5,
+        max429Retries: this.max429Retries,
         initialDelaySeconds: 10,
         logPrefix: "[LLM Extractor] 词组转化",
         rateLimit: this.getRateLimitConfig()

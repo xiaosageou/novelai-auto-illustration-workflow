@@ -10,6 +10,7 @@ import { EPUBBuilder, insertIllustrationsAfterParagraphs } from './services/epub
 import { globalCooldownManager } from './utils/cooldown.js';
 import { enqueueUniqueJob, removeQueuedJobs } from './utils/job-queue.js';
 import { readConfig, writeConfig } from './utils/config-store.js';
+import { resolveLlmRetryLimits } from './utils/llm-retry.js';
 import { parseFile } from './utils/file-parser.js';
 import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL } from './utils/default-prompts.js';
 import { normalizeAdvancedPromptForConfig, normalizeCharacterDnaPromptForConfig } from './utils/advanced-prompt-contract.js';
@@ -29,6 +30,8 @@ const DEFAULT_CONFIG = {
   llm_stream_enabled: true,
   llm_rate_limit_enabled: true,
   llm_rate_limit_rpm: 3,
+  llm_max_retries: 3,
+  llm_429_max_retries: 5,
   llm_api_presets: [],
   llm_character_dna_url: "",
   llm_character_dna_key: "",
@@ -75,6 +78,9 @@ function normalizeConfig(config = {}) {
   const normalized = { ...DEFAULT_CONFIG, ...config };
   normalized.artist_presets = Array.isArray(config.artist_presets) ? config.artist_presets : [];
   normalized.max_scenes_per_request = Number.isInteger(Number(config.max_scenes_per_request)) && Number(config.max_scenes_per_request) > 0 ? Math.min(20, Number(config.max_scenes_per_request)) : 5;
+  const retryLimits = resolveLlmRetryLimits(normalized);
+  normalized.llm_max_retries = retryLimits.maxRetries;
+  normalized.llm_429_max_retries = retryLimits.max429Retries;
   const promptDefaults = {
     system_prompt_extract_scenes: DEFAULT_EXTRACT_SCENES_PROMPT,
     system_prompt_character_dna: DEFAULT_CHARACTER_DNA_PROMPT,

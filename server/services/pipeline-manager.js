@@ -14,6 +14,7 @@ import { extractChapterScenesInBatches } from '../utils/chapter-scene-batching.j
 import { parseChapterHeading, isVolumeHeading, selectBareNumberHeadings } from '../utils/chapter-heading.js';
 import { ConcurrencyQueue } from '../utils/job-queue.js';
 import { stripAgeWords } from '../utils/age-tags.js';
+import { resolveLlmRetryLimits } from '../utils/llm-retry.js';
 import {
   proxyAgeTagsForLlm,
   proxyFeaturesForLlm,
@@ -221,9 +222,15 @@ export class PipelineManager {
     return this.processingScenes.has(this.getSceneQueueKey(chapterKey, sceneIdx));
   }
 
+  /** LLM 业务重试次数（前端全局配置可调，默认 3） */
+  get llmMaxRetries() {
+    return resolveLlmRetryLimits(this.config).maxRetries;
+  }
+
   createLlmExtractor(task) {
     const connection = resolveTaskLlmConfig(this.config, task);
     const trimConnection = resolveTaskLlmConfig(this.config, 'trim');
+    const retryLimits = resolveLlmRetryLimits(this.config);
     return new LLMExtractor({
       baseUrl: connection.baseUrl,
       apiKey: connection.apiKey,
@@ -235,6 +242,8 @@ export class PipelineManager {
       rateLimitEnabled: connection.rateLimitEnabled,
       rateLimitRpm: connection.rateLimitRpm,
       rateLimitKey: connection.rateLimitKey,
+      maxRetries: retryLimits.maxRetries,
+      max429Retries: retryLimits.max429Retries,
       trimUrl: trimConnection.baseUrl,
       trimKey: trimConnection.apiKey,
       trimModel: trimConnection.model
@@ -993,7 +1002,8 @@ export class PipelineManager {
    */
   async generateSingleScene(chap, scene, scenes, chapKey, llmModel, naiModel) {
     let lastError = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    const maxAttempts = this.llmMaxRetries;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         return await this.generateSingleSceneAttempt(
           chap,
@@ -1009,9 +1019,9 @@ export class PipelineManager {
         if (this.isPausedByUser || this.abortController?.signal?.aborted || error?.name === 'AbortError') {
           break;
         }
-        if (attempt < 3) {
+        if (attempt < maxAttempts) {
           this.writeLog(
-            `  [场景 ${scene.scene_idx}] 第 ${attempt}/3 次执行失败，将完整重试场景流程: ${error.message}`,
+            `  [场景 ${scene.scene_idx}] 第 ${attempt}/${maxAttempts} 次执行失败，将完整重试场景流程: ${error.message}`,
             "warning"
           );
         }
@@ -1022,9 +1032,9 @@ export class PipelineManager {
       this.writeLog(`  [场景 ${scene.scene_idx}] 流水线已暂停，当前场景安全中断。`);
       return false;
     }
-    const finalErrorMessage = `场景 ${scene.scene_idx} 连续 3 次执行失败: ${lastError?.message || "未知错误"}`;
+    const finalErrorMessage = `场景 ${scene.scene_idx} 连续 ${maxAttempts} 次执行失败: ${lastError?.message || "未知错误"}`;
     this.writeLog(`  [场景 ${scene.scene_idx}] ${finalErrorMessage}，已跳过当前场景继续流水线。`, "warning");
-    this._recordSceneFailure(scene, 'scene', lastError, 3);
+    this._recordSceneFailure(scene, 'scene', lastError, maxAttempts);
     this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
     await this.projectProgress.save();
     this.uiProgressCallback?.({
@@ -1579,18 +1589,19 @@ export class PipelineManager {
       }
 
       let prepared = false;
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      const prepareMaxAttempts = this.llmMaxRetries;
+      for (let attempt = 1; attempt <= prepareMaxAttempts; attempt++) {
         if (!this.isRunning) break;
         try {
           await this.prepareSingleScenePrompt(chap, scene, scenes, chapKey, naiTagsModel);
           prepared = true;
           break;
         } catch (error) {
-          if (attempt < 3) {
-            this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理第 ${attempt}/3 次失败，将重试: ${error.message}`, "warning");
+          if (attempt < prepareMaxAttempts) {
+            this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理第 ${attempt}/${prepareMaxAttempts} 次失败，将重试: ${error.message}`, "warning");
           } else {
-            this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理连续 3 次失败，跳过该场景: ${error.message}`, "warning");
-            this._recordSceneFailure(scene, 'llm', error, 3);
+            this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理连续 ${prepareMaxAttempts} 次失败，跳过该场景: ${error.message}`, "warning");
+            this._recordSceneFailure(scene, 'llm', error, prepareMaxAttempts);
             this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
             await this.projectProgress.save();
             this.uiProgressCallback?.({

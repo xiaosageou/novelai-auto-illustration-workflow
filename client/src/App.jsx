@@ -95,6 +95,8 @@ function App() {
     llm_stream_enabled: true,
     llm_rate_limit_enabled: true,
     llm_rate_limit_rpm: 3,
+    llm_max_retries: 3,
+    llm_429_max_retries: 5,
     llm_api_presets: [],
     llm_character_dna_url: "",
     llm_character_dna_key: "",
@@ -917,6 +919,8 @@ function App() {
         llm_stream_enabled: data.llm_stream_enabled !== false,
         llm_rate_limit_enabled: data.llm_rate_limit_enabled !== false,
         llm_rate_limit_rpm: Number(data.llm_rate_limit_rpm) || 3,
+        llm_max_retries: Number(data.llm_max_retries) >= 1 ? Math.min(10, Math.floor(Number(data.llm_max_retries))) : 3,
+        llm_429_max_retries: Number.isFinite(Number(data.llm_429_max_retries)) ? Math.max(0, Math.min(20, Math.floor(Number(data.llm_429_max_retries)))) : 5,
         llm_api_presets: (data.llm_api_presets || []).map(normalizePreset),
         artist_presets: Array.isArray(data.artist_presets) ? data.artist_presets : []
       });
@@ -5335,6 +5339,32 @@ function App() {
                         onChange={(e) => setConfig({ ...config, llm_preset_id: "", llm_rate_limit_rpm: Number(e.target.value) || 3 })}
                         style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                       />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>失败重试次数</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        step="1"
+                        value={config.llm_max_retries ?? 3}
+                        onChange={(e) => setConfig({ ...config, llm_max_retries: Math.max(1, Math.min(10, Math.floor(Number(e.target.value) || 3))) })}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                      />
+                      <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '4px 0 0' }}>JSON 解析、字段不合合约、数量不符、空返回时的重试次数（1-10，默认 3）</p>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>429 重试次数</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="20"
+                        step="1"
+                        value={config.llm_429_max_retries ?? 5}
+                        onChange={(e) => setConfig({ ...config, llm_429_max_retries: Math.max(0, Math.min(20, Math.floor(Number(e.target.value) || 0))) })}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                      />
+                      <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '4px 0 0' }}>HTTP 429 / 500 等传输层退避重试次数（0-20，默认 5）</p>
                     </div>
                   </div>
                   <div className="llm-routing-panel">
