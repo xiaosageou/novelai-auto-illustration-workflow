@@ -36,10 +36,18 @@ prompt_cleaner.py
 report.md
 
 # Local runtime config with secrets
-# 配置主文件可以入库（不含密钥），只有密钥文件被忽略
+# 配置主文件可以入库（不含端点、不含密钥）；端点和密钥统一放在 .env
 !illustrator_config.json
-server/illustrator_config.secrets.json
+!illustrator_config.env.example
+
+# 端点与密钥：永不入库
+.env
+.env.*
+server/.env
+server/.env.*
+illustrator_config.env
 illustrator_config.secrets.json
+server/illustrator_config.secrets.json
 *.bak
 *.bak*
 
