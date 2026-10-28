@@ -4,7 +4,7 @@ import {
   RefreshCw, CheckCircle2, Sparkles, X, FileText, Clapperboard, Timer,
   Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil, Image as ImageIcon,
   Flame, Heart, Users, MapPin, Camera, ChevronDown, ChevronUp, Check, Terminal,
-  Maximize2, Minimize2, Clock
+  Maximize2, Minimize2, Clock, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
 import { isNaiLogMessage } from './logClassification.js';
@@ -149,6 +149,24 @@ function App() {
   const [chapterContent, setChapterContent] = useState(null);
   const [textSelections, setTextSelections] = useState([]);
   const [isSubmittingSelections, setIsSubmittingSelections] = useState(false);
+  // ── 阅读器：排版设置（字号/行距/沉浸模式）与阅读进度记忆 ──
+  const [readerSettings, setReaderSettings] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem('reader-settings-v1');
+      const saved = raw ? (JSON.parse(raw) || {}) : {};
+      // 沉浸模式只活在当前会话，刷新后回到常规布局
+      return { fontSize: 18, lineHeight: 2.05, ...saved, immersive: false };
+    } catch { /* 读不到就用默认值 */ }
+    return { fontSize: 18, lineHeight: 2.05, immersive: false };
+  });
+  const novelReaderRef = useRef(null);
+  const readerProgressFillRef = useRef(null);
+  const readerProgressTextRef = useRef(null);
+  const readerScrollTimerRef = useRef(null);
+  const readerSuppressSaveUntilRef = useRef(0);
+  const readerResumedProjectRef = useRef('');
+  const readerRestoreRef = useRef(null);
+  const readerScrollRestoreRef = useRef(null);
   const [isProjectSidebarCollapsed, setIsProjectSidebarCollapsed] = useState(() => (
     window.localStorage.getItem('project-sidebar-collapsed') === 'true'
   ));
@@ -297,6 +315,256 @@ function App() {
       return [];
     }
   };
+
+  /* ───────────── 阅读器：阅读进度记忆 + 排版设置 ───────────── */
+  const READER_PROGRESS_KEY = 'reader-progress-v1';
+  const READER_SETTINGS_KEY = 'reader-settings-v1';
+  const READER_LINE_HEIGHTS = [1.8, 2.05, 2.3];
+
+  const readReaderProgressMap = () => {
+    try {
+      const raw = window.localStorage.getItem(READER_PROGRESS_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const writeReaderProgress = (projectName, snapshot) => {
+    if (!projectName || !snapshot?.chapter) return;
+    try {
+      const map = readReaderProgressMap();
+      map[projectName] = { ...snapshot, updatedAt: new Date().toISOString() };
+      window.localStorage.setItem(READER_PROGRESS_KEY, JSON.stringify(map));
+    } catch {
+      /* 存储不可用时静默跳过，不影响阅读 */
+    }
+  };
+
+  const captureReaderSnapshot = () => {
+    const el = novelReaderRef.current;
+    if (!el || !activeProject || !selectedChapter) return null;
+    const scrollable = Math.max(1, el.scrollHeight - el.clientHeight);
+    const percent = Math.min(1, Math.max(0, el.scrollTop / scrollable));
+    let paragraphIndex = 0;
+    const nodes = el.querySelectorAll('.reader-paragraph');
+    const containerTop = el.getBoundingClientRect().top;
+    for (let i = 0; i < nodes.length; i += 1) {
+      const rect = nodes[i].getBoundingClientRect();
+      if (rect.bottom > containerTop + 12) {
+        const attr = nodes[i].getAttribute('data-paragraph-index');
+        paragraphIndex = attr === null ? i : Number(attr);
+        break;
+      }
+    }
+    return {
+      volume: selectedChapter.volume,
+      chapter: selectedChapter.chapter,
+      paragraphIndex,
+      percent
+    };
+  };
+
+  const updateReaderProgressBar = (percent) => {
+    const clamped = Math.min(1, Math.max(0, Number.isFinite(percent) ? percent : 0));
+    if (readerProgressFillRef.current) {
+      readerProgressFillRef.current.style.width = `${(clamped * 100).toFixed(2)}%`;
+    }
+    if (readerProgressTextRef.current) {
+      readerProgressTextRef.current.textContent = `${Math.round(clamped * 100)}%`;
+    }
+    return clamped;
+  };
+
+  const flushReaderProgress = () => {
+    if (readerScrollTimerRef.current) {
+      window.clearTimeout(readerScrollTimerRef.current);
+      readerScrollTimerRef.current = null;
+    }
+    const snapshot = captureReaderSnapshot();
+    if (snapshot) writeReaderProgress(activeProject, snapshot);
+  };
+
+  const handleReaderScroll = () => {
+    const el = novelReaderRef.current;
+    if (!el) return;
+    const scrollable = Math.max(1, el.scrollHeight - el.clientHeight);
+    updateReaderProgressBar(el.scrollTop / scrollable);
+    // 切沉浸模式 / 恢复位置 / 插图加载导致重排时，滚动事件不能当成真实阅读进度
+    if (Date.now() < readerSuppressSaveUntilRef.current) return;
+    if (readerScrollTimerRef.current) window.clearTimeout(readerScrollTimerRef.current);
+    readerScrollTimerRef.current = window.setTimeout(() => {
+      readerScrollTimerRef.current = null;
+      const snapshot = captureReaderSnapshot();
+      if (snapshot) writeReaderProgress(activeProject, snapshot);
+    }, 450);
+  };
+
+  const adjustReaderFontSize = (delta) => {
+    setReaderSettings(prev => ({
+      ...prev,
+      fontSize: Math.min(30, Math.max(13, (prev.fontSize || 18) + delta))
+    }));
+  };
+
+  const cycleReaderLineHeight = () => {
+    setReaderSettings(prev => {
+      const idx = READER_LINE_HEIGHTS.indexOf(prev.lineHeight);
+      const next = READER_LINE_HEIGHTS[(idx + 1) % READER_LINE_HEIGHTS.length];
+      return { ...prev, lineHeight: next };
+    });
+  };
+
+  const toggleReaderImmersive = () => {
+    flushReaderProgress();
+    readerSuppressSaveUntilRef.current = Date.now() + 900;
+    setReaderSettings(prev => ({ ...prev, immersive: !prev.immersive }));
+  };
+
+  const openReaderChapter = (chap) => {
+    if (!chap) return;
+    if (activeProject && selectedChapter && textSelections.length > 0) {
+      const previousChapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+      saveReaderSelections(activeProject, previousChapterKey, textSelections);
+    }
+    flushReaderProgress();
+    readerScrollRestoreRef.current = null;
+    setSelectedChapter(chap);
+    setChapterContent(null);
+    setTextSelections([]);
+    closeSceneEditor();
+  };
+
+  const readerChapters = projectDetails?.chapters || [];
+  const currentReaderChapterIndex = selectedChapter
+    ? readerChapters.findIndex(chap => chap.volume === selectedChapter.volume && chap.chapter === selectedChapter.chapter)
+    : -1;
+
+  const goReaderChapter = (delta) => {
+    if (readerChapters.length === 0) return;
+    const baseIndex = currentReaderChapterIndex < 0
+      ? (delta > 0 ? -1 : readerChapters.length)
+      : currentReaderChapterIndex;
+    const next = readerChapters[baseIndex + delta];
+    if (next) openReaderChapter(next);
+  };
+
+  const openReaderForProject = async (projectName, savedProgress) => {
+    const progress = savedProgress || readReaderProgressMap()[projectName] || null;
+    if (activeProject !== projectName) {
+      await selectProject(projectName, false);
+    }
+    readerRestoreRef.current = progress ? { project: projectName, ...progress } : null;
+    readerResumedProjectRef.current = '';
+    setWorkspaceTab('reader');
+    setMainTab('workbench');
+  };
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(READER_SETTINGS_KEY, JSON.stringify(readerSettings));
+    } catch { /* ignore */ }
+  }, [readerSettings]);
+
+  // 进入阅读器时自动回到上次读到的章节
+  useEffect(() => {
+    if (workspaceTab !== 'reader' || !activeProject) return;
+    const chapters = projectDetails?.chapters || [];
+    if (chapters.length === 0) return;
+    const forced = readerRestoreRef.current && readerRestoreRef.current.project === activeProject
+      ? readerRestoreRef.current
+      : null;
+    if (!forced && readerResumedProjectRef.current === activeProject) return;
+    readerResumedProjectRef.current = activeProject;
+    const saved = forced || readReaderProgressMap()[activeProject];
+    readerRestoreRef.current = null;
+    if (!saved) return;
+    const target = chapters.find(chap => chap.chapter === saved.chapter && chap.volume === saved.volume);
+    if (!target) return;
+    const isSameChapter = selectedChapter
+      && selectedChapter.chapter === target.chapter
+      && selectedChapter.volume === target.volume;
+    readerScrollRestoreRef.current = {
+      volume: target.volume,
+      chapter: target.chapter,
+      paragraphIndex: Number.isFinite(saved.paragraphIndex) ? saved.paragraphIndex : 0,
+      percent: Number.isFinite(saved.percent) ? saved.percent : 0
+    };
+    if (!isSameChapter) {
+      setSelectedChapter(target);
+      setChapterContent(null);
+      setTextSelections([]);
+    }
+  }, [workspaceTab, activeProject, projectDetails, selectedChapter]);
+
+  // 正文加载完成后把滚动位置还原到上次阅读的段落
+  useEffect(() => {
+    if (!chapterContent) return undefined;
+    const el = novelReaderRef.current;
+    if (!el) return undefined;
+    const pending = readerScrollRestoreRef.current;
+    const shouldRestore = pending
+      && selectedChapter
+      && pending.chapter === selectedChapter.chapter
+      && pending.volume === selectedChapter.volume
+      && (pending.paragraphIndex > 0 || pending.percent > 0);
+    if (!shouldRestore) {
+      // 不要清空 pending：章节内容可能先于目标章节渲染，留给下一次匹配
+      el.scrollTop = 0;
+      updateReaderProgressBar(0);
+      return undefined;
+    }
+    readerScrollRestoreRef.current = null;
+    let appliedTop = -1;
+    const applyRestore = (force) => {
+      if (!el.isConnected) return;
+      if (!force && appliedTop >= 0 && Math.abs(el.scrollTop - appliedTop) > 20) return;
+      const node = pending.paragraphIndex > 0
+        ? el.querySelector(`.reader-paragraph[data-paragraph-index="${pending.paragraphIndex}"]`)
+        : null;
+      if (node) {
+        appliedTop = Math.max(0, node.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - 16);
+      } else if (pending.percent > 0) {
+        appliedTop = pending.percent * Math.max(0, el.scrollHeight - el.clientHeight);
+      } else {
+        appliedTop = 0;
+      }
+      el.scrollTop = appliedTop;
+      updateReaderProgressBar(el.scrollTop / Math.max(1, el.scrollHeight - el.clientHeight));
+    };
+    const raf = window.requestAnimationFrame(() => window.requestAnimationFrame(() => applyRestore(true)));
+    // 插图是 lazy-load，加载后高度变化，再补几次校正（校正期间不落盘）
+    readerSuppressSaveUntilRef.current = Date.now() + 3600;
+    const timers = [600, 1500, 3000].map(delay => window.setTimeout(() => applyRestore(false), delay));
+    return () => {
+      window.cancelAnimationFrame(raf);
+      timers.forEach(timer => window.clearTimeout(timer));
+    };
+  }, [chapterContent, selectedChapter]);
+
+  // 离开阅读器 / 切换 Tab / 切换项目时落盘当前进度
+  useEffect(() => () => { flushReaderProgress(); }, [workspaceTab, mainTab, activeProject]);
+
+  // 阅读器键盘快捷键：← → 翻章，Esc 退出沉浸
+  useEffect(() => {
+    if (workspaceTab !== 'reader') return undefined;
+    const onKeyDown = (event) => {
+      const tag = (event.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || event.target?.isContentEditable) return;
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        goReaderChapter(-1);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        goReaderChapter(1);
+      } else if (event.key === 'Escape' && readerSettings.immersive) {
+        toggleReaderImmersive();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [workspaceTab, readerSettings.immersive, readerChapters, currentReaderChapterIndex]);
 
   useEffect(() => {
     window.localStorage.setItem('project-sidebar-collapsed', String(isProjectSidebarCollapsed));
@@ -785,6 +1053,7 @@ function App() {
     closeSceneEditor();
     setActiveProject(name);
     addLog(`📂 载入项目: ${name}`);
+    readerResumedProjectRef.current = '';
     setSelectedChapter(null); // 切换项目时重置选中章节
     setTextSelections([]);
     if (shouldSwitchTab) {
@@ -2159,6 +2428,7 @@ function App() {
 
         {projects.map(proj => {
           const isActive = activeProject === proj.name;
+          const readingMemory = readReaderProgressMap()[proj.name];
           return (
             <div
               key={proj.name}
@@ -2185,6 +2455,18 @@ function App() {
                     </span>
                   )}
                 </div>
+
+                {readingMemory?.chapter && (
+                  <div
+                    className="book-reading-memory"
+                    title={`上次阅读：${readingMemory.volume ? `${readingMemory.volume} ` : ''}${readingMemory.chapter} · ${Math.round((readingMemory.percent || 0) * 100)}%`}
+                  >
+                    <BookOpen size={12} />
+                    <span>
+                      上次读到 {readingMemory.chapter} · {Math.round((readingMemory.percent || 0) * 100)}%
+                    </span>
+                  </div>
+                )}
               </div>
 
               {isActive && (
@@ -2225,6 +2507,16 @@ function App() {
                 >
                   <User size={14} /> DNA
                 </button>
+                {readingMemory?.chapter && (
+                  <button
+                    className="btn-secondary"
+                    style={{ padding: '7px 12px', fontSize: '0.8rem', color: '#7dd3fc', borderColor: 'rgba(56, 189, 248, 0.35)' }}
+                    onClick={() => openReaderForProject(proj.name, readingMemory)}
+                    title="继续上次阅读"
+                  >
+                    <BookOpen size={14} /> 续读
+                  </button>
+                )}
               </div>
             </div>
           );
@@ -2817,13 +3109,23 @@ function App() {
                                   ) : scene.status === 'SUCCESS' ? (
                                     '已完成'
                                   ) : scene.status === 'FAILED' ? (
-                                    '失败'
+                                    <span style={{ color: '#f87171', fontWeight: '600' }}>
+                                      失败{scene.failure?.phase === 'nai' ? '（出图）' : scene.failure?.phase === 'llm' ? '（Prompt）' : scene.failure?.phase === 'scene' ? '（流程）' : ''}
+                                    </span>
                                   ) : scene.status === 'PROMPT_READY' ? (
                                     <span style={{ color: 'var(--color-purple)', fontWeight: '600' }}>⚡ Prompt 已就绪</span>
                                   ) : (
                                     '待处理'
                                   )}
                                 </span>
+                                {scene.status === 'FAILED' && scene.failure?.message && (
+                                  <span
+                                    title={`${scene.failure.message}\n重试 ${scene.failure.attempts || 3} 次 · ${scene.failure.at || ''}`}
+                                    style={{ fontSize: '0.68rem', color: '#f87171', maxWidth: '240px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                  >
+                                    {scene.failure.message}
+                                  </span>
+                                )}
                                 {(scene.width || scene.prepared_prompt?.width) && (
                                   <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: '4px' }}>
                                     {scene.width || scene.prepared_prompt?.width} × {scene.height || scene.prepared_prompt?.height}
@@ -3763,44 +4065,108 @@ function App() {
             </div>
 
             {workspaceTab === 'reader' && (
-              <div className="reader-layout">
-                <div className="glass-panel reader-chapters">
-                  {projectDetails.chapters.map(chap => {
-                    const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
-                    return (
-                    <button
-                        key={`reader-${chapKey}`}
-                        className={`chapter-item ${selectedChapter?.chapter === chap.chapter ? 'active' : ''}`}
-                        onClick={() => {
-                          if (activeProject && selectedChapter && textSelections.length > 0) {
-                            const previousChapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
-                            saveReaderSelections(activeProject, previousChapterKey, textSelections);
-                          }
-                          setSelectedChapter(chap);
-                          setChapterContent(null);
-                          setTextSelections([]);
-                          closeSceneEditor();
-                        }}
-                      >
-                        <span>{chap.chapter}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+              <div className={`reader-layout ${readerSettings.immersive ? 'reader-immersive-active' : ''}`}>
+                {!readerSettings.immersive && (
+                  <div className="glass-panel reader-chapters">
+                    {projectDetails.chapters.map(chap => {
+                      const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+                      return (
+                        <button
+                          key={`reader-${chapKey}`}
+                          className={`chapter-item ${selectedChapter?.chapter === chap.chapter ? 'active' : ''}`}
+                          onClick={() => openReaderChapter(chap)}
+                        >
+                          <span>{chap.chapter}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
                 <div className="reader-page glass-panel">
                   <div className="reader-toolbar">
-                    <div>
-                      <h3>{selectedChapter?.chapter || '请选择章节'}</h3>
-                      <span>用光标拖选句子或段落，松开后自动加入待生成列表；可连续选择多处。</span>
+                    <div className="reader-toolbar-title">
+                      <h3>
+                        {selectedChapter?.chapter || '请选择章节'}
+                        <span className="reader-progress-chip" ref={readerProgressTextRef}>0%</span>
+                      </h3>
+                      <span>
+                        {selectedChapter?.volume ? `${selectedChapter.volume} · ` : ''}
+                        拖选句子或段落即可加入待生成列表，阅读位置会自动记忆
+                      </span>
                     </div>
-                    <button
-                      className="btn-primary"
-                      disabled={!textSelections.length || isSubmittingSelections}
-                      onClick={generateSelectedParagraphs}
-                    >
-                      <Sparkles size={15} />
-                      {isSubmittingSelections ? '提交中...' : `生成所选${textSelections.length ? ` ${textSelections.length} 处` : ''}`}
-                    </button>
+                    <div className="reader-toolbar-actions">
+                      <div className="reader-nav-group">
+                        <button
+                          type="button"
+                          className="reader-icon-btn"
+                          onClick={() => goReaderChapter(-1)}
+                          disabled={currentReaderChapterIndex <= 0}
+                          title="上一章（←）"
+                        >
+                          <ChevronLeft size={16} />
+                        </button>
+                        <span className="reader-chapter-indicator">
+                          {currentReaderChapterIndex >= 0 ? `${currentReaderChapterIndex + 1} / ${readerChapters.length}` : `- / ${readerChapters.length}`}
+                        </span>
+                        <button
+                          type="button"
+                          className="reader-icon-btn"
+                          onClick={() => goReaderChapter(1)}
+                          disabled={currentReaderChapterIndex < 0 || currentReaderChapterIndex >= readerChapters.length - 1}
+                          title="下一章（→）"
+                        >
+                          <ChevronRight size={16} />
+                        </button>
+                      </div>
+                      <div className="reader-font-group">
+                        <button
+                          type="button"
+                          className="reader-icon-btn"
+                          onClick={() => adjustReaderFontSize(-1)}
+                          disabled={readerSettings.fontSize <= 13}
+                          title="减小字号"
+                        >
+                          A-
+                        </button>
+                        <span className="reader-font-value">{readerSettings.fontSize}</span>
+                        <button
+                          type="button"
+                          className="reader-icon-btn"
+                          onClick={() => adjustReaderFontSize(1)}
+                          disabled={readerSettings.fontSize >= 30}
+                          title="增大字号"
+                        >
+                          A+
+                        </button>
+                        <button
+                          type="button"
+                          className="reader-icon-btn"
+                          onClick={cycleReaderLineHeight}
+                          title="切换行距"
+                        >
+                          {readerSettings.lineHeight.toFixed(1)}×
+                        </button>
+                      </div>
+                      <button
+                        className="btn-primary reader-generate-btn"
+                        disabled={!textSelections.length || isSubmittingSelections}
+                        onClick={generateSelectedParagraphs}
+                      >
+                        <Sparkles size={15} />
+                        {isSubmittingSelections ? '提交中...' : `生成所选${textSelections.length ? ` ${textSelections.length} 处` : ''}`}
+                      </button>
+                      <button
+                        type="button"
+                        className="reader-icon-btn reader-immersive-btn"
+                        onClick={toggleReaderImmersive}
+                        title={readerSettings.immersive ? '退出沉浸阅读（Esc）' : '沉浸阅读'}
+                      >
+                        {readerSettings.immersive ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="reader-progress-track" aria-hidden="true">
+                    <div className="reader-progress-fill" ref={readerProgressFillRef} />
                   </div>
                   {textSelections.length > 0 && (
                     <div className="reader-selection-tray">
@@ -3827,7 +4193,13 @@ function App() {
                   )}
                   <article
                     className="novel-reader"
+                    ref={novelReaderRef}
+                    onScroll={handleReaderScroll}
                     onPointerUp={() => window.setTimeout(captureTextSelection, 0)}
+                    style={{
+                      '--reader-font-size': `${readerSettings.fontSize}px`,
+                      '--reader-line-height': String(readerSettings.lineHeight)
+                    }}
                   >
                     {!chapterContent ? (
                       <div className="reader-empty">正在载入正文...</div>
@@ -3854,6 +4226,29 @@ function App() {
                       );
                     });
                     })()}
+                    {chapterContent && (
+                      <div className="reader-chapter-end">
+                        <span>本章读完，阅读进度已自动记录</span>
+                        <div className="reader-chapter-end-actions">
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            onClick={() => goReaderChapter(-1)}
+                            disabled={currentReaderChapterIndex <= 0}
+                          >
+                            <ChevronLeft size={15} /> 上一章
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            onClick={() => goReaderChapter(1)}
+                            disabled={currentReaderChapterIndex < 0 || currentReaderChapterIndex >= readerChapters.length - 1}
+                          >
+                            下一章 <ChevronRight size={15} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </article>
                 </div>
               </div>
@@ -4100,7 +4495,7 @@ function App() {
 
 
   return (
-    <div className="app-root">
+    <div className={`app-root ${readerSettings.immersive && workspaceTab === 'reader' && mainTab === 'workbench' ? 'reader-immersive' : ''}`}>
       {/* 顶部全局导航栏 */}
       <header className="app-header">
         <div className="app-header-left">

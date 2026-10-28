@@ -1,0 +1,189 @@
+/* ============================================================================
+   阅读器增强：阅读进度记忆 / 排版控制 / 沉浸阅读
+   加载顺序：index.css → reader.css → responsive.css → ComicWorkbench.css
+   ============================================================================ */
+
+/* ── 工具栏 ─────────────────────────────────────────────────────────────── */
+.reader-toolbar {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.reader-toolbar-title {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.reader-toolbar-title h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.reader-progress-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.32);
+  color: #7dd3fc;
+  font-family: var(--font-title);
+  font-size: 0.68rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.reader-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 0 1 auto;
+}
+
+.reader-nav-group,
+.reader-font-group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px;
+  border: 1px solid var(--border-light);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.reader-chapter-indicator {
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.reader-font-value {
+  min-width: 20px;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.reader-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  min-width: 30px;
+  height: 28px;
+  padding: 0 7px;
+  color: var(--text-secondary);
+  font-family: var(--font-title);
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-light);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+}
+
+.reader-icon-btn:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(168, 85, 247, 0.16);
+  border-color: rgba(168, 85, 247, 0.4);
+}
+
+.reader-icon-btn:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
+}
+
+/* ── 阅读进度条 ─────────────────────────────────────────────────────────── */
+.reader-progress-track {
+  flex: 0 0 auto;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.reader-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 0 2px 2px 0;
+  background: linear-gradient(90deg, var(--color-purple), var(--color-blue));
+  transition: width 0.12s linear;
+}
+
+/* ── 正文跟随阅读设置 ───────────────────────────────────────────────────── */
+.reader-paragraph {
+  font-size: var(--reader-font-size, 1rem);
+  line-height: var(--reader-line-height, 2);
+}
+
+/* ── 章节尾部 ───────────────────────────────────────────────────────────── */
+.reader-chapter-end {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin: 34px auto 8px;
+  padding: 20px 12px 4px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.1);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.reader-chapter-end-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+/* ── 沉浸阅读：隐藏全局顶栏 / 工作台头部 / 日志抽屉 ─────────────────────── */
+.app-root.reader-immersive .app-header,
+.app-root.reader-immersive .log-dock-container,
+.app-root.reader-immersive .workbench-tab-view > .column-header,
+.app-root.reader-immersive .workbench-tab-view > .workspace-tabs {
+  display: none;
+}
+
+.app-root.reader-immersive .workbench-tab-view {
+  padding: 8px 10px;
+}
+
+.reader-layout.reader-immersive-active {
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+/* ── 书籍卡片上的阅读记忆 ───────────────────────────────────────────────── */
+.book-reading-memory {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  margin-top: 8px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.26);
+  color: #7dd3fc;
+  font-size: 0.7rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.book-reading-memory span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.book-card-bottom {
+  flex-wrap: wrap;
+}

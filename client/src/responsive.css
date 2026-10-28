@@ -1,0 +1,721 @@
+/* ============================================================================
+   NovelAI Illustrator · 移动端 / 触屏适配层
+   加载顺序：index.css → responsive.css → ComicWorkbench.css
+   全部规则都包在媒体查询里，桌面端行为保持原样
+   ============================================================================ */
+
+/* ── 基础：动态视口 + 安全区 ──────────────────────────────────────────────── */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+.app-root {
+  height: 100vh;
+  height: 100dvh;
+  width: 100%;
+  max-width: 100vw;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.app-main-viewport {
+  overflow-x: hidden;
+}
+
+/* 触摸设备：禁用 hover 位移/常驻高亮，避免「点一下卡住」的观感 */
+@media (hover: none) and (pointer: coarse) {
+  .btn-primary:hover,
+  .book-card-item:hover,
+  .project-card:hover {
+    transform: none;
+  }
+
+  .glass-panel:hover {
+    background: var(--bg-glass);
+    border-color: var(--border-light);
+  }
+
+  .chapter-item:hover,
+  .dna-char-item:hover {
+    background: transparent;
+  }
+
+  .log-dock-collapsed-bar:hover {
+    background: rgba(20, 20, 28, 0.9);
+  }
+}
+
+/* ── 平板 / 小笔记本 (≤1024px) ──────────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .app-header {
+    padding: 0 14px;
+    gap: 12px;
+  }
+
+  .app-brand {
+    font-size: 0.98rem;
+  }
+
+  .main-tab-item {
+    padding: 6px 11px;
+    font-size: 0.82rem;
+  }
+
+  .books-tab-view {
+    padding: 18px;
+  }
+
+  .dna-tab-view {
+    grid-template-columns: 260px minmax(0, 1fr);
+    gap: 14px;
+    padding: 14px;
+  }
+
+  .workbench-tab-view {
+    padding: 14px;
+  }
+
+  .active-project-pill {
+    max-width: 140px;
+  }
+}
+
+/* ── 手机横屏 / 平板竖屏 (≤900px)：三栏 → 单栏堆叠 ────────────────────── */
+@media (max-width: 900px) {
+  /* 顶部导航：品牌 + 操作一行，Tab 独占一行横向滚动 */
+  .app-header {
+    height: auto;
+    min-height: 0;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 8px 12px;
+    padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  }
+
+  /* brand / pill / 设置按钮同排，流水线控件自动落到第二行 */
+  .app-header-left,
+  .app-header-right,
+  .header-pipeline-controls {
+    display: contents;
+  }
+
+  .app-brand {
+    order: 1;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-right: auto;
+    font-size: 0.95rem;
+  }
+
+  .active-project-pill {
+    order: 2;
+    flex: 0 1 auto;
+  }
+
+  .app-header-right > .btn-secondary {
+    order: 3;
+    flex: 0 0 auto;
+  }
+
+  .header-pipeline-controls > * {
+    order: 4;
+    flex: 0 0 auto;
+  }
+
+  .main-tab-bar {
+    order: 9;
+    flex: 1 1 100%;
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 3px;
+    overflow: hidden;
+  }
+
+  .main-tab-item {
+    justify-content: center;
+    min-width: 0;
+    padding: 7px 4px;
+    font-size: 0.76rem;
+    gap: 5px;
+  }
+
+  .main-tab-item > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .main-tab-item > svg {
+    flex: 0 0 auto;
+  }
+
+  /* header 里的流水线按钮压缩 */
+  .header-pipeline-controls {
+    gap: 6px;
+  }
+
+  .header-pipeline-controls .btn-primary,
+  .header-pipeline-controls .btn-secondary {
+    padding: 4px 9px !important;
+    font-size: 0.74rem !important;
+  }
+
+  .active-project-pill {
+    max-width: 132px;
+    padding: 4px 9px;
+    font-size: 0.75rem;
+  }
+
+  /* 角色 DNA：列表在上，详情在下 */
+  .dna-tab-view {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 34vh) minmax(0, 1fr);
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .dna-detail-viewport {
+    height: 100%;
+  }
+
+  .dna-tab-view .dna-detail-viewport > div {
+    padding: 14px !important;
+  }
+
+  /* 工作台：章节列 + 场景流 → 上下堆叠 */
+  [style*="grid-template-columns: 200px 1fr"],
+  [style*="grid-template-columns:200px 1fr"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: minmax(0, 30vh) minmax(0, 1fr) !important;
+  }
+
+  .column-header {
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .column-header > div:last-child {
+    flex-wrap: wrap;
+  }
+
+  /* 正文阅读：章节抽屉 → 横向胶囊条 */
+  .reader-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .reader-chapters {
+    display: flex;
+    flex-direction: row;
+    gap: 6px;
+    padding: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .reader-chapters::-webkit-scrollbar {
+    display: none;
+  }
+
+  .reader-chapters button.chapter-item,
+  .reader-chapters .chapter-item {
+    flex: 0 0 auto;
+    width: auto;
+    margin-bottom: 0;
+    padding: 8px 12px;
+    white-space: nowrap;
+  }
+
+  .reader-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+
+  .reader-toolbar-actions {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 6px;
+  }
+
+  /* column 方向下避免 flex-basis 被当成高度，导致标题区拉出大片空白 */
+  .reader-toolbar-title {
+    flex: 0 0 auto;
+  }
+
+  .reader-generate-btn {
+    order: 9;
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .reader-immersive-btn {
+    order: 5;
+    margin-left: auto;
+  }
+
+  .reader-toolbar-title h3 {
+    font-size: 1.02rem;
+  }
+
+  .novel-reader {
+    padding: 18px 14px 56px;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+  }
+
+  .reader-paragraph {
+    font-size: 0.96rem;
+    line-height: 1.95;
+    text-indent: 1.7em;
+  }
+
+  .reader-illustration {
+    max-width: 100%;
+    max-height: 62vh;
+  }
+
+  .reader-selection-tray {
+    padding: 8px 12px;
+  }
+
+  .reader-selection-chip {
+    max-width: 100%;
+  }
+
+  /* 日志抽屉：折叠栏去掉队列胶囊，避免右侧按钮被挤掉 */
+  .log-dock-container.collapsed {
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .log-dock-collapsed-bar {
+    height: 44px;
+    padding: 0 10px;
+    gap: 8px;
+  }
+
+  .log-dock-bar-left {
+    gap: 6px;
+    overflow: hidden;
+  }
+
+  .log-dock-queue-pills {
+    display: none;
+  }
+
+  .log-dock-count {
+    white-space: nowrap;
+    font-size: 0.68rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .log-dock-latest-preview {
+    display: none;
+  }
+
+  .log-dock-bar-right {
+    flex: 0 0 auto;
+  }
+
+  .log-dock-action-btn {
+    white-space: nowrap;
+  }
+
+  .log-dock-container.expanded {
+    height: 50vh;
+    min-height: 0;
+  }
+
+  .log-dock-container.maximized {
+    height: calc(100dvh - 60px);
+  }
+
+  .log-dock-expanded-view {
+    padding: 8px 10px 10px;
+  }
+
+  /* 展开态 header 改为上下两段，避免标题被挤成竖排 */
+  .log-dock-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .log-dock-header-left {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .log-dock-header-title {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .log-dock-header-title span {
+    white-space: nowrap;
+  }
+
+  .log-dock-header-subtitle {
+    flex: 1 1 100%;
+    white-space: normal;
+  }
+
+  .log-dock-header-right {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .log-dock-header-right button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .log-dock-queue-monitor-bar {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .logs-split-container {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .log-scroll-area {
+    padding: 8px 10px;
+    font-size: 0.76rem;
+  }
+}
+
+/* ── 手机竖屏 (≤768px) ─────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  /* iOS 聚焦输入框不再自动放大页面 */
+  input,
+  textarea,
+  select {
+    font-size: max(16px, 1em) !important;
+  }
+
+  /* 书籍项目：卡片单列 */
+  .books-tab-view {
+    padding: 14px 12px 24px;
+  }
+
+  .books-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin-top: 12px;
+  }
+
+  .book-card-item {
+    min-height: 0;
+    padding: 14px 16px;
+  }
+
+  .tab-view-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .tab-view-header h2 {
+    font-size: 1.08rem;
+  }
+
+  .tab-view-subtitle {
+    font-size: 0.76rem;
+  }
+
+  .workbench-tab-view {
+    padding: 10px;
+  }
+
+  /* 工作区切换 Tab 横向滚动 */
+  .workspace-tabs {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .workspace-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .workspace-tabs button {
+    flex: 0 0 auto;
+    padding: 7px 11px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+
+  /* 弹窗：贴边、可滚动、单列 */
+  .modal-overlay {
+    padding: 10px;
+    align-items: flex-start;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .modal-content {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: calc(100dvh - 20px) !important;
+    padding: 14px !important;
+    border-radius: 14px;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .modal-content h2 {
+    font-size: 1.05rem;
+  }
+
+  /* 弹窗/面板内联多列 grid → 单列（内联样式需 !important 覆盖） */
+  [style*="grid-template-columns: 1fr 1fr 1fr"],
+  [style*="grid-template-columns:1fr 1fr 1fr"],
+  [style*="grid-template-columns: 1fr 1fr"],
+  [style*="grid-template-columns:1fr 1fr"],
+  [style*="grid-template-columns: 1.3fr 1fr"],
+  [style*="grid-template-columns:1.3fr 1fr"],
+  [style*="grid-template-columns: 1.1fr 0.9fr"],
+  [style*="grid-template-columns:1.1fr 0.9fr"],
+  [style*="grid-template-columns: 1fr 130px"],
+  [style*="grid-template-columns:1fr 130px"],
+  [style*="grid-template-columns: 1fr 140px"],
+  [style*="grid-template-columns:1fr 140px"],
+  [style*="grid-template-columns: 1fr 100px"],
+  [style*="grid-template-columns:1fr 100px"],
+  [style*="grid-template-columns: 168px"],
+  [style*="grid-template-columns:168px"],
+  [style*="grid-template-columns: 220px"],
+  [style*="grid-template-columns:220px"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  [style*="grid-template-columns: repeat(auto-fit, minmax(280px"],
+  [style*="grid-template-columns: repeat(auto-fit, minmax(240px"],
+  [style*="grid-template-columns: repeat(auto-fit, minmax(200px"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  /* 卡片内部图文行（缩略图 + 文案）在小屏改为竖向 */
+  [style*="grid-template-columns: 168px minmax(0, 1fr)"] {
+    gap: 10px !important;
+  }
+
+  /* 触摸目标尺寸 */
+  .btn-primary,
+  .btn-secondary {
+    min-height: 34px;
+  }
+
+  .chapter-item {
+    min-height: 38px;
+  }
+
+  .sidebar-toggle {
+    width: 36px;
+    height: 36px;
+    flex: 0 0 36px;
+  }
+
+  /* 场景卡片压缩内边距 */
+  .scene-card {
+    padding: 14px;
+    gap: 10px;
+  }
+
+  .empty-state-container {
+    width: 100%;
+    max-width: 100%;
+    padding: 24px 16px;
+  }
+
+  /* 内联 margin:auto 的居中占位（flex 交叉轴 auto margin 会退化成 fit-content） */
+  [style*="margin: auto"],
+  [style*="margin:auto"] {
+    max-width: 100% !important;
+  }
+
+  .empty-state-container h3 {
+    font-size: 1rem;
+  }
+}
+
+/* ── 小屏手机 (≤560px) ─────────────────────────────────────────────────── */
+@media (max-width: 560px) {
+  .app-brand {
+    font-size: 0.88rem;
+  }
+
+  .app-brand .brand-icon {
+    display: none;
+  }
+
+  .main-tab-item {
+    padding: 7px 2px;
+    font-size: 0.7rem;
+    gap: 3px;
+  }
+
+  /* 小屏隐藏计数徽章，避免 4 等分挤压 */
+  .main-tab-bar .tab-badge {
+    display: none;
+  }
+
+  /* 标签 + 输入 的行内 grid 也竖排 */
+  [style*="grid-template-columns: 82px 1fr"],
+  [style*="grid-template-columns:82px 1fr"],
+  [style*="grid-template-columns: 60px 1fr"],
+  [style*="grid-template-columns:60px 1fr"],
+  [style*="grid-template-columns: 44px 1fr"],
+  [style*="grid-template-columns:44px 1fr"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+    row-gap: 4px !important;
+  }
+
+  .dna-tab-view {
+    grid-template-rows: minmax(0, 30vh) minmax(0, 1fr);
+    padding: 10px;
+  }
+
+  .dna-sidebar-panel {
+    padding: 10px;
+  }
+
+  .dna-detail-viewport > div > div:first-child h2 {
+    font-size: 1.15rem !important;
+  }
+
+  .novel-reader {
+    padding: 14px 11px 48px;
+  }
+
+  .reader-paragraph {
+    font-size: var(--reader-font-size, 0.92rem) !important;
+    text-indent: 1.4em;
+    padding: 4px 6px;
+    line-height: var(--reader-line-height, 1.95) !important;
+  }
+
+  /* 阅读器控件在窄屏保持可点 */
+  .reader-icon-btn {
+    height: 32px;
+    min-width: 34px;
+  }
+
+  .reader-nav-group,
+  .reader-font-group {
+    flex: 0 1 auto;
+  }
+
+  .reader-generate-btn {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+
+  .reader-immersive-btn {
+    margin-left: auto;
+  }
+
+  .reader-immersive-active .reader-toolbar {
+    padding: 8px 10px;
+  }
+
+  .reader-chapter-end-actions .btn-primary,
+  .reader-chapter-end-actions .btn-secondary {
+    flex: 1 1 120px;
+    justify-content: center;
+  }
+
+  .log-dock-container.expanded {
+    height: 64vh;
+  }
+
+  .log-dock-title,
+  .log-dock-count {
+    font-size: 0.72rem;
+  }
+
+  .log-dock-action-btn {
+    padding: 4px 8px;
+    font-size: 0.7rem;
+  }
+
+  /* 漫画工作台收边 */
+  .comic-toolbar {
+    padding: 10px 12px;
+  }
+
+  .comic-toolbar h2 {
+    font-size: 16px;
+  }
+
+  .comic-summary {
+    gap: 10px;
+    padding: 8px 12px;
+  }
+
+  .comic-review,
+  .comic-art {
+    padding: 10px;
+  }
+
+  .comic-assembly {
+    gap: 8px;
+  }
+
+  .comic-zoom {
+    padding: 52px 10px 16px;
+  }
+
+  .comic-zoom button {
+    top: 12px;
+    right: 12px;
+  }
+
+  /* ComicWorkbench.css 末尾的固定 min-height 在小屏会顶死高度，这里覆盖 */
+  .comic-desk {
+    min-height: 0 !important;
+    flex-shrink: 1 !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .comic-workspace {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+}
+
+/* ── 横屏手机：压缩垂直留白 ────────────────────────────────────────────── */
+@media (max-height: 480px) and (max-width: 900px) {
+  .log-dock-container.expanded {
+    height: 78vh;
+  }
+
+  .modal-content {
+    max-height: calc(100dvh - 12px) !important;
+  }
+
+  .dna-tab-view {
+    grid-template-rows: minmax(0, 42vh) minmax(0, 1fr);
+  }
+}
