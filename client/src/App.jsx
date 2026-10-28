@@ -2026,7 +2026,7 @@ function App() {
               }))}
               rows={2}
               spellCheck={false}
-              placeholder={label === '年龄标签' ? '知道几岁写确定的岁数(如 18yo, 20yo)，不知道写 adult (默认 adult)' : '用逗号分隔'}
+              placeholder={label === '年龄标签' ? '知道几岁写确定的岁数(如 7yo, 15yo, 20yo)，不知道写 adult (默认 adult)；出图时会自动换算成体型标签' : '用逗号分隔'}
               style={{
                 width: '100%',
                 background: 'rgba(255,255,255,0.03)',

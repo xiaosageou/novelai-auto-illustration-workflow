@@ -10,6 +10,7 @@
  */
 
 import { stripAgeWords } from './age-tags.js';
+import { mergeAgeNegativeIntoPrompt, mergeAgeTagsIntoPrompt } from './age-prompt-tags.js';
 
 export const ADULT_AGE_FLOOR = 18;
 
@@ -147,6 +148,11 @@ export function resolveRealAgeTags(features, tags = '') {
 
 /**
  * 把真实年龄补回人物段。
+ *
+ * 未成年年龄不再以 `7yo` 原样落入 prompt（NAI 词表无此 token，只会变成噪声），
+ * 而是经 age-prompt-tags 换算成「身份锁 + 比例锁」标签块并按性别分配权重；
+ * 成年年龄或无法换算的写法仍按原逻辑就地替换 adult / 追加到末尾。
+ *
  * @param {Array} characterPrompts LLM 输出的 character_prompts
  * @param {Map<string,string[]>} realAgeByName 归一化姓名 → 真实年龄标签
  */
@@ -158,19 +164,35 @@ export function injectRealAgeIntoCharacterPrompts(characterPrompts, realAgeByNam
     const ages = realAgeByName.get(normalizeKey(item?.name));
     if (!Array.isArray(ages) || ages.length === 0) return item;
 
-    const ageTag = ages.join(', ');
     const prompt = String(item?.prompt || '').trim();
-    if (!prompt) return { ...item, prompt: ageTag };
+    const nextItem = { ...item, prompt: mergeAgeTagsIntoPrompt(prompt, ages) };
 
-    // 按 tag 逐个处理：已有 adult（旧 prompt 缓存）就地换成真实年龄，否则追加到末尾
-    const tokens = prompt.split(/[,，]/).map(token => token.trim()).filter(Boolean);
-    const hasAdult = tokens.some(token => /^adult$/i.test(token));
-    const nextTokens = hasAdult
-      ? tokens.map(token => (/^adult$/i.test(token) ? ageTag : token))
-      : [...tokens, ageTag];
-    return { ...item, prompt: nextTokens.join(', ') };
+    // 负向锁：只有配置了 negative_prompt 字段的角色才写，避免给纯字符串条目凭空加键。
+    // 性别取正向段（负向段里没有 1boy/1girl，取负向必回落中性表）。
+    if (item && typeof item === 'object' && 'negative_prompt' in item) {
+      nextItem.negative_prompt = mergeAgeNegativeIntoPrompt(item.negative_prompt, ages, { prompt });
+    }
+
+    return nextItem;
   });
 }
+
+export {
+  AGE_PROMPT_BUCKETS,
+  AGE_NEGATIVE_TABLE,
+  AGED_DOWN_BUCKET,
+  GENDER_FEMALE,
+  GENDER_MALE,
+  GENDER_MIXED,
+  GENDER_NEUTRAL,
+  buildAgeGapRelationTags,
+  convertAgeToPromptTags,
+  detectPromptGender,
+  formatWeightedTags,
+  mergeAgeNegativeIntoPrompt,
+  mergeAgeTagsIntoPrompt,
+  resolveAgeBucket
+} from './age-prompt-tags.js';
 
 /**
  * 把一条 DNA 记录整体代理成「LLM 可见视图」：tags 与 features 里的未成年年龄都换成 adult。

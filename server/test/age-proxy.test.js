@@ -124,7 +124,7 @@ test('resolveRealAgeTags 提取真实年龄，成年返回空', () => {
   assert.deepEqual(resolveRealAgeTags({ 年龄标签: ['15yo'] }, '17yo'), ['15yo', '17yo']);
 });
 
-test('injectRealAgeIntoCharacterPrompts 按姓名把真实年龄写回人物段', () => {
+test('injectRealAgeIntoCharacterPrompts 按姓名把真实年龄换算成标签块写回人物段', () => {
   const list = [
     { name: '小明', prompt: 'boy, short_hair', negative_prompt: '' },
     { name: '小红', prompt: 'girl, long_hair', negative_prompt: '' }
@@ -132,14 +132,18 @@ test('injectRealAgeIntoCharacterPrompts 按姓名把真实年龄写回人物段'
   const map = new Map([['小明', ['15yo']]]);
   const out = injectRealAgeIntoCharacterPrompts(list, map);
 
-  assert.equal(out[0].prompt, 'boy, short_hair, 15yo');
+  // 15yo 男性 → 13-15 岁档，身份锁 shota/teen + 比例锁，权重 1.2
+  assert.equal(out[0].prompt, 'boy, short_hair, 1.2::shota,teen,slim,short stature,narrow shoulders::');
+  assert.ok(!/15yo/.test(out[0].prompt), '数字年龄不得落进最终 prompt');
+  assert.match(out[0].negative_prompt, /-1\.5::man, adult/, '负向锁必须随年龄一起下发');
   assert.equal(out[1].prompt, 'girl, long_hair', '没配置未成年年龄的角色不得改动');
+  assert.equal(out[1].negative_prompt, '', '未命中角色不得被写负向锁');
 });
 
 test('injectRealAgeIntoCharacterPrompts 把已有的 adult 就地替换成真实年龄', () => {
   const list = [{ name: '小明', prompt: 'boy, adult, short_hair' }];
   const out = injectRealAgeIntoCharacterPrompts(list, new Map([['小明', ['15yo']]]));
-  assert.equal(out[0].prompt, 'boy, 15yo, short_hair');
+  assert.equal(out[0].prompt, 'boy, short_hair, 1.2::shota,teen,slim,short stature,narrow shoulders::');
   assert.ok(!/\badult\b/.test(out[0].prompt));
 });
 
@@ -147,7 +151,7 @@ test('injectRealAgeIntoCharacterPrompts 支持别名与括号后缀', () => {
   const list = [{ name: '夏洛特', prompt: 'girl, blonde_hair' }];
   const map = new Map([[normalizeCharacterKey('夏洛特 (猫娘)'), ['15yo']]]);
   const out = injectRealAgeIntoCharacterPrompts(list, map);
-  assert.equal(out[0].prompt, 'girl, blonde_hair, 15yo');
+  assert.equal(out[0].prompt, 'girl, blonde_hair, 1.2::loli,teen,petite,small breasts,short stature::');
 });
 
 test('injectRealAgeIntoCharacterPrompts 空映射或空列表原样返回', () => {
@@ -155,6 +159,14 @@ test('injectRealAgeIntoCharacterPrompts 空映射或空列表原样返回', () =
   assert.equal(injectRealAgeIntoCharacterPrompts(list, new Map()), list);
   assert.deepEqual(injectRealAgeIntoCharacterPrompts([], new Map([['甲', ['15yo']]])), []);
   assert.deepEqual(injectRealAgeIntoCharacterPrompts(null, new Map()), null);
+});
+
+test('injectRealAgeIntoCharacterPrompts 不给无 negative_prompt 键的条目凭空加键', () => {
+  const list = [{ name: '甲', prompt: 'boy, hair' }];
+  const out = injectRealAgeIntoCharacterPrompts(list, new Map([['甲', ['15yo']]]));
+  assert.ok(out[0].prompt.includes('shota'));
+  assert.equal('negative_prompt' in out[0], false);
+  assert.equal('negative_prompt' in list[0], false, '入参不得被改动');
 });
 
 test('buildComicDnaContext 对 LLM 隐藏未成年年龄，同时回传真实年龄映射', () => {
