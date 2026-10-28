@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PipelineManager } from '../services/pipeline-manager.js';
 import { ProjectProgress } from '../utils/db.js';
 
@@ -125,8 +127,11 @@ test('Prompt 生成连续失败 3 次会写入 llm 阶段失败记录并跳过',
 
 test('已出图成功的场景补完时直接跳过，不重试也不入队', async () => {
   const pipeline = makePipelineStub();
-  // 用仓库内必然存在的文件冒充已出图产物
-  const existing = 'package.json';
+  // image_path 是相对 projBase 拼的，所以把 projBase 指向本测试目录、用测试文件名冒充产物，
+  // 不再依赖仓库根目录里是否存在某个文件（旧写法拿 package.json 当探针，根目录根本没这个文件）。
+  const selfPath = fileURLToPath(import.meta.url);
+  pipeline.projBase = path.dirname(selfPath);
+  const existing = path.basename(selfPath);
   const scene = { scene_idx: 1, status: 'SUCCESS', image_path: existing, failure: undefined };
   const naiQueue = [];
 
