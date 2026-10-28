@@ -3,7 +3,7 @@ import { resolveTaskLlmConfig } from './pipeline-manager.js';
 import { estimateV45Tokens } from './prompt-builder.js';
 import { withSystemPrefix } from '../utils/advanced-prompt-contract.js';
 import { robustJsonLoads } from '../utils/json-repair.js';
-import { proxyDnaEntryForLlm, resolveRealAgeTags } from '../utils/age-proxy.js';
+import { normalizeCharacterKey, proxyDnaEntryForLlm, resolveRealAgeTags } from '../utils/age-proxy.js';
 
 function fail(code, message) { throw Object.assign(new Error(message), { status: 400, code, publicMessage: true }); }
 function json(content) {
@@ -127,9 +127,92 @@ export function extractHeadAppearanceTags(entry) {
   return [...new Set(found)];
 }
 
-export function buildComicDnaContext(dna, characterNames = []) {
+// ─── LLM 上下文剪裁（P0）──────────────────────────────────────────────
+// DNA 里的 evidence / appearance_versions 等字段是给人审的账本，对出图 LLM 零价值；
+// 一次单格请求最多画 4 人，却曾经把项目全量角色 DNA 都发过去。
+// 下面两组白名单负责把上下文压到“这一格真正要画的人 + 真正要用的字段”。
+const DNA_LEDGER_FIELDS = [
+  'evidence', 'appearance_versions', 'source_chapters', 'source_text_summary',
+  'confidence', 'sourceSliceKey', 'createdAt', 'updatedAt'
+];
+
+const PROXY_LEDGER_FIELDS = ['reason', 'series', 'character_name_cn'];
+
+/** 排障开关：NAI_LLM_FULL_DNA=1 时恢复完整 DNA 下发，其他情况一律剪裁 */
+export function isFullDnaDebugEnabled() {
+  return String(process.env.NAI_LLM_FULL_DNA || '') === '1';
+}
+
+/** 剪裁单条 DNA：去掉审计账本字段与脸模里的中文解释字段 */
+export function compactDnaForLlm(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  if (isFullDnaDebugEnabled()) return entry;
+  const clone = { ...entry };
+  for (const key of DNA_LEDGER_FIELDS) delete clone[key];
+  if (clone.proxy_character && typeof clone.proxy_character === 'object') {
+    const proxy = { ...clone.proxy_character };
+    for (const key of PROXY_LEDGER_FIELDS) delete proxy[key];
+    clone.proxy_character = proxy;
+  }
+  return clone;
+}
+
+/** 角色名/别名 -> DNA 主键的归一化索引 */
+function buildDnaNameIndex(source) {
+  const index = new Map();
+  for (const [key, entry] of Object.entries(source)) {
+    const aliases = Array.isArray(entry?.aliases) ? entry.aliases : [];
+    for (const candidate of [key, ...aliases]) {
+      const normalized = normalizeCharacterKey(candidate);
+      if (normalized && !index.has(normalized)) index.set(normalized, key);
+    }
+  }
+  return index;
+}
+
+/**
+ * 决定本次要下发哪些角色 DNA。
+ * - characterNames 为 undefined：旧行为，下发全量（兼容老调用方）
+ * - characterNames 为数组（含空数组）：只下发命中的角色，空数组就是不下发
+ * 命中顺序按传入顺序，支持别名与括号后缀。
+ */
+export function resolveDnaKeys(source, characterNames) {
+  if (characterNames === undefined) return Object.keys(source);
+  const requested = Array.isArray(characterNames) ? characterNames : [characterNames];
+  if (!requested.length) return [];
+  const index = buildDnaNameIndex(source);
+  const keys = [];
+  for (const name of requested) {
+    const raw = String(name || '').trim();
+    if (!raw) continue;
+    const key = Object.prototype.hasOwnProperty.call(source, raw)
+      ? raw
+      : index.get(normalizeCharacterKey(raw));
+    if (key && !keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+
+// 出图 prompt 只需要这几项。其余字段（原文定位、对白、拟声、画幅理由、状态账本、
+// 排版像素间隔）是分镜阶段的产物，对出图 LLM 零指导作用，下发前一律剔除。
+const PLAN_FIELDS_FOR_IMAGE_PROMPT = [
+  'storyboardDescription', 'shotSize', 'cameraAngle', 'width', 'height',
+  'characterNames', 'mustShow', 'mustNotShow', 'styleMode'
+];
+
+/** 把完整 plan 裁成出图 prompt 真正需要的子集 */
+export function pickPlanForImagePrompt(plan) {
+  if (!plan || typeof plan !== 'object') return plan;
+  const picked = {};
+  for (const key of PLAN_FIELDS_FOR_IMAGE_PROMPT) {
+    if (plan[key] !== undefined && plan[key] !== null) picked[key] = plan[key];
+  }
+  return picked;
+}
+
+export function buildComicDnaContext(dna, characterNames) {
   const source = dna && typeof dna === 'object' ? dna : {};
-  const names = [...new Set([...(Array.isArray(characterNames) ? characterNames : []), ...Object.keys(source)])];
+  const names = resolveDnaKeys(source, characterNames);
   const ordered = {};
   const proxyAnchors = [];
   const suppressTags = [];
@@ -138,7 +221,7 @@ export function buildComicDnaContext(dna, characterNames = []) {
     const entry = source[name];
     if (entry === undefined) continue;
     // LLM 只看得到成年年龄；真实年龄留给出图阶段补回
-    ordered[name] = proxyDnaEntryForLlm(entry);
+    ordered[name] = proxyDnaEntryForLlm(compactDnaForLlm(entry));
     const realAges = resolveRealAgeTags(entry?.features, entry?.tags);
     if (realAges.length > 0) realAgeByName[name] = realAges;
     const proxy = entry && typeof entry === 'object' ? entry.proxy_character : null;
@@ -148,12 +231,11 @@ export function buildComicDnaContext(dna, characterNames = []) {
       .map(value => String(value || '').trim().toLowerCase().replace(/\s+/g, '_'))
       .filter(Boolean);
     suppressTags.push(...tags);
+    // 锚点只留模型真正要用的三项：名字、锁脸 tag、要压制的原著服饰标签。
+    // character_name_cn / series / reason 是给人看的说明，DNA 里已剪除，这里也不再重述。
     proxyAnchors.push({
       name,
       danbooru_tag: tag,
-      character_name_cn: String(proxy.character_name_cn || '').trim(),
-      series: String(proxy.series || '').trim(),
-      reason: String(proxy.reason || '').trim(),
       suppress_tags: [...new Set(tags)],
       appearance_tags: extractHeadAppearanceTags(entry).filter(value => value !== tag)
     });
@@ -164,10 +246,9 @@ export function buildComicDnaContext(dna, characterNames = []) {
 // 把脸模绑定渲染成 system 里的硬规则；没有绑定角色时返回空串，保持原提示词逐字不变。
 export function buildComicFaceModelRule({ proxyAnchors, proxySuppressTags } = {}) {
   if (!Array.isArray(proxyAnchors) || !proxyAnchors.length) return '';
-  const lines = proxyAnchors.map(anchor => {
-    const meta = [anchor.character_name_cn, anchor.series].filter(Boolean).join(' / ');
-    return `- ${anchor.name} → ${anchor.danbooru_tag}${meta ? `（${meta}）` : ''}${anchor.reason ? `：${anchor.reason}` : ''}`;
-  });
+  // 锚点行只留「名字 → 锁脸 tag」。中文名 / 作品名 / 匹配理由对出图没有任何指导作用，
+  // 只会在每次请求里白占 token（全量三合一之前这三项各说了一遍）。
+  const lines = proxyAnchors.map(anchor => `- ${anchor.name} → ${anchor.danbooru_tag}`);
   const tags = proxyAnchors.map(anchor => anchor.danbooru_tag);
   const appearanceLines = proxyAnchors.map(anchor => {
     const dupes = Array.isArray(anchor.appearance_tags) ? anchor.appearance_tags : [];
@@ -178,15 +259,15 @@ export function buildComicFaceModelRule({ proxyAnchors, proxySuppressTags } = {}
   return `
 【同人动漫脸模代理铁律】下列角色已绑定脸模，本次重算必须使用最新绑定，禁止沿用旧脸模或省略：
 ${lines.join('\n')}
-1) 对应角色的 characterPrompts 段必须把该 danbooru_tag（${tags.join(' / ')}）原样紧跟在性别词之后写入，作为面容锁定标签，不得后移、改写或省略。
+1) 对应角色的 characterPrompts 段必须把该 danbooru_tag（${tags.join(' / ')}）原样紧跟在性别词之后写入，不得后移、改写或省略。
 2) 一个角色的脸模标签只能写进该角色自己的段，不得串到其他角色段。
-3) 脸模只锁面容：发型、发色、瞳色、体型、服装、表情、位置仍按 DNA、plan 与 entryState 写；若与脸模自带设定冲突，以 DNA 与原文为准。
-4) 下列原著专属服装/配饰标签必须写入该角色的 negativeCharacterPrompts，避免服饰污染：${proxySuppressTags?.length ? proxySuppressTags.join(', ') : '（无）'}。
+3) 脸模只锁面容：发型、发色、瞳色、体型、服装、表情、位置仍按 DNA、plan 与 entryState 写；冲突时以 DNA 与原文为准。
+4) 原著专属服装/配饰标签必须写入该角色的 negativeCharacterPrompts，避免服饰污染：${proxySuppressTags?.length ? proxySuppressTags.join(', ') : '（无）'}。
 5) 标签拼写必须与上面给出的完全一致（小写下划线），不要发明变体。
-6) 外貌去重：脸模 tag 本身已经锁定该角色的发色、发型、发长、瞳色、脸型与肤色。下列 DNA 头部外观标签与脸模重复，默认不要写进 characterPrompts，避免重复占 token 或与脸模抢权重：
+6) 外貌去重：脸模 tag 已锁定发色、发型、发长、瞳色、脸型与肤色。下列 DNA 头部外观标签与脸模重复，默认不要写进 characterPrompts，避免重复占 token 或与脸模抢权重：
 ${appearanceLines.join('\n')}
-   只有当本格画面需要覆盖脸模时才显式写出，例如：染发或换发色、剪短或剪断头发、湿发、凌乱散乱、束发盘发、帽子/头盔压住头发、异色瞳、以及其他原文明确要求的外观改变。此时写的必须是覆盖后的新状态，而不是把原 DNA 标签再抄一遍。
-7) 去重不等于删信息：服装、表情、体型、姿态、位置、source#/target# 动作，以及本格场景实际出现的配饰，仍须写全，不得因为去重而省略。`;
+   只有本格需要覆盖脸模时才显式写出：染发、剪短、湿发、凌乱散乱、束发盘发、帽子压发、异色瞳等原文明确的外观改变；写覆盖后的新状态，不要重抄 DNA。
+7) 去重不等于删信息：服装、表情、体型、姿态、位置、source#/target# 动作仍须写全。`;
 }
 
 export class ComicTextGenerator {
@@ -258,7 +339,7 @@ styleMode=chibi仅按照其理由使用Q版，其他沿用artistStylePrompt。�
     let correction = '';
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
-        const output = await this.request(pipeline, 'naiTags', system + faceModelRule, { plan, dna: dnaContext.dna,
+        const output = await this.request(pipeline, 'naiTags', system + faceModelRule, { plan: pickPlanForImagePrompt(plan), dna: dnaContext.dna,
           proxyAnchors: dnaContext.proxyAnchors, entryState, correction,
           artistStylePrompt: pipeline.config.artistStylePrompt || '', extraPrompt: pipeline.config.extra_prompt || '',
           extraNegative: pipeline.config.negative_prompt || '' });

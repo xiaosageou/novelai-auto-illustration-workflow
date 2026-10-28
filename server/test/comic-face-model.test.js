@@ -32,7 +32,9 @@ test('buildComicDnaContext extracts and normalizes proxy face model anchors', ()
   const anchor = ctx.proxyAnchors[0];
   assert.equal(anchor.name, '谢云岚');
   assert.equal(anchor.danbooru_tag, 'asuka_langley_soryu', 'tag normalized to lowercase underscore');
-  assert.equal(anchor.character_name_cn, '惣流·明日香·兰格雷');
+  assert.equal('character_name_cn' in anchor, false, '中文名不再随锚点下发');
+  assert.equal('series' in anchor, false, '作品名不再随锚点下发');
+  assert.equal('reason' in anchor, false, '匹配理由不再随锚点下发');
   assert.deepEqual(anchor.suppress_tags, ['plugsuit', 'hair_clips'], 'suppress tags trimmed, lowercased and de-duplicated');
   assert.deepEqual(ctx.proxySuppressTags, ['plugsuit', 'hair_clips']);
   assert.ok(ctx.dna['谢云岚'], 'dna entries are preserved for the prompt payload');
@@ -55,7 +57,8 @@ test('buildComicFaceModelRule pins the tag, forbids cross-character leakage and 
 
   assert.ok(rule.includes('【同人动漫脸模代理铁律】'));
   assert.ok(rule.includes('谢云岚 → asuka_langley_soryu'));
-  assert.ok(rule.includes('惣流·明日香·兰格雷 / 新世纪福音战士'));
+  assert.ok(!rule.includes('新世纪福音战士'), '作品名/理由不再重复占用 system token');
+  assert.ok(!rule.includes('傲娇好胜'), 'match reason dropped from the rule block');
   assert.ok(rule.includes('紧跟在性别词之后'), 'tag must sit right after the gender word');
   assert.ok(rule.includes('不得后移、改写或省略'));
   assert.ok(rule.includes('negativeCharacterPrompts'), 'suppress tags go to per-character negatives');
