@@ -14,6 +14,13 @@ import { extractChapterScenesInBatches } from '../utils/chapter-scene-batching.j
 import { parseChapterHeading, isVolumeHeading, selectBareNumberHeadings } from '../utils/chapter-heading.js';
 import { ConcurrencyQueue } from '../utils/job-queue.js';
 import { stripAgeWords } from '../utils/age-tags.js';
+import {
+  proxyAgeTagsForLlm,
+  proxyFeaturesForLlm,
+  resolveRealAgeTags,
+  injectRealAgeIntoCharacterPrompts,
+  normalizeCharacterKey
+} from '../utils/age-proxy.js';
 
 const CHARACTER_DNA_LONG_CHAPTER_THRESHOLD = 5000;
 const CHARACTER_DNA_LONG_CHAPTER_BATCH_SIZE = 5;
@@ -560,9 +567,9 @@ export class PipelineManager {
         matchedAnchors.push({
           name,
           aliases,
-          正面提示词: stripAgeWords(effectiveDna.tags || ""),
+          正面提示词: proxyAgeTagsForLlm(effectiveDna.tags || ""),
           负面提示词: effectiveDna.supersededNegative || "",
-          结构化特征: effectiveDna.features,
+          结构化特征: proxyFeaturesForLlm(effectiveDna.features),
           身高等级: effectiveDna.height_class || charData.height_class || "",
           身体比例: effectiveDna.body_proportion || charData.body_proportion || "",
           proxy_character: effectiveDna.proxy_character || charData.proxy_character || null
@@ -571,6 +578,39 @@ export class PipelineManager {
     }
 
     return matchedAnchors;
+  }
+
+  /**
+   * 收集「角色名 → 真实未成年年龄标签」。
+   * DNA 里存的是真实年龄，但送给 LLM 的视图已被代理成 adult；
+   * 真正出图前用这份映射把真实年龄补回对应人物段。
+   */
+  _collectRealAgeTagsByName(chapterIndex = 0) {
+    const map = new Map();
+    let globalChars = {};
+    try {
+      globalChars = this.projectProgress.getGlobalCharacters?.() || {};
+    } catch {
+      return map;
+    }
+    for (const [name, charData] of Object.entries(globalChars)) {
+      let dna = charData;
+      try {
+        if (typeof this.projectProgress.getCharacterDNAForChapter === 'function') {
+          dna = this.projectProgress.getCharacterDNAForChapter(name, chapterIndex) || charData;
+        }
+      } catch {
+        dna = charData;
+      }
+      const ages = resolveRealAgeTags(dna?.features, dna?.tags);
+      if (ages.length === 0) continue;
+      const aliases = Array.isArray(charData?.aliases) ? charData.aliases : [];
+      for (const candidate of [name, ...aliases]) {
+        const key = normalizeCharacterKey(candidate);
+        if (key) map.set(key, ages);
+      }
+    }
+    return map;
   }
 
   async getVibeBundleForModel(model) {
@@ -984,7 +1024,7 @@ export class PipelineManager {
     }
     const finalErrorMessage = `场景 ${scene.scene_idx} 连续 3 次执行失败: ${lastError?.message || "未知错误"}`;
     this.writeLog(`  [场景 ${scene.scene_idx}] ${finalErrorMessage}，已跳过当前场景继续流水线。`, "warning");
-    scene.status = 'FAILED';
+    this._recordSceneFailure(scene, 'scene', lastError, 3);
     this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
     await this.projectProgress.save();
     this.uiProgressCallback?.({
@@ -1348,6 +1388,22 @@ export class PipelineManager {
       }))
     };
 
+    // 真实年龄补回：DNA 里保存的是用户设定的真实年龄，送给 LLM 时已代理成 adult，
+    // 这里在 Prompt 定稿（即将进入 NAI 渲染）前，把真实年龄写回对应人物段。
+    const realAgeByName = this._collectRealAgeTagsByName(Math.max(0, chapterIndex));
+    sanitizedAdvancedParams.character_prompts = injectRealAgeIntoCharacterPrompts(
+      sanitizedAdvancedParams.character_prompts,
+      realAgeByName
+    );
+    if (realAgeByName.size > 0) {
+      const restored = sanitizedAdvancedParams.character_prompts
+        .filter(item => Array.isArray(realAgeByName.get(normalizeCharacterKey(item?.name))) && realAgeByName.get(normalizeCharacterKey(item?.name)).length)
+        .map(item => `${item.name || '未命名'}:${realAgeByName.get(normalizeCharacterKey(item?.name)).join('/')}`);
+      if (restored.length > 0) {
+        this.writeLog(`  [场景 ${scene.scene_idx}] 真实年龄已补回人物段 → ${restored.join(', ')}`);
+      }
+    }
+
     const promptResult = buildFinalImagePrompt(sanitizedAdvancedParams.base_prompt, {
       composition,
       size: requestedSize,
@@ -1454,6 +1510,7 @@ export class PipelineManager {
 
     // H. 实时更新该场景状态为 SUCCESS 并保存
     scene.status = 'SUCCESS';
+    delete scene.failure;
     scene.image_path = `illustrations/${imgName}`;
     scene.final_prompt = pp.finalPositive;
     scene.final_negative = pp.finalNegative;
@@ -1479,11 +1536,37 @@ export class PipelineManager {
     }
   }
 
+  /**
+   * 统一记录场景失败：写入失败阶段、原因、重试次数与时间，随场景一起落盘。
+   * 上一次的失败记录会在该场景成功时由调用方清除。
+   */
+  _recordSceneFailure(scene, phase, error, attempts = 3) {
+    if (!scene || typeof scene !== 'object') return;
+    scene.status = 'FAILED';
+    scene.failure = {
+      phase,
+      message: String(error?.message || error || '未知错误').slice(0, 600),
+      attempts,
+      at: new Date().toISOString()
+    };
+  }
+
   async _prepareSceneForNaiQueue(chap, scene, scenes, chapKey, naiTagsModel, naiQueue) {
     this.markSceneProcessing(chapKey, scene.scene_idx);
     try {
       if (scene.status === 'SUCCESS' && scene.image_path && existsSync(path.join(this.projBase, scene.image_path))) {
         this.writeLog(`  [场景 ${scene.scene_idx}] 插画已存在，跳过 LLM 处理。`);
+        return;
+      }
+
+      // 上次卡在 NAI 出图阶段：Prompt 已就绪，直接复用重试出图，不必再花一次 LLM 调用
+      if (scene.status === 'FAILED' && scene.failure?.phase === 'nai' && scene.prepared_prompt?.finalPositive) {
+        this.writeLog(`  [场景 ${scene.scene_idx}] 上次 NAI 生图失败（${scene.failure.message}），复用现有 Prompt 重试出图。`, "warning");
+        scene.status = 'PROMPT_READY';
+        this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
+        await this.projectProgress.save();
+        this.clearSceneProcessing(chapKey, scene.scene_idx);
+        naiQueue.push({ chap, scene, scenes, chapKey });
         return;
       }
 
@@ -1507,7 +1590,7 @@ export class PipelineManager {
             this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理第 ${attempt}/3 次失败，将重试: ${error.message}`, "warning");
           } else {
             this.writeLog(`  [场景 ${scene.scene_idx}] LLM 处理连续 3 次失败，跳过该场景: ${error.message}`, "warning");
-            scene.status = 'FAILED';
+            this._recordSceneFailure(scene, 'llm', error, 3);
             this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
             await this.projectProgress.save();
             this.uiProgressCallback?.({
@@ -1524,6 +1607,7 @@ export class PipelineManager {
 
       if (prepared) {
         // 先解除「处理中」再入队：等待出图期间允许编辑该场景卡
+        delete scene.failure;
         this.clearSceneProcessing(chapKey, scene.scene_idx);
         naiQueue.push({ chap, scene, scenes, chapKey });
       }
@@ -1716,6 +1800,16 @@ export class PipelineManager {
       // ── 恢复已有场景或重新提取 ────────────────────────────────────────────
       if (Array.isArray(currentProgress?.scenes) && currentProgress.scenes.length > 0) {
         scenes = currentProgress.scenes.map(s => ({ ...s, ...normalizeSceneCard(s), status: s.status || 'PENDING' }));
+        const failedScenes = scenes.filter(s => s.status === 'FAILED');
+        if (failedScenes.length > 0) {
+          const detail = failedScenes
+            .map(s => `#${s.scene_idx}${s.failure?.phase ? `(${s.failure.phase})` : ''}`)
+            .join(', ');
+          this.writeLog(
+            `[Pipeline LLM] 章节「${chap.chapter}」有 ${failedScenes.length} 个场景上次生成失败（${detail}），本次补完将重试。`,
+            "warning"
+          );
+        }
         if (expansion.isExpanded) {
           const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
           const promptQueue = new ConcurrencyQueue(promptConcurrency);
@@ -1840,6 +1934,7 @@ export class PipelineManager {
 
       // NAI 生图阶段（带重试）
       let success = false;
+      let lastNaiError = null;
       for (let attempt = 1; attempt <= 3; attempt++) {
         if (!this.isRunning) break;
         try {
@@ -1847,6 +1942,7 @@ export class PipelineManager {
           success = true;
           break;
         } catch (error) {
+          lastNaiError = error;
           if (attempt < 3) {
             this.writeLog(`  [场景 ${scene.scene_idx}] NAI 生图第 ${attempt}/3 次失败，将重试: ${error.message}`, "warning");
           } else {
@@ -1860,7 +1956,7 @@ export class PipelineManager {
           this.writeLog(`  [场景 ${scene.scene_idx}] 因流水线暂停已中断，保留当前就绪状态以便随时恢复。`);
           break;
         }
-        scene.status = 'FAILED';
+        this._recordSceneFailure(scene, 'nai', lastNaiError, 3);
         this.projectProgress.setChapterStatus(chapKey, 'generating', scenes);
         await this.projectProgress.save();
         this.uiProgressCallback?.({

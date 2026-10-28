@@ -3,6 +3,7 @@ import { resolveTaskLlmConfig } from './pipeline-manager.js';
 import { estimateV45Tokens } from './prompt-builder.js';
 import { withSystemPrefix } from '../utils/advanced-prompt-contract.js';
 import { robustJsonLoads } from '../utils/json-repair.js';
+import { proxyDnaEntryForLlm, resolveRealAgeTags } from '../utils/age-proxy.js';
 
 function fail(code, message) { throw Object.assign(new Error(message), { status: 400, code, publicMessage: true }); }
 function json(content) {
@@ -132,10 +133,14 @@ export function buildComicDnaContext(dna, characterNames = []) {
   const ordered = {};
   const proxyAnchors = [];
   const suppressTags = [];
+  const realAgeByName = {};
   for (const name of names) {
     const entry = source[name];
     if (entry === undefined) continue;
-    ordered[name] = entry;
+    // LLM 只看得到成年年龄；真实年龄留给出图阶段补回
+    ordered[name] = proxyDnaEntryForLlm(entry);
+    const realAges = resolveRealAgeTags(entry?.features, entry?.tags);
+    if (realAges.length > 0) realAgeByName[name] = realAges;
     const proxy = entry && typeof entry === 'object' ? entry.proxy_character : null;
     const tag = String(proxy?.danbooru_tag || '').trim().toLowerCase().replace(/\s+/g, '_');
     if (!tag) continue;
@@ -153,7 +158,7 @@ export function buildComicDnaContext(dna, characterNames = []) {
       appearance_tags: extractHeadAppearanceTags(entry).filter(value => value !== tag)
     });
   }
-  return { dna: ordered, proxyAnchors, proxySuppressTags: [...new Set(suppressTags)] };
+  return { dna: ordered, proxyAnchors, proxySuppressTags: [...new Set(suppressTags)], realAgeByName };
 }
 
 // 把脸模绑定渲染成 system 里的硬规则；没有绑定角色时返回空串，保持原提示词逐字不变。
