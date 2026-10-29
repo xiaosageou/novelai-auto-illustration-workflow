@@ -6,6 +6,7 @@
     "llm_stream_enabled": true,
     "llm_rate_limit_enabled": false,
     "llm_rate_limit_rpm": 3,
+    "llm_failover_enabled": true,
     "llm_api_presets": [
         {
             "id": "1781579277070",

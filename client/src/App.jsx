@@ -962,7 +962,9 @@ function App() {
   const normalizePreset = (preset = {}) => ({
     ...preset,
     rateLimitEnabled: preset?.rateLimitEnabled !== false,
-    rateLimitRpm: Number(preset?.rateLimitRpm) || 3
+    rateLimitRpm: Number(preset?.rateLimitRpm) || 3,
+    // 失败自动切换是可选能力：取消勾选的预设不会被当作接盘的「下一个」
+    failoverEligible: preset?.failoverEligible !== false
   });
 
   const fetchModels = async (scope = 'default') => {
@@ -5202,7 +5204,8 @@ function App() {
                             key: config.llm_key || "",
                             model: config.llm_model || "",
                             rateLimitEnabled: config.llm_rate_limit_enabled !== false,
-                            rateLimitRpm: Number(config.llm_rate_limit_rpm) || 3
+                            rateLimitRpm: Number(config.llm_rate_limit_rpm) || 3,
+                            failoverEligible: true
                           };
                           const presets = [...(config.llm_api_presets || []), newPreset];
                           setConfig({ ...config, llm_api_presets: presets });
@@ -5311,7 +5314,8 @@ function App() {
                                       key: preset.key || '',
                                       model: preset.model || '',
                                       rateLimitEnabled: preset.rateLimitEnabled !== false,
-                                      rateLimitRpm: Number(preset.rateLimitRpm) || 3
+                                      rateLimitRpm: Number(preset.rateLimitRpm) || 3,
+                                      failoverEligible: preset.failoverEligible !== false
                                     });
                                   }}
                                   style={{ padding: '4px 10px', fontSize: '0.75rem' }}
@@ -5353,7 +5357,7 @@ function App() {
                               </div>
                             )}
                             {!isEditing && (
-                            <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '10px', alignItems: 'end' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1.15fr 0.65fr 1.2fr', gap: '10px', alignItems: 'end' }}>
                               <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
                                 <input
                                   type="checkbox"
@@ -5366,7 +5370,7 @@ function App() {
                                     } : item)
                                   }))}
                                 />
-                                启用 3 RPM / 自定义 RPM 限流
+                                启用 RPM 限流
                               </label>
                               <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
                                 RPM
@@ -5385,6 +5389,20 @@ function App() {
                                   }))}
                                   style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
                                 />
+                              </label>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: preset.failoverEligible === false ? 'var(--text-muted)' : 'var(--text-secondary)', fontSize: '0.8rem' }} title="取消后，当前预设失败时不会自动排到它">
+                                <input
+                                  type="checkbox"
+                                  checked={preset.failoverEligible !== false}
+                                  onChange={(e) => setConfig(prev => ({
+                                    ...prev,
+                                    llm_api_presets: (prev.llm_api_presets || []).map(item => item.id === preset.id ? {
+                                      ...item,
+                                      failoverEligible: e.target.checked
+                                    } : item)
+                                  }))}
+                                />
+                                参与失败自动切换
                               </label>
                             </div>
                             )}
@@ -5428,7 +5446,7 @@ function App() {
                                     style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
                                   />
                                 </label>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '10px', alignItems: 'end' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1.15fr 0.65fr 1.2fr', gap: '10px', alignItems: 'end' }}>
                                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
                                     <input
                                       type="checkbox"
@@ -5448,6 +5466,14 @@ function App() {
                                       onChange={(e) => setLlmPresetDraft(prev => ({ ...prev, rateLimitRpm: Number(e.target.value) || 3 }))}
                                       style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
                                     />
+                                  </label>
+                                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.8rem' }} title="取消后，当前预设失败时不会自动排到它">
+                                    <input
+                                      type="checkbox"
+                                      checked={llmPresetDraft.failoverEligible !== false}
+                                      onChange={(e) => setLlmPresetDraft(prev => ({ ...prev, failoverEligible: e.target.checked }))}
+                                    />
+                                    参与失败自动切换
                                   </label>
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
@@ -5472,7 +5498,8 @@ function App() {
                                           key: llmPresetDraft.key.trim(),
                                           model: llmPresetDraft.model.trim(),
                                           rateLimitEnabled: llmPresetDraft.rateLimitEnabled !== false,
-                                          rateLimitRpm: Number(llmPresetDraft.rateLimitRpm) || 3
+                                          rateLimitRpm: Number(llmPresetDraft.rateLimitRpm) || 3,
+                                          failoverEligible: llmPresetDraft.failoverEligible !== false
                                         } : item)
                                       }));
                                       setLlmPresetDraft(null);

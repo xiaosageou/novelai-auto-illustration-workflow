@@ -64,7 +64,8 @@ function normalizePresetList(presets = []) {
   return (Array.isArray(presets) ? presets : []).map(preset => ({
     ...preset,
     rateLimitEnabled: preset?.rateLimitEnabled !== false,
-    rateLimitRpm: Number(preset?.rateLimitRpm) || 3
+    rateLimitRpm: Number(preset?.rateLimitRpm) || 3,
+    failoverEligible: preset?.failoverEligible !== false
   }));
 }
 
@@ -150,11 +151,16 @@ export function resolveTaskLlmConfig(config = {}, task = 'scene') {
  */
 export function resolveTaskLlmChain(config = {}, task = 'scene') {
   if (config?.llm_failover_enabled === false) return [];
-  const presets = normalizePresetList(config.llm_api_presets)
+  const allPresets = normalizePresetList(config.llm_api_presets)
     .filter(preset => String(preset?.url || '').trim());
+  const active = resolveTaskLlmConfig(config, task);
+  // 未勾选「参与失败自动切换」的预设不当作接盘的下一家；
+  // 当前正在用的那一家始终留在队列首，否则无法从它出发轮转。
+  const presets = allPresets.filter(preset => (
+    preset.failoverEligible !== false || `preset:${preset.id}` === active.rateLimitKey
+  ));
   if (presets.length < 2) return [];
 
-  const active = resolveTaskLlmConfig(config, task);
   const activeIndex = presets.findIndex(preset => `preset:${preset.id}` === active.rateLimitKey);
   const ordered = activeIndex >= 0
     ? [...presets.slice(activeIndex), ...presets.slice(0, activeIndex)]
