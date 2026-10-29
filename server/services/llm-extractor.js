@@ -1654,6 +1654,10 @@ export class LLMExtractor {
     // 预设故障转移：failoverChain 是「当前预设打头、按全局配置顺序排列」的连接队列。
     // 前端排序即优先级；当前连接连续失败时自动排到下一个。
     this.failoverEnabled = failoverEnabled !== false;
+    // 当前实际在用的模型 / 预设，供前端展示（切换后跟着变）
+    this.activeModel = '';
+    this.activePresetLabel = '';
+    this.activePresetId = '';
     this.setFailoverChain(failoverChain);
   }
 
@@ -1676,6 +1680,12 @@ export class LLMExtractor {
     const currentIndex = list.findIndex(item => item.baseUrl === this.baseUrl && item.apiKey === this.apiKey);
     this.failoverCursor = currentIndex >= 0 ? currentIndex : 0;
     this.businessFailoverBudget = Math.max(0, list.length - 1);
+    const current = list[this.failoverCursor];
+    if (current) {
+      this.activePresetLabel = current.label;
+      this.activePresetId = current.id || '';
+      if (current.model && !this.activeModel) this.activeModel = current.model;
+    }
   }
 
   /**
@@ -1694,6 +1704,9 @@ export class LLMExtractor {
     this.rateLimitEnabled = next.rateLimitEnabled !== false;
     this.rateLimitRpm = Number(next.rateLimitRpm) || 3;
     this.rateLimitKey = next.rateLimitKey;
+    this.activePresetLabel = next.label;
+    this.activePresetId = next.id || '';
+    if (next.model) this.activeModel = next.model;
     if (reason) {
       console.warn(`[LLM Extractor] ${reason}，自动切换到下一个 LLM 预设: ${next.label}`);
     }
@@ -1740,8 +1753,23 @@ export class LLMExtractor {
 
   /** 统一出口：自动挂上预设故障转移控制器 */
   async postChatCompletion(options = {}) {
+    const requestedModel = options?.payload?.model;
+    if (requestedModel) this.activeModel = String(requestedModel);
     const failover = options.failover === undefined ? this.buildFailoverController() : options.failover;
     return postChatCompletionWith429Retry({ ...options, failover });
+  }
+
+  /** 当前实际在用的连接指纹，供前端展示「现在用的是哪个模型」 */
+  getActiveConnectionInfo() {
+    return {
+      model: this.activeModel || '',
+      presetLabel: this.activePresetLabel || '',
+      presetId: this.activePresetId || '',
+      baseUrl: this.baseUrl || '',
+      failoverEnabled: this.failoverEnabled !== false,
+      failoverChainLength: Array.isArray(this.failoverChain) ? this.failoverChain.length : 0,
+      failoverIndex: Number(this.failoverCursor) || 0
+    };
   }
 
   abortAll() {

@@ -16,11 +16,13 @@ import { EventEmitter } from 'events';
  *    - 支持单场景重绘 (priority: true) 插队消费。
  */
 export class GlobalQueueManager extends EventEmitter {
-  constructor({ getPipeline, broadcastSSE, cooldownManager }) {
+  constructor({ getPipeline, broadcastSSE, cooldownManager, getActiveLlmInfo = null }) {
     super();
     this.getPipeline = getPipeline;
     this.broadcastSSE = broadcastSSE;
     this.cooldownManager = cooldownManager;
+    // 当前实际在用的 LLM 模型/预设（由 server 注入，供前端展示）
+    this.getActiveLlmInfo = getActiveLlmInfo;
 
     // Prompt 队列 (LLM)
     this.promptQueue = {
@@ -713,7 +715,16 @@ export class GlobalQueueManager extends EventEmitter {
           }))
         ]
       },
-      cooldown: this.cooldownManager?.getState() || { isCooling: false, remainingSeconds: 0 }
+      cooldown: this.cooldownManager?.getState() || { isCooling: false, remainingSeconds: 0 },
+      llm: typeof this.getActiveLlmInfo === 'function'
+        ? (() => {
+            try {
+              return this.getActiveLlmInfo();
+            } catch {
+              return null;
+            }
+          })()
+        : null
     };
   }
 

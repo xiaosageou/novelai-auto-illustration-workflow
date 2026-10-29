@@ -183,8 +183,25 @@ const chapterQueues = new Map();
 const globalQueueManager = new GlobalQueueManager({
   getPipeline,
   broadcastSSE,
-  cooldownManager: globalCooldownManager
+  cooldownManager: globalCooldownManager,
+  getActiveLlmInfo: collectActiveLlmInfo
 });
+
+/**
+ * 当前实际在用的 LLM 连接（供前端展示「现在用的是哪个模型」）。
+ * 优先取正在跑 Prompt 阶段的项目，否则取任意已加载的 pipeline。
+ */
+function collectActiveLlmInfo() {
+  const runningProject = globalQueueManager?.promptQueue?.current?.projectName;
+  const candidates = [
+    runningProject ? activePipelines[runningProject] : null,
+    ...Object.values(activePipelines)
+  ].filter(Boolean);
+  for (const pipeline of candidates) {
+    if (typeof pipeline.getActiveLlmInfo === 'function') return pipeline.getActiveLlmInfo();
+  }
+  return null;
+}
 
 async function safeProjectPath(projectName) {
   const projectsDir = path.resolve(BASE_DIR, 'projects');

@@ -4307,6 +4307,33 @@ function App() {
                   >
                     🎨 生图 {globalQueueState.imageQueue?.running ? `[${globalQueueState.imageQueue.current?.projectName} 待画${globalQueueState.imageQueue.totalPendingCount}]` : '就绪'}
                   </span>
+                  <span
+                    className={`queue-badge ${globalQueueState.llm?.scene?.model ? 'active' : ''}`}
+                    title={(() => {
+                      const llm = globalQueueState.llm;
+                      if (!llm) return '还没建立 LLM 连接（跑一次流水线后显示）';
+                      const scene = llm.scene || {};
+                      const dna = llm.characterDna || {};
+                      const tags = llm.naiTags || {};
+                      const describe = (label, info) => info?.model
+                        ? `${label}: ${info.model}${info.presetLabel ? ` （${info.presetLabel}）` : ''}`
+                        : `${label}: 未配置`;
+                      return [
+                        `当前模型: ${scene.model || '未知'}`,
+                        scene.presetLabel ? `当前预设: ${scene.presetLabel}` : '',
+                        llm.failoverEnabled
+                          ? `失败自动切换: 已开启（队列 ${scene.failoverChainLength || 0} 个${scene.failoverIndex ? `，当前已排到第 ${Number(scene.failoverIndex) + 1} 个` : ''}）`
+                          : '失败自动切换: 已关闭',
+                        describe('场景提炼', scene),
+                        describe('角色 DNA', dna),
+                        describe('NAI 标签', tags),
+                        scene.baseUrl ? `Base URL: ${scene.baseUrl}` : ''
+                      ].filter(Boolean).join('\n');
+                    })()}
+                    style={{ color: '#9ad1ff' }}
+                  >
+                    🧠 {globalQueueState.llm?.scene?.model || config.llm_model || '未配置模型'}
+                  </span>
                 </div>
               )}
 
@@ -4424,6 +4451,13 @@ function App() {
                         后续排队: <strong>{globalQueueState.promptQueue.items.map(item => item.projectName).join(', ')}</strong>
                       </span>
                     )}
+                    <span className="queue-pending-info">
+                      当前 LLM 模型: <strong>{globalQueueState.llm?.scene?.model || config.llm_model || '未配置'}</strong>
+                      {globalQueueState.llm?.scene?.presetLabel ? ` （${globalQueueState.llm.scene.presetLabel}）` : ''}
+                      {globalQueueState.llm?.failoverEnabled && (globalQueueState.llm?.scene?.failoverChainLength || 0) > 1
+                        ? ` · 可自动切换 ${globalQueueState.llm.scene.failoverChainLength} 个预设`
+                        : ''}
+                    </span>
                   </div>
                 </div>
 

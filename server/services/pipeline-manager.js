@@ -296,6 +296,36 @@ export class PipelineManager {
   }
 
   /**
+   * 当前实际在用的 LLM 连接（供前端展示「现在用的是哪个模型」）。
+   * 包含故障转移后的真实模型，不是配置里的静态值。
+   */
+  getActiveLlmInfo() {
+    const build = (extractor, task) => {
+      if (!extractor) return null;
+      const connection = resolveTaskLlmConfig(this.config, task) || {};
+      const info = typeof extractor.getActiveConnectionInfo === 'function'
+        ? extractor.getActiveConnectionInfo()
+        : {};
+      return {
+        task,
+        model: info.model || connection.model || '',
+        presetId: info.presetId || '',
+        presetLabel: info.presetLabel || '',
+        baseUrl: info.baseUrl || connection.baseUrl || '',
+        failoverEnabled: info.failoverEnabled !== false,
+        failoverChainLength: Number(info.failoverChainLength) || 0,
+        failoverIndex: Number(info.failoverIndex) || 0
+      };
+    };
+    return {
+      failoverEnabled: this.config.llm_failover_enabled !== false,
+      scene: build(this.sceneExtractor, 'scene'),
+      characterDna: build(this.characterDnaExtractor, 'characterDna'),
+      naiTags: build(this.naiTagsExtractor, 'naiTags')
+    };
+  }
+
+  /**
    * 动态切换项目目录并加载项目数据
    */
   switchProject(name) {
