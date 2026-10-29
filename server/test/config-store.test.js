@@ -6,6 +6,7 @@ import os from 'node:os';
 import {
   ENV_FILENAME,
   ENDPOINT_FIELDS,
+  MODEL_FIELDS,
   SECRETS_FILENAME,
   SECRET_FIELDS,
   SENSITIVE_FIELDS,
@@ -68,16 +69,22 @@ test('splitConfig 把端点和密钥一起搬出公开配置', () => {
   assert.equal(secrets.llm_trim_key, undefined, '空值不写入');
 
   assert.deepEqual(secrets.llm_api_presets, {
-    p1: { url: 'https://a/v1', key: 'sk-preset-1' },
-    p2: { url: 'https://b/v1', key: 'sk-preset-2' }
+    p1: { url: 'https://a/v1', key: 'sk-preset-1', model: 'm' },
+    p2: { url: 'https://b/v1', key: 'sk-preset-2', model: 'm' }
   });
   assert.equal(publicConfig.llm_api_presets[0].url, '', '预设端点同样不能留在公开配置');
   assert.equal(publicConfig.llm_api_presets[0].key, '');
+  assert.equal(publicConfig.llm_api_presets[0].model, '', '预设模型同样走 .env');
   assert.equal(publicConfig.llm_api_presets[0].name, 'first', '非敏感字段保留');
   assert.equal(publicConfig.llm_api_presets[1].rateLimitRpm, 5);
 
+  // 模型名属于接口细节（能看出用的哪家哪条渠道），跟端点密钥一起走 .env
+  assert.equal(secrets.llm_model, 'some-model');
+  assert.equal(secrets.nai_model, 'nai-diffusion-4-5-full');
+  assert.equal(publicConfig.llm_model, '');
+  assert.equal(publicConfig.nai_model, '');
+
   // 非敏感字段一字不动
-  assert.equal(publicConfig.llm_model, 'some-model');
   assert.equal(publicConfig.steps, 28);
   assert.equal(publicConfig.artistStylePrompt, SAMPLE.artistStylePrompt);
 });
@@ -90,16 +97,19 @@ test('splitConfig 对空配置与畸形 presets 不抛错', () => {
   assert.equal(publicConfig.llm_api_presets[2].url, '');
 });
 
-test('mergeConfig 还原端点、密钥与预设端点', () => {
+test('mergeConfig 还原端点、密钥、模型与预设端点', () => {
   const { publicConfig, secrets } = splitConfig(SAMPLE);
   const merged = mergeConfig(publicConfig, secrets);
 
   assert.equal(merged.llm_url, 'https://api.example.com/v1');
   assert.equal(merged.llm_key, 'sk-top-secret');
+  assert.equal(merged.llm_model, 'some-model', '模型名从 .env 回填');
+  assert.equal(merged.nai_model, 'nai-diffusion-4-5-full');
   assert.equal(merged.nai_token, 'pst-nai-secret');
   assert.equal(merged.proxy_url, 'http://127.0.0.1:10808');
   assert.equal(merged.llm_api_presets[0].url, 'https://a/v1');
   assert.equal(merged.llm_api_presets[0].key, 'sk-preset-1');
+  assert.equal(merged.llm_api_presets[0].model, 'm', '预设模型从 .env 回填');
   assert.equal(merged.llm_api_presets[1].key, 'sk-preset-2');
   assert.equal(merged.steps, 28);
 
@@ -158,10 +168,13 @@ test('secretsToEnv 与 envToSecrets 往返一致', () => {
 
   assert.equal(roundTrip.llm_url, secrets.llm_url);
   assert.equal(roundTrip.llm_key, secrets.llm_key);
+  assert.equal(roundTrip.llm_model, 'some-model', '模型名往返一致');
+  assert.equal(roundTrip.nai_model, 'nai-diffusion-4-5-full');
   assert.equal(roundTrip.nai_token, secrets.nai_token);
   assert.equal(roundTrip.proxy_url, secrets.proxy_url);
   assert.equal(roundTrip.llm_api_presets.P1.url, 'https://a/v1', 'env 变量名大写，读回后按 id 大小写不敏感匹配');
   assert.equal(roundTrip.llm_api_presets.P1.key, 'sk-preset-1');
+  assert.equal(roundTrip.llm_api_presets.P1.model, 'm', '预设模型名同样进 .env');
 });
 
 test('resolveEnvPath 与主配置同目录', () => {
@@ -171,7 +184,7 @@ test('resolveEnvPath 与主配置同目录', () => {
   assert.equal(path.basename(resolveSecretsPath(configPath)), SECRETS_FILENAME);
 });
 
-test('writeConfig 落盘：主文件无端点无密钥，.env 有', async () => {
+test('writeConfig 落盘：主文件无端点无密钥无模型，.env 有', async () => {
   const dir = await makeTempDir();
   const configPath = path.join(dir, 'illustrator_config.json');
 
@@ -183,8 +196,11 @@ test('writeConfig 落盘：主文件无端点无密钥，.env 有', async () => 
 
   assert.equal(publicRaw.llm_key, '');
   assert.equal(publicRaw.llm_url, '');
+  assert.equal(publicRaw.llm_model, '', '模型名不进主配置');
+  assert.equal(publicRaw.nai_model, '', 'NAI 模型同样不进主配置');
   assert.equal(publicRaw.llm_api_presets[0].url, '');
   assert.equal(publicRaw.llm_api_presets[0].key, '');
+  assert.equal(publicRaw.llm_api_presets[0].model, '', '预设模型不进主配置');
   assert.equal(publicRaw.steps, 28);
 
   // 主文件里不得出现任何端点或密钥明文
@@ -194,9 +210,12 @@ test('writeConfig 落盘：主文件无端点无密钥，.env 有', async () => 
 
   assert.ok(envText.includes('LLM_URL=https://api.example.com/v1'));
   assert.ok(envText.includes('LLM_KEY=sk-top-secret'));
+  assert.ok(envText.includes('LLM_MODEL=some-model'), '模型名写进 .env');
+  assert.ok(envText.includes('NAI_MODEL=nai-diffusion-4-5-full'));
   assert.ok(envText.includes('NAI_TOKEN=pst-nai-secret'));
   assert.ok(envText.includes('LLM_PRESET_P1_URL=https://a/v1'));
   assert.ok(envText.includes('LLM_PRESET_P1_KEY=sk-preset-1'));
+  assert.ok(envText.includes('LLM_PRESET_P1_MODEL=m'), '预设模型名写进 .env');
 });
 
 test('writeConfig 不会因为这次没带值就把 .env 里的旧值抹掉', async () => {
@@ -228,9 +247,11 @@ test('readConfig 从 .env 合并完整配置', async () => {
 
   assert.equal(merged.llm_url, 'https://api.example.com/v1');
   assert.equal(merged.llm_key, 'sk-top-secret');
+  assert.equal(merged.llm_model, 'some-model');
   assert.equal(merged.nai_token, 'pst-nai-secret');
   assert.equal(merged.nai_url, 'https://image.novelai.net');
   assert.equal(merged.llm_api_presets[1].key, 'sk-preset-2', '预设 id 大小写不同也能对上');
+  assert.equal(merged.llm_api_presets[1].model, 'm', '预设模型同样从 .env 读回');
 });
 
 test('readConfig 迁移旧版 secrets.json 到 .env 并删除旧文件', async () => {
@@ -288,8 +309,17 @@ test('readConfig 对不含敏感字段的配置不创建 .env', async () => {
   await assert.rejects(fs.readFile(path.join(dir, ENV_FILENAME)), '不应创建空 .env');
 });
 
-test('SECRET_FIELDS 与 ENDPOINT_FIELDS 不重叠', () => {
+test('SECRET_FIELDS、ENDPOINT_FIELDS 与 MODEL_FIELDS 互不重叠', () => {
   const overlap = SECRET_FIELDS.filter(field => ENDPOINT_FIELDS.includes(field));
   assert.deepEqual(overlap, []);
-  assert.equal(SENSITIVE_FIELDS.length, SECRET_FIELDS.length + ENDPOINT_FIELDS.length);
+  const modelOverlap = MODEL_FIELDS.filter(field => SECRET_FIELDS.includes(field) || ENDPOINT_FIELDS.includes(field));
+  assert.deepEqual(modelOverlap, [], '模型字段不能与密钥/端点字段重合');
+  assert.deepEqual([...MODEL_FIELDS].sort(), [
+    'llm_character_dna_model', 'llm_model', 'llm_nai_tags_model', 'llm_scene_model',
+    'llm_trim_model', 'nai_model'
+  ].sort());
+  assert.equal(
+    SENSITIVE_FIELDS.length,
+    SECRET_FIELDS.length + ENDPOINT_FIELDS.length + MODEL_FIELDS.length
+  );
 });

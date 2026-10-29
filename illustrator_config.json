@@ -1,7 +1,7 @@
 {
     "llm_url": "",
     "llm_key": "",
-    "llm_model": "cline-pass/deepseek-v4.1-flash",
+    "llm_model": "",
     "llm_preset_id": "",
     "llm_stream_enabled": true,
     "llm_rate_limit_enabled": false,
@@ -10,76 +10,76 @@
         {
             "id": "1781579277070",
             "name": "vps",
-            "url": "",
-            "model": "流式抗截断/gemini-3.1-flash-lite-preview-medium",
             "rateLimitEnabled": false,
             "rateLimitRpm": 3,
-            "key": ""
+            "url": "",
+            "key": "",
+            "model": ""
         },
         {
             "id": "1781579481624",
             "name": "moyii",
-            "url": "",
-            "model": "deepseek-v4-flash",
             "rateLimitEnabled": true,
             "rateLimitRpm": 3,
-            "key": ""
+            "url": "",
+            "key": "",
+            "model": ""
         },
         {
             "id": "1781584535476",
             "name": "ggcli",
-            "url": "",
-            "model": "假流式-gemini-3-flash-preview",
             "rateLimitEnabled": false,
             "rateLimitRpm": 3,
-            "key": ""
+            "url": "",
+            "key": "",
+            "model": ""
         },
         {
             "id": "1781756441932",
             "name": "ds",
-            "url": "",
-            "model": "deepseek-v4-flash",
             "rateLimitEnabled": false,
             "rateLimitRpm": 3,
-            "key": ""
+            "url": "",
+            "key": "",
+            "model": ""
         },
         {
             "id": "1781840705676",
             "name": "mimo",
-            "url": "",
-            "model": "mimo-v2.5",
             "rateLimitEnabled": false,
             "rateLimitRpm": 3,
-            "key": ""
+            "url": "",
+            "key": "",
+            "model": ""
         },
         {
             "id": "1781941619230",
             "name": "mimo",
-            "url": "",
-            "model": "mimo-v2.5",
             "rateLimitEnabled": false,
             "rateLimitRpm": 3,
-            "key": ""
+            "url": "",
+            "key": "",
+            "model": ""
         }
     ],
     "llm_character_dna_url": "",
     "llm_character_dna_key": "",
-    "llm_character_dna_model": "cline-pass/deepseek-v4.1-flash",
+    "llm_character_dna_model": "",
     "llm_character_dna_preset_id": "",
     "llm_scene_url": "",
     "llm_scene_key": "",
-    "llm_scene_model": "cline-pass/deepseek-v4.1-flash",
+    "llm_scene_model": "",
     "llm_scene_preset_id": "",
     "llm_nai_tags_url": "",
     "llm_nai_tags_key": "",
-    "llm_nai_tags_model": "cline-pass/deepseek-v4.1-flash",
+    "llm_nai_tags_model": "",
     "llm_nai_tags_preset_id": "",
     "llm_trim_url": "",
     "llm_trim_key": "",
     "llm_trim_model": "",
     "llm_trim_preset_id": "1781941619230",
     "nai_token": "",
-    "nai_model": "nai-diffusion-4-5-full",
+    "nai_model": "",
     "nai_cooldown_seconds": 15,
     "steps": 28,
     "scale": 5.5,

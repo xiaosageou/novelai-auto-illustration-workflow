@@ -35,8 +35,22 @@ export const ENDPOINT_FIELDS = [
   'proxy_url'
 ];
 
+/**
+ * 模型名字段：同样不允许进可入库配置。
+ * 模型名会直接暴露「用的是哪家的哪条渠道」（例如 cline-pass/xxx、假流式-gemini-xxx），
+ * 属于接口细节，跟着端点和密钥一起走 .env。
+export */
+export const MODEL_FIELDS = [
+  'llm_model',
+  'llm_character_dna_model',
+  'llm_scene_model',
+  'llm_nai_tags_model',
+  'llm_trim_model',
+  'nai_model'
+];
+
 /** 需要从公开配置里清空的全部字段 */
-export const SENSITIVE_FIELDS = [...SECRET_FIELDS, ...ENDPOINT_FIELDS];
+export const SENSITIVE_FIELDS = [...SECRET_FIELDS, ...ENDPOINT_FIELDS, ...MODEL_FIELDS];
 
 /** 旧版 json 密钥文件（仅迁移用） */
 export const SECRETS_FILENAME = 'illustrator_config.secrets.json';
@@ -143,7 +157,7 @@ export function envToSecrets(env = {}) {
 
   const presets = {};
   for (const [key, value] of Object.entries(env)) {
-    const match = key.match(/^LLM_PRESET_(.+)_(URL|KEY)$/);
+    const match = key.match(/^LLM_PRESET_(.+)_(URL|KEY|MODEL)$/);
     if (!match || !value) continue;
     const id = match[1];
     const field = match[2].toLowerCase();
@@ -165,7 +179,7 @@ export function secretsToEnv(secrets = {}) {
     for (const [id, entry] of Object.entries(presets)) {
       if (!entry) continue;
       const values = typeof entry === 'string' ? { key: entry } : entry;
-      for (const field of ['url', 'key']) {
+      for (const field of ['url', 'key', 'model']) {
         const value = values[field];
         if (typeof value === 'string' && value) env[presetEnvKey(id, field)] = value;
       }
@@ -175,8 +189,8 @@ export function secretsToEnv(secrets = {}) {
 }
 
 /**
- * 把完整配置拆成「可公开」与「端点 + 密钥」两部分。
- * 公开部分里 SENSITIVE_FIELDS 一律留空，presets 只保留 id/name/model/限流参数。
+ * 把完整配置拆成「可公开」与「端点 + 密钥 + 模型」两部分。
+ * 公开部分里 SENSITIVE_FIELDS 一律留空，presets 只保留 id/name/限流参数。
  */
 export function splitConfig(config = {}) {
   const publicConfig = { ...config };
@@ -194,12 +208,13 @@ export function splitConfig(config = {}) {
     const presetSecrets = {};
     publicConfig.llm_api_presets = config.llm_api_presets.map(preset => {
       if (!preset || typeof preset !== 'object') return preset;
-      const { key, url, ...rest } = preset;
+      const { key, url, model, ...rest } = preset;
       const entry = {};
       if (typeof url === 'string' && url.trim()) entry.url = url;
       if (typeof key === 'string' && key.trim()) entry.key = key;
+      if (typeof model === 'string' && model.trim()) entry.model = model;
       if (preset.id && Object.keys(entry).length) presetSecrets[preset.id] = entry;
-      return { ...rest, url: '', key: '' };
+      return { ...rest, url: '', key: '', model: '' };
     });
     if (Object.keys(presetSecrets).length) {
       secrets.llm_api_presets = presetSecrets;
@@ -237,7 +252,7 @@ function lookupPresetSecret(presetSecrets = {}, id) {
 }
 
 /**
- * 把公开配置与端点/密钥合并回完整配置。secrets 优先，缺失时回落到公开配置里的残留值。
+ * 把公开配置与端点/密钥/模型合并回完整配置。secrets 优先，缺失时回落到公开配置里的残留值。
  */
 export function mergeConfig(publicConfig = {}, secrets = {}) {
   const merged = { ...publicConfig };
@@ -257,7 +272,8 @@ export function mergeConfig(publicConfig = {}, secrets = {}) {
       return {
         ...preset,
         url: typeof entry.url === 'string' && entry.url ? entry.url : (preset.url || ''),
-        key: typeof entry.key === 'string' && entry.key ? entry.key : (preset.key || '')
+        key: typeof entry.key === 'string' && entry.key ? entry.key : (preset.key || ''),
+        model: typeof entry.model === 'string' && entry.model ? entry.model : (preset.model || '')
       };
     });
   }
