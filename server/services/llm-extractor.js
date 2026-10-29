@@ -1013,7 +1013,7 @@ function getRateLimiter({ enabled = true, rpm = 3, key = 'default' } = {}) {
   return llmRateLimiterRegistry.get(limiterKey);
 }
 
-export async function postChatCompletionWith429Retry({ url, headers, payload, idleTimeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null, signal = null }) {
+export async function postChatCompletionWith429Retry({ url, headers, payload, idleTimeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null, signal = null, failover = null }) {
   // 出站正文脱敏：小说原文 / 场景描述里「十五岁的少女」「她才 15 岁」这类未成年年龄表达
   // 在发请求前物理删除，生成 prompt 的 LLM 看不到；18 岁及以上原样保留。
   // 幂等，重试安全；不改动调用方 payload。
@@ -1023,7 +1023,34 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
     err.name = "AbortError";
     throw err;
   }
-  const limiter = rateLimit ? getRateLimiter(rateLimit) : null;
+
+  // 预设故障转移：当前连接 429/500 重试耗尽、或请求直接抛网络异常时，
+  // 按「LLM API 预设」在配置里的顺序切到下一个连接，用同一份 payload 重试。
+  // failover.next() 由 LLMExtractor 提供，返回 null 表示队列里没有更多可切换的预设。
+  let activeUrl = url;
+  let activeHeaders = headers;
+  let activeRateLimit = rateLimit;
+  const tryFailover = (reason) => {
+    if (!failover || typeof failover.next !== 'function') return null;
+    let next = null;
+    try {
+      next = failover.next({ reason });
+    } catch (switchError) {
+      console.warn(`${logPrefix} 预设切换异常: ${switchError.message}`);
+      return null;
+    }
+    if (!next) return null;
+    if (next.url) activeUrl = next.url;
+    if (next.headers) activeHeaders = next.headers;
+    if (next.rateLimit !== undefined) activeRateLimit = next.rateLimit;
+    if (next.model && safePayload && typeof safePayload === 'object') {
+      safePayload.model = next.model;
+    }
+    console.warn(`${logPrefix} ${reason}，自动切换到下一个预设${next.label ? `：${next.label}` : ''}，继续重试`);
+    return next;
+  };
+
+  let limiter = activeRateLimit ? getRateLimiter(activeRateLimit) : null;
   if (limiter) {
     await limiter.acquire();
     if (signal?.aborted) {
@@ -1049,9 +1076,9 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
 
     try {
       const streamEnabled = safePayload?.stream !== false;
-      const res = await fetch(url, {
+      const res = await fetch(activeUrl, {
         method: "POST",
-        headers,
+        headers: activeHeaders,
         body: JSON.stringify({ ...safePayload, stream: streamEnabled }),
         signal: controller.signal
       });
@@ -1068,6 +1095,13 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
 
       if (attempt >= max429Retries) {
         const status = res.status;
+        const switched = tryFailover(`LLM 返回 ${status}，${max429Retries} 次重试已耗尽`);
+        if (switched) {
+          limiter = activeRateLimit ? getRateLimiter(activeRateLimit) : null;
+          await limiter?.acquire();
+          attempt = -1; // 换连接后重新计数
+          continue;
+        }
         const error = new Error(`LLM 返回 ${status}，已重试 ${max429Retries} 次仍失败`);
         error.code = isRateLimited ? "LLM_429_EXHAUSTED" : "LLM_SERVER_ERROR_EXHAUSTED";
         error.status = status;
@@ -1085,6 +1119,16 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
       limiter?.notify429(delaySeconds * 1000);
 
       await waitMs(delaySeconds * 1000, signal);
+    } catch (requestError) {
+      if (signal?.aborted || requestError?.name === 'AbortError') throw requestError;
+      const switched = tryFailover(`请求异常 ${requestError?.message || requestError}`);
+      if (switched) {
+        limiter = activeRateLimit ? getRateLimiter(activeRateLimit) : null;
+        await limiter?.acquire();
+        attempt = -1; // 换连接后重新计数
+        continue;
+      }
+      throw requestError;
     } finally {
       if (signal) signal.removeEventListener('abort', forwardAbort);
     }
@@ -1587,7 +1631,7 @@ function buildSceneExtractionUserContent({
 }
 
 export class LLMExtractor {
-  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", streamEnabled = true, rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "", maxRetries = DEFAULT_LLM_MAX_RETRIES, max429Retries = DEFAULT_LLM_429_MAX_RETRIES, retryDelayMs = 5000 } = {}) {
+  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", streamEnabled = true, rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "", maxRetries = DEFAULT_LLM_MAX_RETRIES, max429Retries = DEFAULT_LLM_429_MAX_RETRIES, retryDelayMs = 5000, failoverChain = [], failoverEnabled = true } = {}) {
     this.baseUrl = baseUrl.trim().replace(/\/+$/, "");
     this.apiKey = apiKey.trim();
     this.system_prompt_extract_scenes = system_prompt_extract_scenes;
@@ -1606,6 +1650,98 @@ export class LLMExtractor {
     this.max429Retries = clampLlmRetries(max429Retries, DEFAULT_LLM_429_MAX_RETRIES, 0, LLM_429_MAX_RETRIES_CEILING);
     this.retryDelayMs = Number.isFinite(Number(retryDelayMs)) ? Math.max(0, Number(retryDelayMs)) : 5000;
     this.activeControllers = new Set();
+
+    // 预设故障转移：failoverChain 是「当前预设打头、按全局配置顺序排列」的连接队列。
+    // 前端排序即优先级；当前连接连续失败时自动排到下一个。
+    this.failoverEnabled = failoverEnabled !== false;
+    this.setFailoverChain(failoverChain);
+  }
+
+  /** 更新故障转移队列（配置热更新时调用） */
+  setFailoverChain(chain = []) {
+    const list = (Array.isArray(chain) ? chain : [])
+      .map(item => ({
+        ...item,
+        baseUrl: String(item?.baseUrl || '').trim().replace(/\/+$/, ''),
+        apiKey: String(item?.apiKey || '').trim(),
+        model: String(item?.model || '').trim(),
+        rateLimitEnabled: item?.rateLimitEnabled !== false,
+        rateLimitRpm: Number(item?.rateLimitRpm) || 3,
+        rateLimitKey: String(item?.rateLimitKey || `preset:${item?.id || 'unknown'}`),
+        label: item?.label || item?.id || '预设'
+      }))
+      .filter(item => Boolean(item.baseUrl));
+    this.failoverChain = list;
+    // 把当前正在使用的连接对齐到队列首位，保证「下一个」是用户排好的下一位
+    const currentIndex = list.findIndex(item => item.baseUrl === this.baseUrl && item.apiKey === this.apiKey);
+    this.failoverCursor = currentIndex >= 0 ? currentIndex : 0;
+    this.businessFailoverBudget = Math.max(0, list.length - 1);
+  }
+
+  /**
+   * 切换到队列里的下一个连接。
+   * 返回切换后的连接信息；队列不足 2 个或禁用时返回 null。
+   */
+  _rotateConnection(reason = '') {
+    if (this.failoverEnabled === false) return null;
+    const chain = this.failoverChain;
+    if (!Array.isArray(chain) || chain.length < 2) return null;
+    this.failoverCursor = (Number(this.failoverCursor) + 1) % chain.length;
+    const next = chain[this.failoverCursor];
+    if (!next || !next.baseUrl) return null;
+    this.baseUrl = next.baseUrl;
+    this.apiKey = next.apiKey;
+    this.rateLimitEnabled = next.rateLimitEnabled !== false;
+    this.rateLimitRpm = Number(next.rateLimitRpm) || 3;
+    this.rateLimitKey = next.rateLimitKey;
+    if (reason) {
+      console.warn(`[LLM Extractor] ${reason}，自动切换到下一个 LLM 预设: ${next.label}`);
+    }
+    return next;
+  }
+
+  /** 单次请求内的故障转移控制器：一圈内不重复回切 */
+  buildFailoverController() {
+    if (this.failoverEnabled === false) return null;
+    const total = Array.isArray(this.failoverChain) ? this.failoverChain.length : 0;
+    if (total < 2) return null;
+    let remaining = total - 1;
+    return {
+      next: ({ reason } = {}) => {
+        if (remaining <= 0) return null;
+        const next = this._rotateConnection(reason);
+        if (!next) return null;
+        remaining -= 1;
+        return {
+          url: `${next.baseUrl}/chat/completions`,
+          headers: next.apiKey
+            ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${next.apiKey}` }
+            : { 'Content-Type': 'application/json' },
+          rateLimit: {
+            enabled: next.rateLimitEnabled !== false,
+            rpm: Number(next.rateLimitRpm) || 3,
+            key: next.rateLimitKey
+          },
+          model: next.model || undefined,
+          label: next.label
+        };
+      }
+    };
+  }
+
+  /** 业务层（JSON 解析/数量不符/空返回）连续失败时切下一个预设；预算用完返回 false */
+  _switchOnBusinessFailure(reason = '') {
+    if (this.businessFailoverBudget <= 0) return false;
+    const next = this._rotateConnection(reason);
+    if (!next) return false;
+    this.businessFailoverBudget -= 1;
+    return true;
+  }
+
+  /** 统一出口：自动挂上预设故障转移控制器 */
+  async postChatCompletion(options = {}) {
+    const failover = options.failover === undefined ? this.buildFailoverController() : options.failover;
+    return postChatCompletionWith429Retry({ ...options, failover });
   }
 
   abortAll() {
@@ -1636,6 +1772,12 @@ export class LLMExtractor {
     if (rateLimitKey !== undefined) this.rateLimitKey = String(rateLimitKey || "default");
     if (maxRetries !== undefined) this.maxRetries = clampLlmRetries(maxRetries, this.maxRetries, 1, LLM_MAX_RETRIES_CEILING);
     if (max429Retries !== undefined) this.max429Retries = clampLlmRetries(max429Retries, this.max429Retries, 0, LLM_429_MAX_RETRIES_CEILING);
+  }
+
+  /** 热更新故障转移开关与队列 */
+  updateFailoverConfig({ failoverChain, failoverEnabled } = {}) {
+    if (failoverEnabled !== undefined) this.failoverEnabled = failoverEnabled !== false;
+    if (failoverChain !== undefined) this.setFailoverChain(failoverChain);
   }
 
   getRateLimitConfig() {
@@ -1760,7 +1902,7 @@ export class LLMExtractor {
             ? { ...message, content: `${message.content}\n\n${buildRetryUserMessage(lastError?.message || '上一轮输出不完整')}` }
             : message)
         };
-        const res = await postChatCompletionWith429Retry({
+        const res = await this.postChatCompletion({
           url,
           headers: this.getHeaders(),
           payload: this.withStreamPreference(attemptPayload),
@@ -1807,6 +1949,11 @@ export class LLMExtractor {
         lastError = error;
         if (error?.code === 'LLM_429_EXHAUSTED') {
           break;
+        }
+        if (this._switchOnBusinessFailure(`场景提炼失败: ${error.message}`)) {
+          onProgressLog?.(`[LLM] 已自动切换到下一个 LLM 预设重新提炼`, "warning");
+          attempt = 0;
+          continue;
         }
         if (attempt < this.maxRetries) {
           onProgressLog?.(`[LLM] 第 ${attempt}/${this.maxRetries} 次场景提炼失败，优先重试: ${error.message}`, "warning");
@@ -1900,7 +2047,7 @@ export class LLMExtractor {
 
         try {
           const streamLogger = createThrottledStreamLogger(onProgressLog, '[LLM]');
-          const res = await postChatCompletionWith429Retry({
+          const res = await this.postChatCompletion({
             url,
             headers: this.getHeaders(),
             payload: this.withStreamPreference(payload),
@@ -1939,6 +2086,10 @@ export class LLMExtractor {
           lastError = error;
           if (error?.code === 'LLM_429_EXHAUSTED') {
             break;
+          }
+          if (this._switchOnBusinessFailure(`单场景描述重构失败: ${error.message}`)) {
+            attempt = 0;
+            continue;
           }
           if (attempt < this.maxRetries) {
             console.warn(`[LLM Extractor] 单场景描述重构第 ${attempt}/${this.maxRetries} 次失败，优先重试（下一次使用精简上下文）: ${error.message}`);
@@ -2029,7 +2180,7 @@ export class LLMExtractor {
 
       try {
         const streamLogger = createThrottledStreamLogger(onProgressLog, '[LLM]');
-        const res = await postChatCompletionWith429Retry({
+        const res = await this.postChatCompletion({
           url,
           headers: this.getHeaders(),
           payload: this.withStreamPreference(payload),
@@ -2076,6 +2227,10 @@ export class LLMExtractor {
         lastError = error;
         if (error?.code === 'LLM_429_EXHAUSTED') {
           break;
+        }
+        if (this._switchOnBusinessFailure(`正文选段批量重构失败: ${error.message}`)) {
+          attempt = 0;
+          continue;
         }
         if (attempt < this.maxRetries) {
           console.warn(`[LLM Extractor] 正文选段批量重构第 ${attempt}/${this.maxRetries} 次失败，优先重试（下一次使用精简上下文）: ${error.message}`);
@@ -2155,7 +2310,7 @@ export class LLMExtractor {
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       try {
         const streamLogger = createThrottledStreamLogger(progressCb, '[角色 DNA 提炼]');
-      const res = await postChatCompletionWith429Retry({
+      const res = await this.postChatCompletion({
         url,
         headers: this.getHeaders(),
         payload: this.withStreamPreference(payload),
@@ -2218,6 +2373,11 @@ export class LLMExtractor {
         console.error(`[LLM Extractor] 提取角色 DNA 第 ${attempt}/${this.maxRetries} 次失败:`, error);
         if (error?.code === 'LLM_429_EXHAUSTED') {
           break;
+        }
+        if (this._switchOnBusinessFailure(`角色 DNA 提炼失败: ${error.message}`)) {
+          progressCb?.(`[角色 DNA 提炼] 已自动切换到下一个 LLM 预设重试`, 'warning');
+          attempt = 0;
+          continue;
         }
         if (attempt < this.maxRetries) {
           const waitMs = Math.max(0, Number(this.retryDelayMs) || 0) * attempt;
@@ -2565,7 +2725,7 @@ export class LLMExtractor {
 
         try {
           const streamLogger = createThrottledStreamLogger(onProgressLog, '[LLM]');
-          const res = await postChatCompletionWith429Retry({
+          const res = await this.postChatCompletion({
             url,
             headers: this.getHeaders(),
             payload: this.withStreamPreference(attemptPayload),
@@ -2778,6 +2938,11 @@ export class LLMExtractor {
           if (attemptError?.code === 'LLM_429_EXHAUSTED') {
             break;
           }
+          if (this._switchOnBusinessFailure(`参数生成失败: ${attemptError.message}`)) {
+            onProgressLog?.(`[LLM] 已自动切换到下一个 LLM 预设重新生成参数`, "warning");
+            attempt = 0;
+            continue;
+          }
           if (attempt < this.maxRetries) {
             onProgressLog?.(
               `[LLM] 第 ${attempt}/${this.maxRetries} 次参数生成失败，优先重试（下一次使用精简上下文）: ${attemptError.message}`,
@@ -2856,7 +3021,7 @@ export class LLMExtractor {
     };
 
     try {
-      const res = await postChatCompletionWith429Retry({
+      const res = await this.postChatCompletion({
         url,
         headers: this.getHeaders(),
         payload: this.withStreamPreference(payload),

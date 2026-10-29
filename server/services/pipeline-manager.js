@@ -137,6 +137,41 @@ export function resolveTaskLlmConfig(config = {}, task = 'scene') {
   };
 }
 
+/**
+ * 构建某个任务的 LLM 预设故障转移队列。
+ *
+ * 队列顺序就是前端「API 预设」列表的排序：当前生效的预设排在第一位，
+ * 往后依次是它在列表里的下一位（到底后从列表头部继续绕回一圈）。
+ * 当前请求连续失败时，LLMExtractor 会自动排到下一个连接。
+ *
+ * @param {object} config 全局配置
+ * @param {string} task   任务类型（scene / characterDna / naiTags）
+ * @returns {Array<{id,label,baseUrl,apiKey,model,rateLimitEnabled,rateLimitRpm,rateLimitKey}>}
+ */
+export function resolveTaskLlmChain(config = {}, task = 'scene') {
+  if (config?.llm_failover_enabled === false) return [];
+  const presets = normalizePresetList(config.llm_api_presets)
+    .filter(preset => String(preset?.url || '').trim());
+  if (presets.length < 2) return [];
+
+  const active = resolveTaskLlmConfig(config, task);
+  const activeIndex = presets.findIndex(preset => `preset:${preset.id}` === active.rateLimitKey);
+  const ordered = activeIndex >= 0
+    ? [...presets.slice(activeIndex), ...presets.slice(0, activeIndex)]
+    : presets;
+
+  return ordered.map(preset => ({
+    id: preset.id,
+    label: `${preset.name || preset.id}(${preset.model || '未填模型'})`,
+    baseUrl: String(preset.url || '').trim().replace(/\/+$/, ''),
+    apiKey: String(preset.key || '').trim(),
+    model: String(preset.model || '').trim(),
+    rateLimitEnabled: preset.rateLimitEnabled !== false,
+    rateLimitRpm: Number(preset.rateLimitRpm) || 3,
+    rateLimitKey: `preset:${preset.id}`
+  })).filter(item => Boolean(item.baseUrl));
+}
+
 export class PipelineManager {
   constructor(config = {}) {
     this.config = config;
@@ -246,7 +281,9 @@ export class PipelineManager {
       max429Retries: retryLimits.max429Retries,
       trimUrl: trimConnection.baseUrl,
       trimKey: trimConnection.apiKey,
-      trimModel: trimConnection.model
+      trimModel: trimConnection.model,
+      failoverChain: resolveTaskLlmChain(this.config, task),
+      failoverEnabled: this.config.llm_failover_enabled !== false
     });
   }
 

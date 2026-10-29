@@ -97,6 +97,7 @@ function App() {
     llm_rate_limit_rpm: 3,
     llm_max_retries: 3,
     llm_429_max_retries: 5,
+    llm_failover_enabled: true,
     llm_api_presets: [],
     llm_character_dna_url: "",
     llm_character_dna_key: "",
@@ -137,6 +138,8 @@ function App() {
     system_prompt_advanced_prompt_nl: ""
   });
   const [newArtistPresetName, setNewArtistPresetName] = useState('');
+  // LLM API 预设：内联编辑草稿（null 表示没有正在编辑的卡片）
+  const [llmPresetDraft, setLlmPresetDraft] = useState(null);
 
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState("");
@@ -917,6 +920,7 @@ function App() {
       setConfig({
         ...data,
         llm_stream_enabled: data.llm_stream_enabled !== false,
+        llm_failover_enabled: data.llm_failover_enabled !== false,
         llm_rate_limit_enabled: data.llm_rate_limit_enabled !== false,
         llm_rate_limit_rpm: Number(data.llm_rate_limit_rpm) || 3,
         llm_max_retries: Number(data.llm_max_retries) >= 1 ? Math.min(10, Math.floor(Number(data.llm_max_retries))) : 3,
@@ -5164,58 +5168,143 @@ function App() {
                           type="button"
                           className="btn-secondary"
                           onClick={() => {
-                            const presets = config.llm_api_presets || [];
-                            const selectToDelete = prompt("请输入要删除的预设名称 (或输入 'all' 清空所有)：");
-                            if (!selectToDelete || !selectToDelete.trim()) return;
-                            if (selectToDelete.trim().toLowerCase() === 'all') {
-                              if (confirm("确定要清空所有的 API 预设吗？")) {
-                                setConfig({ ...config, llm_api_presets: [] });
-                              }
-                              return;
-                            }
-                            const updated = presets.filter(p => p.name !== selectToDelete.trim());
-                            if (updated.length === presets.length) {
-                              alert("没有找到该预设！");
-                            } else {
-                              setConfig({ ...config, llm_api_presets: updated });
-                            }
+                            if (!confirm("确定要清空所有的 API 预设吗？")) return;
+                            setLlmPresetDraft(null);
+                            setConfig({ ...config, llm_api_presets: [] });
                           }}
                           style={{ whiteSpace: 'nowrap', padding: '8px 12px', fontSize: '0.8rem', cursor: 'pointer', color: '#ff4d4f' }}
                         >
-                          删除
+                          清空全部
                         </button>
                       )}
                     </div>
                   </div>
                   {(config.llm_api_presets || []).length > 0 && (
                     <div style={{ display: 'grid', gap: '8px', marginTop: '-2px' }}>
-                      {(config.llm_api_presets || []).map(rawPreset => {
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                          顺序即优先级：#1 优先使用，当前预设连续失败（429 / 500 / 网络异常 / 多次解析失败）后自动排到下一位。
+                        </div>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                          <input
+                            type="checkbox"
+                            checked={config.llm_failover_enabled !== false}
+                            onChange={(e) => setConfig({ ...config, llm_failover_enabled: e.target.checked })}
+                          />
+                          LLM 一直失败时自动切换下一个预设
+                        </label>
+                      </div>
+                      {(config.llm_api_presets || []).map((rawPreset, presetIndex) => {
                         const preset = normalizePreset(rawPreset);
+                        const presetTotal = (config.llm_api_presets || []).length;
+                        const isEditing = llmPresetDraft?.id === preset.id;
+                        const isActivePreset = String(config.llm_preset_id || '') === String(preset.id);
+                        const movePreset = (direction) => {
+                          setConfig(prev => {
+                            const list = [...(prev.llm_api_presets || [])];
+                            const targetIndex = presetIndex + direction;
+                            if (targetIndex < 0 || targetIndex >= list.length) return prev;
+                            const temp = list[presetIndex];
+                            list[presetIndex] = list[targetIndex];
+                            list[targetIndex] = temp;
+                            return { ...prev, llm_api_presets: list };
+                          });
+                        };
+                        const deletePreset = () => {
+                          if (!confirm(`确定删除 API 预设「${preset.name}」？`)) return;
+                          setConfig(prev => ({
+                            ...prev,
+                            llm_api_presets: (prev.llm_api_presets || []).filter(item => item.id !== preset.id)
+                          }));
+                          if (llmPresetDraft?.id === preset.id) setLlmPresetDraft(null);
+                        };
                         return (
-                          <div key={preset.id} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px', padding: '10px', background: 'rgba(0,0,0,0.18)' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', marginBottom: '8px', alignItems: 'center' }}>
-                              <div style={{ color: 'white', fontSize: '0.85rem', fontWeight: 600 }}>
-                                {preset.name} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>({preset.model || '未填模型'})</span>
+                          <div key={preset.id} style={{ border: `1px solid ${isActivePreset ? 'rgba(255,105,180,0.45)' : 'rgba(255,255,255,0.08)'}`, borderRadius: '8px', padding: '10px', background: 'rgba(0,0,0,0.18)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', marginBottom: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                              <div style={{ color: 'white', fontSize: '0.85rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.06)', borderRadius: '4px', padding: '1px 6px' }}>#{presetIndex + 1}</span>
+                                {preset.name}
+                                <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>({preset.model || '未填模型'})</span>
+                                {isActivePreset && <span style={{ fontSize: '0.68rem', color: 'var(--color-pink)' }}>当前默认</span>}
                               </div>
-                              <button
-                                type="button"
-                                className="btn-secondary"
-                                onClick={() => {
-                                  setConfig({
-                                    ...config,
-                                    llm_preset_id: preset.id,
-                                    llm_url: preset.url || "",
-                                    llm_key: preset.key || "",
-                                    llm_model: preset.model || "",
-                                    llm_rate_limit_enabled: preset.rateLimitEnabled !== false,
-                                    llm_rate_limit_rpm: Number(preset.rateLimitRpm) || 3
-                                  });
-                                }}
-                                style={{ padding: '4px 10px', fontSize: '0.75rem' }}
-                              >
-                                载入为默认
-                              </button>
+                              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
+                                  onClick={() => movePreset(-1)}
+                                  disabled={presetIndex === 0}
+                                  title="上移（优先级提升）"
+                                  style={{ padding: '4px 8px', fontSize: '0.75rem', opacity: presetIndex === 0 ? 0.35 : 1, cursor: presetIndex === 0 ? 'not-allowed' : 'pointer' }}
+                                >
+                                  ↑
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
+                                  onClick={() => movePreset(1)}
+                                  disabled={presetIndex === presetTotal - 1}
+                                  title="下移（优先级降低）"
+                                  style={{ padding: '4px 8px', fontSize: '0.75rem', opacity: presetIndex === presetTotal - 1 ? 0.35 : 1, cursor: presetIndex === presetTotal - 1 ? 'not-allowed' : 'pointer' }}
+                                >
+                                  ↓
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
+                                  onClick={() => {
+                                    if (isEditing) {
+                                      setLlmPresetDraft(null);
+                                      return;
+                                    }
+                                    setLlmPresetDraft({
+                                      id: preset.id,
+                                      name: preset.name || '',
+                                      url: preset.url || '',
+                                      key: preset.key || '',
+                                      model: preset.model || '',
+                                      rateLimitEnabled: preset.rateLimitEnabled !== false,
+                                      rateLimitRpm: Number(preset.rateLimitRpm) || 3
+                                    });
+                                  }}
+                                  style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                                >
+                                  {isEditing ? '取消' : '修改'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
+                                  onClick={deletePreset}
+                                  style={{ padding: '4px 10px', fontSize: '0.75rem', color: '#ff4d4f' }}
+                                >
+                                  删除
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
+                                  onClick={() => {
+                                    setConfig({
+                                      ...config,
+                                      llm_preset_id: preset.id,
+                                      llm_url: preset.url || "",
+                                      llm_key: preset.key || "",
+                                      llm_model: preset.model || "",
+                                      llm_rate_limit_enabled: preset.rateLimitEnabled !== false,
+                                      llm_rate_limit_rpm: Number(preset.rateLimitRpm) || 3
+                                    });
+                                  }}
+                                  style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                                >
+                                  载入为默认
+                                </button>
+                              </div>
                             </div>
+                            {!isEditing && (
+                              <div style={{ display: 'flex', gap: '12px', fontSize: '0.72rem', color: 'var(--text-muted)', flexWrap: 'wrap', marginBottom: '8px' }}>
+                                <span>URL: {preset.url || '未填'}</span>
+                                <span>Key: {preset.key ? `${String(preset.key).slice(0, 4)}***${String(preset.key).slice(-4)}` : '未填'}</span>
+                              </div>
+                            )}
+                            {!isEditing && (
                             <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '10px', alignItems: 'end' }}>
                               <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
                                 <input
@@ -5250,6 +5339,103 @@ function App() {
                                 />
                               </label>
                             </div>
+                            )}
+                            {isEditing && (
+                              <div style={{ display: 'grid', gap: '8px', borderTop: '1px dashed rgba(255,255,255,0.12)', paddingTop: '10px' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                  <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                    名称
+                                    <input
+                                      type="text"
+                                      value={llmPresetDraft.name}
+                                      onChange={(e) => setLlmPresetDraft(prev => ({ ...prev, name: e.target.value }))}
+                                      style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
+                                    />
+                                  </label>
+                                  <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                    模型
+                                    <input
+                                      type="text"
+                                      value={llmPresetDraft.model}
+                                      onChange={(e) => setLlmPresetDraft(prev => ({ ...prev, model: e.target.value }))}
+                                      style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
+                                    />
+                                  </label>
+                                </div>
+                                <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                  Base URL
+                                  <input
+                                    type="text"
+                                    value={llmPresetDraft.url}
+                                    onChange={(e) => setLlmPresetDraft(prev => ({ ...prev, url: e.target.value }))}
+                                    style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
+                                  />
+                                </label>
+                                <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                  API Key
+                                  <input
+                                    type="password"
+                                    value={llmPresetDraft.key}
+                                    onChange={(e) => setLlmPresetDraft(prev => ({ ...prev, key: e.target.value }))}
+                                    style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
+                                  />
+                                </label>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '10px', alignItems: 'end' }}>
+                                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={llmPresetDraft.rateLimitEnabled !== false}
+                                      onChange={(e) => setLlmPresetDraft(prev => ({ ...prev, rateLimitEnabled: e.target.checked }))}
+                                    />
+                                    启用 RPM 限流
+                                  </label>
+                                  <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                    RPM
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="120"
+                                      step="1"
+                                      value={llmPresetDraft.rateLimitRpm}
+                                      onChange={(e) => setLlmPresetDraft(prev => ({ ...prev, rateLimitRpm: Number(e.target.value) || 3 }))}
+                                      style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
+                                    />
+                                  </label>
+                                </div>
+                                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                                  <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    onClick={() => setLlmPresetDraft(null)}
+                                    style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                                  >
+                                    取消
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    onClick={() => {
+                                      setConfig(prev => ({
+                                        ...prev,
+                                        llm_api_presets: (prev.llm_api_presets || []).map(item => item.id === llmPresetDraft.id ? {
+                                          ...item,
+                                          name: llmPresetDraft.name.trim() || item.name,
+                                          url: llmPresetDraft.url.trim(),
+                                          key: llmPresetDraft.key.trim(),
+                                          model: llmPresetDraft.model.trim(),
+                                          rateLimitEnabled: llmPresetDraft.rateLimitEnabled !== false,
+                                          rateLimitRpm: Number(llmPresetDraft.rateLimitRpm) || 3
+                                        } : item)
+                                      }));
+                                      setLlmPresetDraft(null);
+                                    }}
+                                    style={{ padding: '4px 10px', fontSize: '0.75rem', color: '#52c41a' }}
+                                  >
+                                    保存修改
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}

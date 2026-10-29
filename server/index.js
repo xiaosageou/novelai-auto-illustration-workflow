@@ -32,6 +32,7 @@ const DEFAULT_CONFIG = {
   llm_rate_limit_rpm: 3,
   llm_max_retries: 3,
   llm_429_max_retries: 5,
+  llm_failover_enabled: true,
   llm_api_presets: [],
   llm_character_dna_url: "",
   llm_character_dna_key: "",
