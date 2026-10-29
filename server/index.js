@@ -12,6 +12,7 @@ import { enqueueUniqueJob, removeQueuedJobs } from './utils/job-queue.js';
 import { readConfig, writeConfig } from './utils/config-store.js';
 import { resolveLlmRetryLimits } from './utils/llm-retry.js';
 import { parseFile } from './utils/file-parser.js';
+import { getProjectSummary } from './utils/project-summary.js';
 import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL } from './utils/default-prompts.js';
 import { normalizeAdvancedPromptForConfig, normalizeCharacterDnaPromptForConfig } from './utils/advanced-prompt-contract.js';
 import { createAgentRouter } from './services/agent-api.js';
@@ -606,7 +607,13 @@ app.get('/api/projects', async (req, res) => {
       if (name.startsWith('.')) continue;
       const stats = await fs.stat(path.join(projectsDir, name));
       if (stats.isDirectory()) {
-        projects.push({ name, createdAt: stats.birthtime });
+        let progress = null;
+        try {
+          progress = await getProjectSummary(name, projectsDir);
+        } catch (err) {
+          console.warn(`[Server] 生成项目「${name}」进度摘要失败:`, err.message);
+        }
+        projects.push({ name, createdAt: stats.birthtime, progress });
       }
     }
     res.json(projects);

@@ -2437,6 +2437,17 @@ function App() {
         {projects.map(proj => {
           const isActive = activeProject === proj.name;
           const readingMemory = readReaderProgressMap()[proj.name];
+          // 项目列表进度：活动项目用实时 projectDetails；其余用列表接口的 progress 摘要
+          const cardProgress = proj.progress || {};
+          const cardTotalChapters = isActive && projectDetails
+            ? (projectDetails.chapters?.length || 0)
+            : (cardProgress.totalChapters || 0);
+          const cardCompletedChapters = isActive && projectDetails
+            ? progressInfo.completed
+            : (cardProgress.completedChapters || 0);
+          const cardPaused = isActive
+            ? Boolean(projectDetails?.progress?.pipeline_pause)
+            : Boolean(cardProgress.paused);
           return (
             <div
               key={proj.name}
@@ -2457,10 +2468,13 @@ function App() {
 
                 <div className="book-meta">
                   <span>📅 创建于 {new Date(proj.createdAt).toLocaleDateString()}</span>
-                  {isActive && projectDetails && (
+                  {cardTotalChapters > 0 && (
                     <span className="book-badge chapters-count">
-                      {projectDetails.chapters?.length || 0} 章节
+                      {cardTotalChapters} 章节
                     </span>
+                  )}
+                  {cardPaused && (
+                    <span className="book-badge paused">⏸️ 已暂停</span>
                   )}
                 </div>
 
@@ -2477,19 +2491,19 @@ function App() {
                 )}
               </div>
 
-              {isActive && (
+              {cardTotalChapters > 0 && (
                 <div className="book-card-middle">
                   <div className="book-progress-info">
                     <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>处理进度</span>
                     <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--color-blue)' }}>
-                      {progressInfo.completed} / {progressInfo.total} 章
+                      {cardCompletedChapters} / {cardTotalChapters} 章
                     </span>
                   </div>
                   <div className="book-progress-bar">
                     <div
                       className="book-progress-fill"
                       style={{
-                        width: `${progressInfo.total > 0 ? (progressInfo.completed / progressInfo.total) * 100 : 0}%`
+                        width: `${cardTotalChapters > 0 ? (cardCompletedChapters / cardTotalChapters) * 100 : 0}%`
                       }}
                     />
                   </div>
@@ -4550,7 +4564,7 @@ function App() {
             <button 
               type="button"
               className={`main-tab-item ${mainTab === 'books' ? 'active' : ''}`}
-              onClick={() => setMainTab('books')}
+              onClick={() => { setMainTab('books'); fetchProjects(); }}
             >
               <BookOpen size={15} />
               <span>书籍项目</span>
