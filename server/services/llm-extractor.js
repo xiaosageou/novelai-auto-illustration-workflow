@@ -2011,7 +2011,7 @@ export class LLMExtractor {
   /**
    * 单个分镜场景描述重构：针对特定触发句重新生成结构化 JSON
    */
-  async regenerateSingleSceneCard(chapterTitle, chapterContent, sceneIdx, triggerSentence, model = "deepseek-chat", focusParagraph = "", onProgressLog = null) {
+  async regenerateSingleSceneCard(chapterTitle, chapterContent, sceneIdx, triggerSentence, model = "deepseek-chat", focusParagraph = "", onProgressLog = null, signal = null) {
     if (!this.apiKey) {
       throw new Error("请先配置有效的 LLM API Key！");
     }
@@ -2061,6 +2061,11 @@ export class LLMExtractor {
 
       let lastError = null;
       for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+        if (signal?.aborted) {
+          const err = new Error("Operation aborted by user");
+          err.name = "AbortError";
+          throw err;
+        }
         const payload = {
           model,
           messages: [
@@ -2089,7 +2094,8 @@ export class LLMExtractor {
             max429Retries: this.max429Retries,
             initialDelaySeconds: 10,
             logPrefix: "[LLM Extractor]",
-            rateLimit: this.getRateLimitConfig()
+            rateLimit: this.getRateLimitConfig(),
+            signal
           });
 
           if (res.status !== 200) {
@@ -2118,6 +2124,11 @@ export class LLMExtractor {
           return normalized;
         } catch (error) {
           lastError = error;
+          if (signal?.aborted) {
+            const err = new Error("Operation aborted by user");
+            err.name = "AbortError";
+            throw err;
+          }
           if (error?.code === 'LLM_429_EXHAUSTED') {
             break;
           }
@@ -2151,7 +2162,7 @@ export class LLMExtractor {
   /**
    * 正文选段批量重构：一次 LLM 会话生成多处选段对应的场景卡
    */
-  async regenerateSelectedParagraphScenes(chapterTitle, chapterContent, selections = [], model = "deepseek-chat", onProgressLog = null, sceneCountOptions = {}) {
+  async regenerateSelectedParagraphScenes(chapterTitle, chapterContent, selections = [], model = "deepseek-chat", onProgressLog = null, sceneCountOptions = {}, signal = null) {
     if (!this.apiKey) {
       throw new Error("请先配置有效的 LLM API Key！");
     }
@@ -2199,6 +2210,11 @@ export class LLMExtractor {
 
     let lastError = null;
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+      if (signal?.aborted) {
+        const err = new Error("Operation aborted by user");
+        err.name = "AbortError";
+        throw err;
+      }
       const payload = {
         model,
         messages: [
@@ -2222,7 +2238,8 @@ export class LLMExtractor {
           max429Retries: this.max429Retries,
           initialDelaySeconds: 10,
           logPrefix: "[LLM Extractor]",
-          rateLimit: this.getRateLimitConfig()
+          rateLimit: this.getRateLimitConfig(),
+          signal
         });
 
         if (res.status !== 200) {
@@ -2259,6 +2276,11 @@ export class LLMExtractor {
         return normalized;
       } catch (error) {
         lastError = error;
+        if (signal?.aborted) {
+          const err = new Error("Operation aborted by user");
+          err.name = "AbortError";
+          throw err;
+        }
         if (error?.code === 'LLM_429_EXHAUSTED') {
           break;
         }
@@ -2284,7 +2306,7 @@ export class LLMExtractor {
   /**
    * 从 10 章小说切片中提炼主要角色及其结构化外貌 DNA 特征（Prompts Bundle）
    */
-  async extractCharacterDNA(sliceText, model = "deepseek-chat", context = {}, onProgressLog = null) {
+  async extractCharacterDNA(sliceText, model = "deepseek-chat", context = {}, onProgressLog = null, signal = null) {
     if (!this.apiKey) {
       throw new Error("请先配置有效的 LLM API Key！");
     }
@@ -2342,6 +2364,11 @@ export class LLMExtractor {
 
     let lastError = null;
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+      if (signal?.aborted) {
+        const err = new Error("Operation aborted by user");
+        err.name = "AbortError";
+        throw err;
+      }
       try {
         const streamLogger = createThrottledStreamLogger(progressCb, '[角色 DNA 提炼]');
       const res = await this.postChatCompletion({
@@ -2352,7 +2379,8 @@ export class LLMExtractor {
         max429Retries: this.max429Retries,
         initialDelaySeconds: 10,
         logPrefix: "[LLM Extractor] 角色DNA提取",
-        rateLimit: this.getRateLimitConfig()
+        rateLimit: this.getRateLimitConfig(),
+        signal
       });
 
       if (res.status !== 200) {
@@ -2405,6 +2433,11 @@ export class LLMExtractor {
       } catch (error) {
         lastError = error;
         console.error(`[LLM Extractor] 提取角色 DNA 第 ${attempt}/${this.maxRetries} 次失败:`, error);
+        if (signal?.aborted) {
+          const err = new Error("Operation aborted by user");
+          err.name = "AbortError";
+          throw err;
+        }
         if (error?.code === 'LLM_429_EXHAUSTED') {
           break;
         }
@@ -2413,7 +2446,7 @@ export class LLMExtractor {
           attempt = 0;
           continue;
         }
-        if (attempt < this.maxRetries) {
+        if (attempt < this.maxRetries && !signal?.aborted) {
           const waitMs = Math.max(0, Number(this.retryDelayMs) || 0) * attempt;
           progressCb?.(`[角色 DNA 提炼] 第 ${attempt}/${this.maxRetries} 次失败，${Math.round(waitMs / 1000)} 秒后重试: ${error.message}`, 'warning');
           if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
@@ -2455,7 +2488,7 @@ export class LLMExtractor {
    * @param {function} onProgressLog - UI 进度日志回调函数
    * @returns {{ orientation: string, prompt: string, negative_prompt: string }}
    */
-  async generateScenePromptAdvanced(sceneDesc, characterAnchors = [], model = "deepseek-chat", onProgressLog = null) {
+  async generateScenePromptAdvanced(sceneDesc, characterAnchors = [], model = "deepseek-chat", onProgressLog = null, signal = null) {
     if (!this.apiKey) {
       throw new Error("请先填写有效的 API Key！");
     }
@@ -2482,6 +2515,7 @@ export class LLMExtractor {
     }
 
     const reqController = this._createRequestController();
+    const effectiveAbortSignal = signal || reqController.signal;
     const rawSystemPrompt = this.system_prompt_advanced_prompt || DEFAULT_ADVANCED_PROMPT;
     const systemPrompt = ensureAdvancedPromptContract(rawSystemPrompt);
     const scenePayload = this.formatStructuredSceneForLlm(sceneDesc);
@@ -2742,6 +2776,11 @@ export class LLMExtractor {
       let lastAttemptError = null;
 
       for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+        if (effectiveAbortSignal?.aborted) {
+          const err = new Error("Operation aborted by user");
+          err.name = "AbortError";
+          throw err;
+        }
         const attemptPayload = attempt === 1
           ? this.withStreamPreference(payload)
           : {
@@ -2767,7 +2806,8 @@ export class LLMExtractor {
             max429Retries: this.max429Retries,
             initialDelaySeconds: 10,
             logPrefix: "[LLM Extractor] 高级参数生成",
-            rateLimit: this.getRateLimitConfig()
+            rateLimit: this.getRateLimitConfig(),
+            signal: effectiveAbortSignal
           });
           if (res.status !== 200) throw new Error(`HTTP Error ${res.status}${res.__errorBody ? `: ${String(res.__errorBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
 
@@ -2969,6 +3009,11 @@ export class LLMExtractor {
           return normalized;
         } catch (attemptError) {
           lastAttemptError = attemptError;
+          if (effectiveAbortSignal?.aborted) {
+            const err = new Error("Operation aborted by user");
+            err.name = "AbortError";
+            throw err;
+          }
           if (attemptError?.code === 'LLM_429_EXHAUSTED') {
             break;
           }

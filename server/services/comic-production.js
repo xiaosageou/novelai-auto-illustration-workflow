@@ -45,7 +45,7 @@ export class ComicProduction {
   }
   requestStop(projectName) {
     const job = this.jobs.get(projectName);
-    if (job) job.stopRequested = true;
+    if (job) { job.stopRequested = true; job.abortController?.abort(new Error('创作任务已停止')); }
   }
   async stop(args) {
     const loc = await this.comic.load(args);
@@ -54,6 +54,7 @@ export class ComicProduction {
     const job = this.jobs.get(args.projectName);
     if (job?.args.episodeId === args.episodeId) {
       job.stopRequested = true;
+      job.abortController?.abort(new Error('创作任务已停止'));
       loc.episode.production.status = 'STOPPING';
       loc.episode.production.message = '已请求停止，等待当前远程调用结束';
     } else {
@@ -80,6 +81,7 @@ export class ComicProduction {
       if (source.length > 40000) fail('SOURCE_TOO_LONG', '本次原文超过40000字，请选择章节中的一段或拆为多话');
     } else if (!ids.length) fail('EMPTY_EPISODE', '请先生成或添加画格');
     const job = { args, actionId, name, pipeline, ids, source, stopRequested: false,
+      abortController: new AbortController(),
       fingerprint: await this.contextFingerprint(loc, pipeline) };
     this.jobs.set(args.projectName, job); pipeline.comicProductionJob = actionId;
     loc.episode.production = { actionId, type: name, status: 'RUNNING', completed: 0,
@@ -120,7 +122,7 @@ export class ComicProduction {
         entryState: this.comic.entryState(loc.episode, pid), validate: value => this.validate(promptSchema, value) };
     });
     if (!input) return;
-    const prompt = await this.generator.prompt(input);
+    const prompt = await this.generator.prompt({ ...input, signal: job.abortController.signal });
     this.validate(promptSchema, prompt);
     await this.locked(async () => {
       const loc = await this.current(job);
@@ -140,7 +142,8 @@ export class ComicProduction {
             source: job.source, title: original.episode.title, language: original.episode.language,
             initialState: original.episode.initialState, count, previous: plans,
             instructions: `全话总计 ${job.args.panelCount} 格。${job.args.instructions || ''}`,
-            validate: async plan => { this.validate(COMIC_PLAN_SCHEMA, plan); await this.comic.validatePlan(job.args, plan); } });
+            validate: async plan => { this.validate(COMIC_PLAN_SCHEMA, plan); await this.comic.validatePlan(job.args, plan); },
+            signal: job.abortController.signal });
         } catch (error) {
           if (error.code === 'COMIC_LLM_TRUNCATED' && count > 1) {
             const half = Math.floor(count / 2);
@@ -198,9 +201,17 @@ export class ComicProduction {
           });
           await this.submit('comics.panels.render', args, childId, job.actionId);
           await this.progress(job, completed, `${pid} · 正在生图 / 等待冷却`);
-          while (['ACCEPTED', 'QUEUED', 'RUNNING'].includes(this.comic.actionState(childId))) await delay(250);
+          while (['ACCEPTED', 'QUEUED', 'RUNNING'].includes(this.comic.actionState(childId))) {
+            if (job.stopRequested) break;
+            await delay(250);
+          }
+          this.assertRunning(job);
           if (this.comic.actionState(childId) !== 'DONE') fail('COMIC_RENDER_REVIEW_REQUIRED', `${pid} 生图结果需核查，已停止后续生成`);
-          while (this.comic.queueState(job.args.projectName).busy) await delay(100);
+          while (this.comic.queueState(job.args.projectName).busy) {
+            if (job.stopRequested) break;
+            await delay(100);
+          }
+          this.assertRunning(job);
         }
         await this.progress(job, ++completed, `${pid} · ${job.name === 'comics.images.generate' ? '候选已收录，等待视觉预检' : '提示词已保存'}`);
       } catch (error) {
@@ -213,6 +224,7 @@ export class ComicProduction {
       const queue = [...job.ids];
       const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
         while (queue.length) {
+          if (job.stopRequested) break;
           const pid = queue.shift();
           if (pid === undefined) break;
           await runPanel(pid);
@@ -220,13 +232,25 @@ export class ComicProduction {
       });
       await Promise.all(workers);
     } else {
-      for (const pid of job.ids) await runPanel(pid);
+      for (const pid of job.ids) {
+        if (job.stopRequested) break;
+        await runPanel(pid);
+      }
+    }
+    if (job.stopRequested) {
+      return { completed, failed, stopped: true, inspectCandidates: job.name === 'comics.images.generate' };
     }
     return { completed, failed, inspectCandidates: job.name === 'comics.images.generate' };
   }
   async run(job) {
     let status = 'DONE'; let result;
-    try { result = await this.work(job); }
+    try {
+      result = await this.work(job);
+      if (result?.stopped || job.stopRequested) {
+        status = 'STOPPED_REVIEW_REQUIRED';
+        result = { code: 'PRODUCTION_STOPPED', message: '创作任务已停止' };
+      }
+    }
     catch (error) {
       status = job.stopRequested ? 'STOPPED_REVIEW_REQUIRED' : 'FAILED_REVIEW_REQUIRED';
       result = { code: error.code || 'COMIC_PRODUCTION_FAILED', message: error.publicMessage ? error.message : '漫画创作失败，请检查模型配置和任务记录' };

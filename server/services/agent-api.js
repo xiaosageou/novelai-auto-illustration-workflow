@@ -260,6 +260,8 @@ export function createAgentRouter({ baseDir, getPipeline, enqueueRedraw, queueSt
       })) };
     if (name === 'pipeline.stop') {
       comic.production.requestStop(args.projectName);
+      let stopResult = null;
+      try { stopResult = await pipeline.stop(); } catch (stopErr) { console.error('[AgentAPI] pipeline.stop 失败:', stopErr.message); }
       const removed = stopQueues(args.projectName);
       pipeline.isRunning = false;
       for (const item of Object.values(ledger.actions)) {
@@ -269,7 +271,7 @@ export function createAgentRouter({ baseDir, getPipeline, enqueueRedraw, queueSt
         ledger.actions[id].status = 'CANCELLED';
         ledger.actions[id].updatedAt = new Date().toISOString();
       }
-      return { stopRequested: true, ...removed, currentRequestMayFinish: true };
+      return { stopRequested: true, ...removed, currentRequestMayFinish: true, ...(stopResult || {}) };
     }
     if (name === 'scenes.create' || name === 'scenes.update' || name === 'prompts.write') {
       editable(ctx, args, comicInternal);

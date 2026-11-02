@@ -520,7 +520,8 @@ export class PipelineManager {
           knownCharacters: this.projectProgress.getGlobalCharacters(),
           sourceChapters: batchSourceChapters
         },
-        (msg, type, options) => this.writeLog(msg, type, options)
+        (msg, type, options) => this.writeLog(msg, type, options),
+        this.abortController?.signal || null
       );
 
       for (const char of list) {
@@ -1411,7 +1412,8 @@ export class PipelineManager {
         options.appendToPrevious ? logMsg : `  [场景 ${scene.scene_idx}] ${logMsg}`,
         type,
         options
-      )
+      ),
+      this.abortController?.signal || null
     );
     this.writeLog(`  [场景 ${scene.scene_idx}] 高级参数生成完成 → orientation=${advancedParams.orientation}`);
 
@@ -2337,7 +2339,8 @@ export class PipelineManager {
           options.appendToPrevious ? logMsg : `  [场景 ${scene.scene_idx}] ${logMsg}`,
           type,
           options
-        )
+        ),
+        this.abortController?.signal || null
       );
 
       // B. 融合新卡片，清掉旧图与旧 Prompt，避免断点续传沿用过期参数
@@ -2613,7 +2616,8 @@ export class PipelineManager {
         {
           cjkDivisor: this.config.cjk_scene_divisor,
           englishDivisor: this.config.english_scene_divisor
-        }
+        },
+        this.abortController?.signal || null
       );
 
       for (let index = 0; index < selectedParagraphs.length; index++) {
