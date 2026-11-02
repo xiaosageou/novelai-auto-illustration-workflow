@@ -1090,6 +1090,12 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
       // 502/503/504 保持原有上层处理语义，避免吞掉代理或服务维护等明确错误。
       const isTransientServerError = res.status === 500;
       if (!isRateLimited && !isTransientServerError) {
+        if (res.status >= 400) {
+          let errBody = "";
+          try { errBody = await res.text(); } catch {}
+          res.__errorBody = errBody;
+          console.error(`${logPrefix} 上游返回 ${res.status} (${activeUrl}): ${String(errBody).replace(/\s+/g, " ").slice(0, 600) || "(空错误体)"}`);
+        }
         return res;
       }
 
@@ -1862,7 +1868,7 @@ export class LLMExtractor {
 
         return chatModels.length > 0 ? chatModels.sort() : modelIds.sort();
       } else {
-        throw new Error(`HTTP 状态码: ${res.status}`);
+        const fmBody = await res.text().catch(() => ""); throw new Error(`HTTP 状态码: ${res.status}${fmBody ? `: ${String(fmBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
       }
     } catch (e) {
       console.error("[LLM Extractor] 拉取模型列表失败:", e);
@@ -1943,7 +1949,7 @@ export class LLMExtractor {
         });
 
         if (res.status !== 200) {
-          throw new Error(`HTTP Error ${res.status}`);
+          throw new Error(`HTTP Error ${res.status}${res.__errorBody ? `: ${String(res.__errorBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
         }
 
         const { responseData: resData, content: rawContent } = await readLlmResponse(res, {
@@ -2087,7 +2093,7 @@ export class LLMExtractor {
           });
 
           if (res.status !== 200) {
-            throw new Error(`HTTP Error ${res.status}`);
+            throw new Error(`HTTP Error ${res.status}${res.__errorBody ? `: ${String(res.__errorBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
           }
 
           const { responseData: resData, content: rawContent } = await readLlmResponse(res, {
@@ -2220,7 +2226,7 @@ export class LLMExtractor {
         });
 
         if (res.status !== 200) {
-          throw new Error(`HTTP Error ${res.status}`);
+          throw new Error(`HTTP Error ${res.status}${res.__errorBody ? `: ${String(res.__errorBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
         }
 
         const { responseData: resData, content: rawContent } = await readLlmResponse(res, {
@@ -2350,7 +2356,7 @@ export class LLMExtractor {
       });
 
       if (res.status !== 200) {
-        throw new Error(`HTTP Error ${res.status}`);
+        throw new Error(`HTTP Error ${res.status}${res.__errorBody ? `: ${String(res.__errorBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
       }
 
       const { content: rawContent, finishReason, responseData } = await readLlmResponse(res, {
@@ -2763,7 +2769,7 @@ export class LLMExtractor {
             logPrefix: "[LLM Extractor] 高级参数生成",
             rateLimit: this.getRateLimitConfig()
           });
-          if (res.status !== 200) throw new Error(`HTTP Error ${res.status}`);
+          if (res.status !== 200) throw new Error(`HTTP Error ${res.status}${res.__errorBody ? `: ${String(res.__errorBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
 
           const { responseData, content: rawContent } = await readLlmResponse(res, {
             onStreamText: streamLogger?.push
@@ -3061,7 +3067,7 @@ export class LLMExtractor {
       });
 
       if (res.status !== 200) {
-        throw new Error(`HTTP Error ${res.status}`);
+        throw new Error(`HTTP Error ${res.status}${res.__errorBody ? `: ${String(res.__errorBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
       }
 
       const { content: rawContent } = await readLlmResponse(res);
