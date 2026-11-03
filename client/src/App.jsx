@@ -155,6 +155,8 @@ function App() {
 
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState("");
+  const [compressJob, setCompressJob] = useState(null);
+  const [isStartingCompress, setIsStartingCompress] = useState(false);
   const [projectDetails, setProjectDetails] = useState(null);
   const [selectedChapter, setSelectedChapter] = useState(null);
   const [mainTab, setMainTab] = useState('workbench'); // 'books' | 'dna' | 'workbench'
@@ -654,6 +656,23 @@ function App() {
       addLog(`⏱️ NAI 接口进入 ${data.cooldownSeconds || 15}s 冷却，等待锁释放...`);
     });
 
+    eventSource.addEventListener('compress_progress', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setCompressJob(data);
+        if (data.status === 'done' || data.status === 'failed' || data.status === 'cancelled') {
+          setIsStartingCompress(false);
+          if (data.status === 'done') {
+            const saved = (data.savedBytes / 1024 / 1024).toFixed(1);
+            addLog(`🗜️ 旧图压缩完成：${data.done} 张，失败 ${data.failed} 张，共省下 ${saved} MB`, 'success');
+            fetchProjects();
+          } else if (data.status === 'failed') {
+            addLog(`🗜️ 压缩任务失败: ${data.error || '未知错误'}`, 'error');
+          }
+        }
+      } catch { /* ignore */ }
+    });
+
     eventSource.addEventListener('progress', (e) => {
       const data = JSON.parse(e.data);
       if (data.type === 'character_dna_required') {
@@ -1071,8 +1090,45 @@ function App() {
     }
   };
 
-  const selectProject = async (name, shouldSwitchTab = false) => {
-    if (activeProject && selectedChapter && textSelections.length > 0) {
+  // ── 旧图一键压缩：把所有项目已生成的 PNG 转 WebP q85，多路并行 ──
+  const startCompressImages = async (projectName = null) => {
+    if (isStartingCompress) return;
+    setIsStartingCompress(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/compress-images/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectName, quality: 85, replace: true, sidecar: true })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setIsStartingCompress(false);
+        addLog(`🗜️ 压缩启动失败: ${data.error || res.statusText}`, 'error');
+        if (data.job) setCompressJob(data.job);
+        return;
+      }
+      setCompressJob(data);
+      addLog(`🗜️ 开始压缩${projectName ? `「${projectName}」` : '全部项目'}旧图（q85 / ${data.concurrency} 路并行，共 ${data.total || '扫描中'} 张）`);
+    } catch (e) {
+      setIsStartingCompress(false);
+      addLog("启动压缩失败: " + e.message, "error");
+    }
+  };
+
+  const cancelCompressImages = async () => {
+    try {
+      await fetch(`${API_BASE}/api/compress-images/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId: compressJob?.id })
+      });
+      addLog('🗜️ 已请求停止压缩，当前批次完成后生效');
+    } catch (e) {
+      addLog('停止压缩失败: ' + e.message, 'error');
+    }
+  };
+
+  const selectProject = async (name, shouldSwitchTab = false) => {    if (activeProject && selectedChapter && textSelections.length > 0) {
       const previousChapterKey = chapterKeyOf(selectedChapter);
       saveReaderSelections(activeProject, previousChapterKey, textSelections);
     }
@@ -2442,9 +2498,35 @@ function App() {
           <h2><BookOpen size={22} /> 书籍项目库</h2>
           <p className="tab-view-subtitle">共 {projects.length} 部小说项目，点击进入创作工作台</p>
         </div>
-        <button className="btn-primary" onClick={() => setIsNewProjectOpen(true)}>
-          <Plus size={16} /> 导入新书籍
-        </button>
+        <div className="books-header-actions">
+          {compressJob && (compressJob.status === 'running' || compressJob.status === 'scanning') && (
+            <div className="compress-chip" title={`${compressJob.done}/${compressJob.total} 张，已省 ${(compressJob.savedBytes / 1024 / 1024).toFixed(1)} MB`}>
+              <div className="compress-chip-bar">
+                <i style={{ width: `${compressJob.percent || 0}%` }} />
+              </div>
+              <span className="compress-chip-text">
+                {compressJob.status === 'scanning' ? '扫描中…' : `${compressJob.percent}% · ${compressJob.done}/${compressJob.total}`}
+              </span>
+              <button className="compress-chip-stop" onClick={cancelCompressImages}>停止</button>
+            </div>
+          )}
+          {compressJob && compressJob.status === 'done' && compressJob.savedBytes > 0 && (
+            <span className="compress-done-tag">
+              已压 {compressJob.done} 张，省 {(compressJob.savedBytes / 1024 / 1024).toFixed(1)} MB
+            </span>
+          )}
+          <button
+            className="btn-secondary"
+            onClick={() => startCompressImages()}
+            disabled={isStartingCompress || compressJob?.status === 'running' || compressJob?.status === 'scanning'}
+            title="把全部项目已生成的 PNG 插图转成 WebP q85（原图替换，prompt/seed 另存 .txt）"
+          >
+            <ImageIcon size={16} /> 一键压缩旧图
+          </button>
+          <button className="btn-primary" onClick={() => setIsNewProjectOpen(true)}>
+            <Plus size={16} /> 导入新书籍
+          </button>
+        </div>
       </div>
 
       <div className="books-grid">
@@ -2481,13 +2563,23 @@ function App() {
               <div className="book-card-top">
                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px' }}>
                   <div className="book-title" title={proj.name}>{proj.name}</div>
-                  <button
-                    className="btn-secondary book-delete-btn"
-                    title="删除项目"
-                    onClick={(e) => requestDeleteProject(proj, e)}
-                  >
-                    <Trash2 size={13} />
-                  </button>
+                  <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                    <button
+                      className="btn-secondary book-delete-btn"
+                      title="压缩该项目旧图"
+                      onClick={(e) => { e.stopPropagation(); startCompressImages(proj.name); }}
+                      disabled={isStartingCompress || compressJob?.status === 'running' || compressJob?.status === 'scanning'}
+                    >
+                      <ImageIcon size={13} />
+                    </button>
+                    <button
+                      className="btn-secondary book-delete-btn"
+                      title="删除项目"
+                      onClick={(e) => requestDeleteProject(proj, e)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="book-meta">
@@ -5779,6 +5871,44 @@ function App() {
                         onChange={(e) => setConfig({ ...config, scale: Number(e.target.value) })}
                         style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                       />
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>出图自动压缩</label>
+                      <select
+                        value={config.image_compress_enabled === false ? 'off' : 'on'}
+                        onChange={(e) => setConfig({ ...config, image_compress_enabled: e.target.value === 'on' })}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                      >
+                        <option value="on">开（PNG 转 WebP）</option>
+                        <option value="off">关（保留 PNG）</option>
+                      </select>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>开启后每张图落盘即压，体积约降到 1/10</div>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>WebP 质量</label>
+                      <input
+                        type="number"
+                        min="30"
+                        max="100"
+                        value={config.image_compress_quality ?? 85}
+                        onChange={(e) => setConfig({ ...config, image_compress_quality: Number(e.target.value) })}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                      />
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>85 为无感甜点，95 以上体积翻倍收益有限</div>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>Prompt/Seed 存档</label>
+                      <select
+                        value={config.image_compress_sidecar === false ? 'off' : 'on'}
+                        onChange={(e) => setConfig({ ...config, image_compress_sidecar: e.target.value === 'on' })}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                      >
+                        <option value="on">开（导出同名 .txt）</option>
+                        <option value="off">关</option>
+                      </select>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>压缩会丢 PNG 元数据，开此项保留可复现参数</div>
                     </div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>

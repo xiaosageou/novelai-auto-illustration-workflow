@@ -119,6 +119,23 @@ Agent 使用 `comics.*` 创建 EP、逐格分镜与对白，记录原文出处�
 
 完整操作见 `.agents/skills/nai-project-agent/references/comic-workflow.md`。数据在 `projects/<项目名>/comic/`，交付格式为 `nai-comic-handoff/1.0`。本版提供原生条漫组装；外部 `D:/codex/comic` Skill 的原生导入适配器尚未实现。当前排版也不提供图内智能气泡尾巴或拖拽编辑。
 
+## 插画压缩
+
+NAI 出图为 32bit PNG，单张 1.5–2.5MB。开启自动压缩后，插图落盘即转 WebP（默认 q85）并替换原 PNG；实测 1024×1024 由 1.5MB 降到约 110KB，832×1216 由 1.7MB 降到约 140KB，PSNR 37–40dB，肉眼不可分辨。
+
+压缩会丢掉 PNG 的 tEXt 元数据（完整 prompt / seed / steps），因此默认同时导出同名 `.txt` sidecar，并把摘要写回 WebP 的 EXIF `ImageDescription`。重绘或复现参数时优先读 `.txt`。
+
+配置项：`image_compress_enabled`（默认 `true`）、`image_compress_quality`（默认 `85`）、`image_compress_sidecar`（默认 `true`），可在网页配置面板调整。
+
+历史旧图在「书籍项目库」右上角点「一键压缩旧图」批量处理（逐个项目卡片也有单项目按钮），接口为 `POST /api/compress-images/start`、`GET /api/compress-images/status`、`POST /api/compress-images/cancel`，默认按 CPU 核数开多路并行。命令行等价用法：
+
+```powershell
+node scripts/compress-images.mjs --dry-run          # 只统计体积
+node scripts/compress-images.mjs -j 8 -q 85         # 8 路并行，替换原图
+node scripts/compress-images.mjs --only 项目名       # 只处理单个项目
+node scripts/compress-images.mjs --keep-original    # 保留原 PNG 只出 WebP
+```
+
 ## 常用命令
 
 ```powershell

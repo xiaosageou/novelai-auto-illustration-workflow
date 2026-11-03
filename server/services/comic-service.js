@@ -127,14 +127,15 @@ export class ComicService {
     const ctx = await this.scene(args, panel);
     check(ctx.target.status === 'SUCCESS' && ctx.target.image_path, 409, 'IMAGE_REQUIRED', '当前场景尚无生成完成的图片');
     const info = await this.imageInfo(loc.dir, ctx.target.image_path);
-    check(info.format === 'png', 409, 'PNG_REQUIRED', '漫画候选必须是实际 PNG 文件');
+    check(info.format === 'png' || info.format === 'webp', 409, 'PNG_REQUIRED', '漫画候选必须是 PNG 或 WebP 文件');
     const planHash = await this.planHash(loc, panel);
     const existing = panel.candidates.find(c => c.imageSha256 === info.sha256 && c.planHash === planHash);
     if (existing) return existing;
     check(panel.candidates.length < 4, 409, 'ATTEMPTS_EXHAUSTED', '本格已收录四张候选，先人工核查范围与问题');
     check(info.width === panel.plan.width && info.height === panel.plan.height, 409, 'CANVAS_MISMATCH', '图片实际画幅与分镜计划不一致');
     const candidateId = `C_${randomUUID()}`;
-    const relative = `comic/assets/${args.episodeId}/${panel.panelId}/${candidateId}.png`;
+    const srcExt = path.extname(ctx.target.image_path).toLowerCase() === '.webp' ? '.webp' : '.png';
+    const relative = `comic/assets/${args.episodeId}/${panel.panelId}/${candidateId}${srcExt}`;
     const bytes = await fs.readFile(info.path);
     check(digest(bytes) === info.sha256, 409, 'IMAGE_CHANGED', '收录期间图片发生变化');
     await fs.mkdir(path.dirname(path.join(loc.dir, relative)), { recursive: true });

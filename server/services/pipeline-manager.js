@@ -12,6 +12,7 @@ import { findOriginalTriggerSentence } from '../utils/prompt-cleaner.js';
 import { globalCooldownManager } from '../utils/cooldown.js';
 import { extractChapterScenesInBatches } from '../utils/chapter-scene-batching.js';
 import { parseChapterHeading, isVolumeHeading, selectBareNumberHeadings } from '../utils/chapter-heading.js';
+import { compressFile, DEFAULT_QUALITY } from './image-compress.js';
 import { ConcurrencyQueue } from '../utils/job-queue.js';
 import { stripAgeWords } from '../utils/age-tags.js';
 import { resolveLlmRetryLimits } from '../utils/llm-retry.js';
@@ -1636,13 +1637,9 @@ export class PipelineManager {
       onRetry: (msg) => this.writeLog(`  [场景 ${scene.scene_idx}] ${msg}`, "warning")
     });
 
-    // G. 保存插图至 illustrations
+    // G. 保存插图至 illustrations（PNG 落盘后自动压成 WebP，默认 q85）
     const cleanTitle = chap.chapter.replace(/[\\/*?:"<>|]/g, "").trim();
-    const timestamp = Date.now();
-    const imgName = `${cleanTitle}_scene_${scene.scene_idx}_${timestamp}.png`;
-    const savePath = path.join(this.illustrationsDir, imgName);
-    await fs.writeFile(savePath, result.imageBytes);
-    this.writeLog(`  [场景 ${scene.scene_idx}] 插图已存盘: ${imgName}`);
+    const { fileName: imgName } = await this._saveIllustration(result.imageBytes, cleanTitle, scene.scene_idx);
 
     // H. 实时更新该场景状态为 SUCCESS 并保存
     scene.status = 'SUCCESS';
@@ -1669,6 +1666,33 @@ export class PipelineManager {
         totalScenes: scenes.length,
         imagePath: `/projects/${this.projectName}/illustrations/${imgName}`
       });
+    }
+  }
+
+  /**
+   * 落盘插图：先写原始 PNG，再按配置压缩为 WebP（默认 q85）并替换原图。
+   * 压缩失败时保留原 PNG，绝不丢图。
+   * @returns {Promise<{fileName: string, bytes: number, compressed: boolean}>}
+   */
+  async _saveIllustration(imageBytes, cleanTitle, sceneIdx) {
+    const timestamp = Date.now();
+    const pngName = `${cleanTitle}_scene_${sceneIdx}_${timestamp}.png`;
+    const pngPath = path.join(this.illustrationsDir, pngName);
+    await fs.writeFile(pngPath, imageBytes);
+
+    const enabled = this.config.image_compress_enabled !== false;
+    if (!enabled) return { fileName: pngName, bytes: imageBytes.length, compressed: false };
+
+    const quality = Number(this.config.image_compress_quality) || DEFAULT_QUALITY;
+    const sidecar = this.config.image_compress_sidecar !== false;
+    try {
+      const r = await compressFile(pngPath, { quality, replace: true, sidecar });
+      const pct = r.before ? (r.after / r.before * 100).toFixed(1) : '?.';
+      this.writeLog(`  [场景 ${sceneIdx}] 插图已存盘: ${path.basename(r.outPath)}（${(r.before / 1024).toFixed(0)}KB → ${(r.after / 1024).toFixed(0)}KB, ${pct}%）`);
+      return { fileName: path.basename(r.outPath), bytes: r.after, compressed: true };
+    } catch (err) {
+      this.writeLog(`  [场景 ${sceneIdx}] 压缩失败，保留原 PNG: ${err?.message || err}`, 'warning');
+      return { fileName: pngName, bytes: imageBytes.length, compressed: false };
     }
   }
 
@@ -2285,8 +2309,7 @@ export class PipelineManager {
       });
 
       const cleanTitle = chap.chapter.replace(/[\\/*?:"<>|]/g, "").trim();
-      const imgName = `${cleanTitle}_scene_${scene.scene_idx}_${Date.now()}.png`;
-      await fs.writeFile(path.join(this.illustrationsDir, imgName), result.imageBytes);
+      const { fileName: imgName } = await this._saveIllustration(result.imageBytes, cleanTitle, scene.scene_idx);
 
       scene.status = 'SUCCESS';
       scene.image_path = `illustrations/${imgName}`;

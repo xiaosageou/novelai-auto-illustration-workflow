@@ -9,6 +9,8 @@ projects/
 *.png
 *.jpg
 *.jpeg
+*.webp
+*.avif
 *.txt
 *.json
 !package.json

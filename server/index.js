@@ -20,6 +20,8 @@ import { createComicLegacyGuard } from './services/comic-service.js';
 import { createThumbnailMiddleware } from './services/thumbnail-service.js';
 import { GlobalQueueManager } from './services/global-queue-manager.js';
 import { findProxyBindingConflict } from './services/llm-extractor.js';
+import { compressFile, listImages, DEFAULT_QUALITY } from './services/image-compress.js';
+import os from 'node:os';
 
 const BASE_DIR = process.cwd();
 const CONFIG_PATH = path.join(BASE_DIR, 'illustrator_config.json');
@@ -59,6 +61,9 @@ const DEFAULT_CONFIG = {
   scale: 5.5,
   sampler: "k_euler_ancestral",
   noiseSchedule: "karras",
+  image_compress_enabled: true,
+  image_compress_quality: 85,
+  image_compress_sidecar: true,
   cjk_scene_divisor: 600,
   english_scene_divisor: 350,
   max_scenes_per_request: 5,
@@ -623,9 +628,183 @@ app.get('/api/projects', async (req, res) => {
   }
 });
 
-// 解析导入小说文件 (.txt, .docx, .epub)
-app.post('/api/parse-file', async (req, res) => {
+// ============================================================
+// 插画批量压缩（旧图一键压缩 + 多路并行）
+// ============================================================
+const compressJobs = new Map();
+let compressJobSeq = 0;
+
+function estimateConcurrency(requested) {
+  const cpus = os.cpus()?.length || 4;
+  const fallback = Math.max(2, Math.min(6, cpus - 1));
+  const n = Number(requested);
+  return Number.isFinite(n) && n > 0 ? Math.max(1, Math.min(8, Math.floor(n))) : fallback;
+}
+
+/** 收集要压缩的目录：项目插画 + 漫画候选切片（递归） */
+async function collectCompressTargets(projectName) {
+  const projectsDir = path.join(BASE_DIR, 'projects');
+  const targets = [];
+  const add = (dir, recursive = false) => {
+    if (existsSync(dir)) targets.push({ dir, recursive });
+  };
+  if (projectName) {
+    add(path.join(projectsDir, projectName, 'illustrations'));
+    add(path.join(projectsDir, projectName, 'comic', 'assets'), true);
+    return targets;
+  }
+  const dirs = await fs.readdir(projectsDir).catch(() => []);
+  for (const name of dirs) {
+    if (name.startsWith('.')) continue;
+    const st = await fs.stat(path.join(projectsDir, name)).catch(() => null);
+    if (!st?.isDirectory()) continue;
+    add(path.join(projectsDir, name, 'illustrations'));
+    add(path.join(projectsDir, name, 'comic', 'assets'), true);
+  }
+  return targets;
+}
+
+function publicJob(job) {
+  return {
+    id: job.id,
+    status: job.status,
+    projectName: job.projectName,
+    quality: job.quality,
+    concurrency: job.concurrency,
+    dryRun: job.dryRun,
+    total: job.total,
+    done: job.done,
+    failed: job.failed,
+    skipped: job.skipped,
+    before: job.before,
+    after: job.after,
+    savedBytes: Math.max(0, job.before - job.after),
+    percent: job.total ? Math.round((job.done + job.failed) / job.total * 100) : 0,
+    current: job.current,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    error: job.error || null,
+    errors: job.errors.slice(0, 20)
+  };
+}
+
+async function runCompressJob(job) {
+  const targets = await collectCompressTargets(job.projectName);
+  const files = [];
+  for (const t of targets) {
+    files.push(...await listImages(t.dir, { recursive: t.recursive }));
+  }
+  job.total = files.length;
+  job.status = 'running';
+  broadcastSSE('compress_progress', publicJob(job));
+
+  if (job.dryRun || files.length === 0) {
+    for (const f of files) {
+      const s = await fs.stat(f).catch(() => null);
+      if (s) job.before += s.size;
+    }
+    job.status = 'done';
+    job.finishedAt = new Date().toISOString();
+    broadcastSSE('compress_progress', publicJob(job));
+    return job;
+  }
+
+  let cursor = 0;
+  let lastEmit = 0;
+  const emit = (force = false) => {
+    const now = Date.now();
+    if (force || now - lastEmit > 400) {
+      lastEmit = now;
+      broadcastSSE('compress_progress', publicJob(job));
+    }
+  };
+
+  async function worker() {
+    while (cursor < files.length) {
+      if (job.cancelRequested) return;
+      const f = files[cursor++];
+      job.current = path.basename(f);
+      try {
+        const r = await compressFile(f, { quality: job.quality, replace: job.replace, sidecar: job.sidecar });
+        job.done++;
+        if (r.skipped) job.skipped++;
+        job.before += r.before;
+        job.after += r.after;
+      } catch (err) {
+        job.failed++;
+        if (job.errors.length < 50) job.errors.push({ file: f, error: String(err?.message || err) });
+      }
+      emit();
+    }
+  }
+
+  await Promise.all(Array.from({ length: job.concurrency }, worker));
+  job.status = job.cancelRequested ? 'cancelled' : 'done';
+  job.finishedAt = new Date().toISOString();
+  job.current = '';
+  emit(true);
+  return job;
+}
+
+app.post('/api/compress-images/start', async (req, res) => {
   try {
+    const running = [...compressJobs.values()].find(j => j.status === 'running' || j.status === 'scanning');
+    if (running) {
+      return res.status(409).json({ error: '已有压缩任务在运行，请等待完成', job: publicJob(running) });
+    }
+    const { projectName = null, quality = DEFAULT_QUALITY, concurrency, replace = true, sidecar = true, dryRun = false } = req.body || {};
+    const q = Number(quality);
+    if (!Number.isFinite(q) || q < 30 || q > 100) {
+      return res.status(400).json({ error: 'quality 需在 30~100 之间' });
+    }
+    const job = {
+      id: `cmp_${Date.now()}_${++compressJobSeq}`,
+      projectName: projectName || null,
+      quality: Math.round(q),
+      concurrency: estimateConcurrency(concurrency),
+      replace: replace !== false,
+      sidecar: sidecar !== false,
+      dryRun: !!dryRun,
+      status: 'scanning',
+      total: 0, done: 0, failed: 0, skipped: 0,
+      before: 0, after: 0,
+      current: '',
+      errors: [],
+      cancelRequested: false,
+      startedAt: new Date().toISOString(),
+      finishedAt: null
+    };
+    compressJobs.set(job.id, job);
+    runCompressJob(job).catch(err => {
+      job.status = 'failed';
+      job.error = String(err?.message || err);
+      job.finishedAt = new Date().toISOString();
+      broadcastSSE('compress_progress', publicJob(job));
+    });
+    res.json(publicJob(job));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/compress-images/status', (req, res) => {
+  const jobs = [...compressJobs.values()]
+    .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
+    .slice(0, 5)
+    .map(publicJob);
+  res.json({ jobs, cpus: os.cpus()?.length || 4, defaultConcurrency: estimateConcurrency() });
+});
+
+app.post('/api/compress-images/cancel', (req, res) => {
+  const { jobId } = req.body || {};
+  const job = jobId ? compressJobs.get(jobId) : [...compressJobs.values()].find(j => j.status === 'running');
+  if (!job) return res.status(404).json({ error: '未找到进行中的压缩任务' });
+  job.cancelRequested = true;
+  res.json(publicJob(job));
+});
+
+// 解析导入小说文件 (.txt, .docx, .epub)
+app.post('/api/parse-file', async (req, res) => {  try {
     const { filename, base64Data } = req.body;
     if (!filename || !base64Data) {
       return res.status(400).json({ error: "文件名或文件内容不能为空" });
