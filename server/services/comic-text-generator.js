@@ -283,6 +283,7 @@ export class ComicTextGenerator {
       url: `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`,
       headers: { 'Content-Type': 'application/json', ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}) },
       payload: { model: config.model, stream: config.streamEnabled, temperature: 0.2, max_tokens: 65536,
+        ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
         messages: [{ role: 'system', content: withSystemPrefix(system) }, { role: 'user', content: JSON.stringify(input) }] },
       rateLimit: { enabled: config.rateLimitEnabled, rpm: config.rateLimitRpm, key: config.rateLimitKey },
       logPrefix: '[Comic LLM]', idleTimeoutMs: 120000, signal

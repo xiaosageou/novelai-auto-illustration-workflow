@@ -60,7 +60,8 @@ test('task LLM configuration supports independent endpoints with legacy fallback
     streamEnabled: true,
     rateLimitEnabled: true,
     rateLimitRpm: 3,
-    rateLimitKey: 'direct:character-dna'
+    rateLimitKey: 'direct:character-dna',
+    reasoningEffort: ''
   });
   assert.deepEqual(resolveTaskLlmConfig(config, 'scene'), {
     baseUrl: 'https://default.example/v1',
@@ -69,7 +70,8 @@ test('task LLM configuration supports independent endpoints with legacy fallback
     streamEnabled: true,
     rateLimitEnabled: true,
     rateLimitRpm: 3,
-    rateLimitKey: 'direct:scene'
+    rateLimitKey: 'direct:scene',
+    reasoningEffort: ''
   });
   assert.deepEqual(resolveTaskLlmConfig(config, 'naiTags'), {
     baseUrl: 'https://default.example/v1',
@@ -78,7 +80,8 @@ test('task LLM configuration supports independent endpoints with legacy fallback
     streamEnabled: true,
     rateLimitEnabled: true,
     rateLimitRpm: 3,
-    rateLimitKey: 'direct:nai-tags'
+    rateLimitKey: 'direct:nai-tags',
+    reasoningEffort: ''
   });
 });
 
@@ -109,8 +112,52 @@ test('task-specific direct endpoint overrides default preset to avoid cross-prov
     streamEnabled: true,
     rateLimitEnabled: true,
     rateLimitRpm: 3,
-    rateLimitKey: 'direct:scene'
+    rateLimitKey: 'direct:scene',
+    reasoningEffort: ''
   });
+});
+
+test('preset binding keeps reasoningEffort even when task fields mirror the preset connection', () => {
+  const config = {
+    llm_preset_id: '',
+    llm_model: 'default-model',
+    llm_api_presets: [
+      {
+        id: 'thinker-preset',
+        name: 'Thinker',
+        url: 'https://thinker.example/v1',
+        key: 'thinker-key',
+        model: 'thinker-model',
+        reasoningEffort: 'low'
+      }
+    ],
+    llm_scene_preset_id: 'thinker-preset',
+    llm_scene_url: 'https://thinker.example/v1',
+    llm_scene_key: 'thinker-key',
+    llm_scene_model: 'thinker-model'
+  };
+
+  // 前端「绑定预设」会把预设 url/key 原样抄进任务字段；与预设一致时仍按预设分支处理
+  assert.deepEqual(resolveTaskLlmConfig(config, 'scene'), {
+    baseUrl: 'https://thinker.example/v1',
+    apiKey: 'thinker-key',
+    model: 'thinker-model',
+    streamEnabled: true,
+    rateLimitEnabled: true,
+    rateLimitRpm: 3,
+    rateLimitKey: 'preset:thinker-preset',
+    reasoningEffort: 'low'
+  });
+
+  // 任务字段与预设不一致（真直连覆盖）→ 直连分支，无思考等级
+  const overridden = resolveTaskLlmConfig({
+    ...config,
+    llm_scene_url: 'https://other.example/v1',
+    llm_scene_key: 'other-key',
+    llm_scene_model: 'other-model'
+  }, 'scene');
+  assert.equal(overridden.rateLimitKey, 'direct:scene');
+  assert.equal(overridden.reasoningEffort, '');
 });
 
 test('scene count uses characters for CJK and words for English chapters', () => {

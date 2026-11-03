@@ -9,6 +9,15 @@
     "llm_failover_enabled": true,
     "llm_api_presets": [
         {
+            "id": "1793672784858",
+            "name": "IFM",
+            "rateLimitEnabled": true,
+            "rateLimitRpm": 3,
+            "url": "",
+            "key": "",
+            "model": ""
+        },
+        {
             "id": "1781579277070",
             "name": "vps",
             "rateLimitEnabled": false,

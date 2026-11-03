@@ -959,10 +959,16 @@ function App() {
     trim: { url: 'llm_trim_url', key: 'llm_trim_key', model: 'llm_trim_model', presetId: 'llm_trim_preset_id' }
   };
 
+  // 思考等级（reasoning_effort）：IFM/K2-Horizon 等思考模型需要显式指定；合法值 low/medium/high，空 = 不传参数
+  const normalizeEffortValue = (value) => {
+    const effort = String(value || '').trim().toLowerCase();
+    return ['low', 'medium', 'high'].includes(effort) ? effort : '';
+  };
   const normalizePreset = (preset = {}) => ({
     ...preset,
     rateLimitEnabled: preset?.rateLimitEnabled !== false,
     rateLimitRpm: Number(preset?.rateLimitRpm) || 3,
+    reasoningEffort: normalizeEffortValue(preset?.reasoningEffort),
     // 失败自动切换是可选能力：取消勾选的预设不会被当作接盘的「下一个」
     failoverEligible: preset?.failoverEligible !== false
   });
@@ -5205,6 +5211,7 @@ function App() {
                             model: config.llm_model || "",
                             rateLimitEnabled: config.llm_rate_limit_enabled !== false,
                             rateLimitRpm: Number(config.llm_rate_limit_rpm) || 3,
+                            reasoningEffort: '',
                             failoverEligible: true
                           };
                           const presets = [...(config.llm_api_presets || []), newPreset];
@@ -5276,6 +5283,7 @@ function App() {
                                 <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.06)', borderRadius: '4px', padding: '1px 6px' }}>#{presetIndex + 1}</span>
                                 {preset.name}
                                 <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>({preset.model || '未填模型'})</span>
+                                {preset.reasoningEffort && <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.06)', borderRadius: '4px', padding: '1px 6px' }} title="该预设请求时会携带 reasoning_effort 思考等级">思考:{preset.reasoningEffort}</span>}
                                 {isActivePreset && <span style={{ fontSize: '0.68rem', color: 'var(--color-pink)' }}>当前默认</span>}
                               </div>
                               <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -5315,6 +5323,7 @@ function App() {
                                       model: preset.model || '',
                                       rateLimitEnabled: preset.rateLimitEnabled !== false,
                                       rateLimitRpm: Number(preset.rateLimitRpm) || 3,
+                                      reasoningEffort: preset.reasoningEffort || '',
                                       failoverEligible: preset.failoverEligible !== false
                                     });
                                   }}
@@ -5357,7 +5366,7 @@ function App() {
                               </div>
                             )}
                             {!isEditing && (
-                            <div style={{ display: 'grid', gridTemplateColumns: '1.15fr 0.65fr 1.2fr', gap: '10px', alignItems: 'end' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.6fr 1fr 0.9fr', gap: '10px', alignItems: 'end' }}>
                               <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
                                 <input
                                   type="checkbox"
@@ -5404,6 +5413,25 @@ function App() {
                                 />
                                 参与失败自动切换
                               </label>
+                              <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)' }} title="思考模型（如 IFM/K2-Horizon）请求时携带的 reasoning_effort；留空则不传参数">
+                                思考等级
+                                <select
+                                  value={preset.reasoningEffort || ''}
+                                  onChange={(e) => setConfig(prev => ({
+                                    ...prev,
+                                    llm_api_presets: (prev.llm_api_presets || []).map(item => item.id === preset.id ? {
+                                      ...item,
+                                      reasoningEffort: e.target.value
+                                    } : item)
+                                  }))}
+                                  style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
+                                >
+                                  <option value="">不指定</option>
+                                  <option value="low">low · 快速</option>
+                                  <option value="medium">medium · 均衡</option>
+                                  <option value="high">high · 深思考</option>
+                                </select>
+                              </label>
                             </div>
                             )}
                             {isEditing && (
@@ -5446,7 +5474,7 @@ function App() {
                                     style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
                                   />
                                 </label>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1.15fr 0.65fr 1.2fr', gap: '10px', alignItems: 'end' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.6fr 1fr 0.9fr', gap: '10px', alignItems: 'end' }}>
                                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
                                     <input
                                       type="checkbox"
@@ -5475,6 +5503,19 @@ function App() {
                                     />
                                     参与失败自动切换
                                   </label>
+                                  <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)' }} title="思考模型（如 IFM/K2-Horizon）请求时携带的 reasoning_effort；留空则不传参数">
+                                    思考等级
+                                    <select
+                                      value={llmPresetDraft.reasoningEffort || ''}
+                                      onChange={(e) => setLlmPresetDraft(prev => ({ ...prev, reasoningEffort: e.target.value }))}
+                                      style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
+                                    >
+                                      <option value="">不指定</option>
+                                      <option value="low">low · 快速</option>
+                                      <option value="medium">medium · 均衡</option>
+                                      <option value="high">high · 深思考</option>
+                                    </select>
+                                  </label>
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
                                   <button
@@ -5499,6 +5540,7 @@ function App() {
                                           model: llmPresetDraft.model.trim(),
                                           rateLimitEnabled: llmPresetDraft.rateLimitEnabled !== false,
                                           rateLimitRpm: Number(llmPresetDraft.rateLimitRpm) || 3,
+                                          reasoningEffort: normalizeEffortValue(llmPresetDraft.reasoningEffort),
                                           failoverEligible: llmPresetDraft.failoverEligible !== false
                                         } : item)
                                       }));

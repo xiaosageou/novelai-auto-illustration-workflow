@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { ProjectProgress } from '../utils/db.js';
-import { getSceneCountMetrics, inferSceneInteractionActions, LLMExtractor } from './llm-extractor.js';
+import { getSceneCountMetrics, inferSceneInteractionActions, LLMExtractor, normalizeReasoningEffort } from './llm-extractor.js';
 import { NovelAIClient } from './nai-client.js';
 import { buildFinalImagePrompt } from './prompt-builder.js';
 import { loadVibeBundleForModel } from '../utils/vibe-bundle.js';
@@ -105,13 +105,17 @@ export function resolveTaskLlmConfig(config = {}, task = 'scene') {
   const presets = normalizePresetList(config.llm_api_presets);
   const defaultPreset = presets.find(preset => preset.id === config.llm_preset_id);
   const taskPreset = presets.find(preset => preset.id === config[`${prefix}_preset_id`]);
-  const hasDirectOverride = Boolean(
-    String(config[`${prefix}_url`] || '').trim()
-    || String(config[`${prefix}_key`] || '').trim()
-  );
+  const taskUrl = String(config[`${prefix}_url`] || '').trim();
+  const taskKey = String(config[`${prefix}_key`] || '').trim();
+  const hasDirectOverride = Boolean(taskUrl || taskKey);
   const activePreset = taskPreset || defaultPreset || null;
+  // 前端「绑定预设」会把预设的 url/key 原样抄进任务字段；只要与预设完全一致就仍按预设分支处理，
+  // 否则思考等级（reasoningEffort）、故障转移排序等预设能力会因绑定动作被当成直连覆盖而丢失。
+  const sameAsPreset = Boolean(activePreset)
+    && taskUrl === String(activePreset.url || '').trim()
+    && taskKey === String(activePreset.key || '').trim();
 
-  if (activePreset && !hasDirectOverride) {
+  if (activePreset && (!hasDirectOverride || sameAsPreset)) {
     return {
       baseUrl: activePreset.url || "",
       apiKey: activePreset.key || "",
@@ -119,7 +123,8 @@ export function resolveTaskLlmConfig(config = {}, task = 'scene') {
       streamEnabled: config.llm_stream_enabled !== false,
       rateLimitEnabled: activePreset.rateLimitEnabled !== false,
       rateLimitRpm: Number(activePreset.rateLimitRpm) || 3,
-      rateLimitKey: `preset:${activePreset.id}`
+      rateLimitKey: `preset:${activePreset.id}`,
+      reasoningEffort: normalizeReasoningEffort(activePreset.reasoningEffort)
     };
   }
 
@@ -134,7 +139,8 @@ export function resolveTaskLlmConfig(config = {}, task = 'scene') {
       ? 'direct:scene'
       : task === 'characterDna'
         ? 'direct:character-dna'
-        : 'direct:nai-tags'
+        : 'direct:nai-tags',
+    reasoningEffort: ''
   };
 }
 
@@ -174,7 +180,8 @@ export function resolveTaskLlmChain(config = {}, task = 'scene') {
     model: String(preset.model || '').trim(),
     rateLimitEnabled: preset.rateLimitEnabled !== false,
     rateLimitRpm: Number(preset.rateLimitRpm) || 3,
-    rateLimitKey: `preset:${preset.id}`
+    rateLimitKey: `preset:${preset.id}`,
+    reasoningEffort: normalizeReasoningEffort(preset.reasoningEffort)
   })).filter(item => Boolean(item.baseUrl));
 }
 
@@ -288,6 +295,7 @@ export class PipelineManager {
       trimUrl: trimConnection.baseUrl,
       trimKey: trimConnection.apiKey,
       trimModel: trimConnection.model,
+      reasoningEffort: connection.reasoningEffort,
       failoverChain: resolveTaskLlmChain(this.config, task),
       failoverEnabled: this.config.llm_failover_enabled !== false
     });

@@ -157,10 +157,12 @@ export function envToSecrets(env = {}) {
 
   const presets = {};
   for (const [key, value] of Object.entries(env)) {
-    const match = key.match(/^LLM_PRESET_(.+)_(URL|KEY|MODEL)$/);
+    const match = key.match(/^LLM_PRESET_(.+)_(URL|KEY|MODEL|REASONING_EFFORT)$/);
     if (!match || !value) continue;
     const id = match[1];
-    const field = match[2].toLowerCase();
+    const rawField = match[2].toLowerCase();
+    // REASONING_EFFORT 是非敏感的思考等级设置（low/medium/high），落成 camelCase 与预设对象字段对齐
+    const field = rawField === 'reasoning_effort' ? 'reasoningEffort' : rawField;
     presets[id] = { ...(presets[id] || {}), [field]: value };
   }
   if (Object.keys(presets).length) secrets.llm_api_presets = presets;
@@ -182,6 +184,9 @@ export function secretsToEnv(secrets = {}) {
       for (const field of ['url', 'key', 'model']) {
         const value = values[field];
         if (typeof value === 'string' && value) env[presetEnvKey(id, field)] = value;
+      }
+      if (typeof values.reasoningEffort === 'string' && values.reasoningEffort) {
+        env[presetEnvKey(id, 'reasoning_effort')] = values.reasoningEffort;
       }
     }
   }
@@ -213,6 +218,8 @@ export function splitConfig(config = {}) {
       if (typeof url === 'string' && url.trim()) entry.url = url;
       if (typeof key === 'string' && key.trim()) entry.key = key;
       if (typeof model === 'string' && model.trim()) entry.model = model;
+      // 思考等级：非敏感，公开配置保留一份，同时随密钥段写进 .env，保证故障转移轮转时跟随预设
+      if (typeof preset.reasoningEffort === 'string' && preset.reasoningEffort.trim()) entry.reasoningEffort = preset.reasoningEffort.trim();
       if (preset.id && Object.keys(entry).length) presetSecrets[preset.id] = entry;
       return { ...rest, url: '', key: '', model: '' };
     });
@@ -273,7 +280,8 @@ export function mergeConfig(publicConfig = {}, secrets = {}) {
         ...preset,
         url: typeof entry.url === 'string' && entry.url ? entry.url : (preset.url || ''),
         key: typeof entry.key === 'string' && entry.key ? entry.key : (preset.key || ''),
-        model: typeof entry.model === 'string' && entry.model ? entry.model : (preset.model || '')
+        model: typeof entry.model === 'string' && entry.model ? entry.model : (preset.model || ''),
+        reasoningEffort: typeof entry.reasoningEffort === 'string' && entry.reasoningEffort ? entry.reasoningEffort : (preset.reasoningEffort || '')
       };
     });
   }

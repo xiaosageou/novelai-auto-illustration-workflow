@@ -1013,6 +1013,16 @@ function getRateLimiter({ enabled = true, rpm = 3, key = 'default' } = {}) {
   return llmRateLimiterRegistry.get(limiterKey);
 }
 
+/**
+ * 归一化思考等级（reasoning_effort）。
+ * 仅接受 low / medium / high；IFM/K2-Horizon 这类思考模型不传时默认全量思考，
+ * 传 none/minimal 会被上游直接 400。其余值一律返回空串（不注入该参数）。
+ */
+export function normalizeReasoningEffort(value) {
+  const effort = String(value || '').trim().toLowerCase();
+  return ['low', 'medium', 'high'].includes(effort) ? effort : '';
+}
+
 export async function postChatCompletionWith429Retry({ url, headers, payload, idleTimeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null, signal = null, failover = null }) {
   // 出站正文脱敏：小说原文 / 场景描述里「十五岁的少女」「她才 15 岁」这类未成年年龄表达
   // 在发请求前物理删除，生成 prompt 的 LLM 看不到；18 岁及以上原样保留。
@@ -1043,8 +1053,11 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
     if (next.url) activeUrl = next.url;
     if (next.headers) activeHeaders = next.headers;
     if (next.rateLimit !== undefined) activeRateLimit = next.rateLimit;
-    if (next.model && safePayload && typeof safePayload === 'object') {
-      safePayload.model = next.model;
+    if (safePayload && typeof safePayload === 'object') {
+      if (next.model) safePayload.model = next.model;
+      // 思考等级跟着预设走：切到不支持该参数的预设时必须移除，避免上游对未知参数报 400
+      if (next.reasoningEffort) safePayload.reasoning_effort = next.reasoningEffort;
+      else delete safePayload.reasoning_effort;
     }
     console.warn(`${logPrefix} ${reason}，自动切换到下一个预设${next.label ? `：${next.label}` : ''}，继续重试`);
     return next;
@@ -1637,7 +1650,7 @@ function buildSceneExtractionUserContent({
 }
 
 export class LLMExtractor {
-  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", streamEnabled = true, rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "", maxRetries = DEFAULT_LLM_MAX_RETRIES, max429Retries = DEFAULT_LLM_429_MAX_RETRIES, retryDelayMs = 5000, failoverChain = [], failoverEnabled = true } = {}) {
+  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", streamEnabled = true, rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "", maxRetries = DEFAULT_LLM_MAX_RETRIES, max429Retries = DEFAULT_LLM_429_MAX_RETRIES, retryDelayMs = 5000, reasoningEffort = "", failoverChain = [], failoverEnabled = true } = {}) {
     this.baseUrl = baseUrl.trim().replace(/\/+$/, "");
     this.apiKey = apiKey.trim();
     this.system_prompt_extract_scenes = system_prompt_extract_scenes;
@@ -1652,6 +1665,7 @@ export class LLMExtractor {
     this.trimUrl = trimUrl.trim().replace(/\/+$/, "");
     this.trimKey = trimKey.trim();
     this.trimModel = trimModel.trim() || "mimo-v2.5";
+    this.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
     this.maxRetries = clampLlmRetries(maxRetries, DEFAULT_LLM_MAX_RETRIES, 1, LLM_MAX_RETRIES_CEILING);
     this.max429Retries = clampLlmRetries(max429Retries, DEFAULT_LLM_429_MAX_RETRIES, 0, LLM_429_MAX_RETRIES_CEILING);
     this.retryDelayMs = Number.isFinite(Number(retryDelayMs)) ? Math.max(0, Number(retryDelayMs)) : 5000;
@@ -1678,6 +1692,7 @@ export class LLMExtractor {
         rateLimitEnabled: item?.rateLimitEnabled !== false,
         rateLimitRpm: Number(item?.rateLimitRpm) || 3,
         rateLimitKey: String(item?.rateLimitKey || `preset:${item?.id || 'unknown'}`),
+        reasoningEffort: normalizeReasoningEffort(item?.reasoningEffort),
         label: item?.label || item?.id || '预设'
       }))
       .filter(item => Boolean(item.baseUrl));
@@ -1691,6 +1706,7 @@ export class LLMExtractor {
       this.activePresetLabel = current.label;
       this.activePresetId = current.id || '';
       if (current.model && !this.activeModel) this.activeModel = current.model;
+      if (current.reasoningEffort) this.reasoningEffort = current.reasoningEffort;
     }
   }
 
@@ -1713,6 +1729,7 @@ export class LLMExtractor {
     this.activePresetLabel = next.label;
     this.activePresetId = next.id || '';
     if (next.model) this.activeModel = next.model;
+    this.reasoningEffort = next.reasoningEffort || '';
     if (reason) {
       console.warn(`[LLM Extractor] ${reason}，自动切换到下一个 LLM 预设: ${next.label}`);
     }
@@ -1742,6 +1759,7 @@ export class LLMExtractor {
             key: next.rateLimitKey
           },
           model: next.model || undefined,
+          reasoningEffort: next.reasoningEffort || '',
           label: next.label
         };
       }
@@ -1769,6 +1787,7 @@ export class LLMExtractor {
   getActiveConnectionInfo() {
     return {
       model: this.activeModel || '',
+      reasoningEffort: this.reasoningEffort || '',
       presetLabel: this.activePresetLabel || '',
       presetId: this.activePresetId || '',
       baseUrl: this.baseUrl || '',
@@ -1833,10 +1852,17 @@ export class LLMExtractor {
   }
 
   withStreamPreference(payload = {}) {
-    return {
+    const next = {
       ...payload,
       stream: this.streamEnabled !== false
     };
+    // 思考等级注入：IFM/K2-Horizon 等思考模型需要显式指定 reasoning_effort，
+    // 不传时默认全量思考（费 token、拖慢速度，且小 max_tokens 时思维链会溢出污染正文）；
+    // payload 已显式指定时不覆盖。
+    if (this.reasoningEffort && next.reasoning_effort === undefined) {
+      next.reasoning_effort = this.reasoningEffort;
+    }
+    return next;
   }
 
   /**
