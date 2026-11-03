@@ -19,6 +19,7 @@ import { createAgentRouter } from './services/agent-api.js';
 import { createComicLegacyGuard } from './services/comic-service.js';
 import { createThumbnailMiddleware } from './services/thumbnail-service.js';
 import { GlobalQueueManager } from './services/global-queue-manager.js';
+import { findProxyBindingConflict } from './services/llm-extractor.js';
 
 const BASE_DIR = process.cwd();
 const CONFIG_PATH = path.join(BASE_DIR, 'illustrator_config.json');
@@ -715,7 +716,13 @@ app.get('/api/projects/:projectName', async (req, res) => {
     
     res.json({
       projectName: pipeline.projectName,
-      chapters: pipeline.chapters.map(c => ({ volume: c.volume, chapter: c.chapter, wordCount: c.content.length })),
+      chapters: pipeline.chapters.map(c => ({
+        volume: c.volume,
+        chapter: c.chapter,
+        wordCount: c.content.length,
+        chapterKey: c.chapterKey,
+        ordinal: c.ordinal
+      })),
       progress: pipeline.projectProgress.data
     });
   } catch (error) {
@@ -727,10 +734,15 @@ app.get('/api/projects/:projectName/chapters/:chapterKey/content', async (req, r
   try {
     const { projectName, chapterKey } = req.params;
     const pipeline = await getPipeline(projectName);
-    const chapter = pipeline.chapters.find(item => {
-      const key = pipeline.projectProgress.getEffectiveChapKey(item.volume, item.chapter);
-      return pipeline.projectProgress.normalizeKey(key) === pipeline.projectProgress.normalizeKey(chapterKey);
-    });
+    // 同名章节靠 chapterKey（带 #序号 后缀）精确定位，先精确匹配再回退归一化匹配
+    const decodedKey = decodeURIComponent(chapterKey || '');
+    let chapter = pipeline.chapters.find(item => item.chapterKey === decodedKey);
+    if (!chapter) {
+      chapter = pipeline.chapters.find(item => {
+        const key = pipeline.projectProgress.getEffectiveChapKey(item.volume, item.chapter, item.ordinal);
+        return pipeline.projectProgress.normalizeKey(key) === pipeline.projectProgress.normalizeKey(decodedKey);
+      });
+    }
     if (!chapter) return res.status(404).json({ error: "章节不存在" });
     res.json({
       volume: chapter.volume,
@@ -855,6 +867,19 @@ app.put('/api/projects/:projectName/characters/:characterName/features', async (
       return res.status(400).json({ error: "角色名不能为空" });
     }
 
+    // 全书脸模唯一 + 性别匹配校验（人物不得重复、男女要匹配）；force=true 可跳过
+    if (req.body?.proxy_character !== undefined) {
+      const conflictError = findProxyBindingConflict(
+        pipeline.projectProgress.getGlobalCharacters(),
+        characterName,
+        req.body.proxy_character,
+        { force: req.body?.force === true }
+      );
+      if (conflictError) {
+        return res.status(409).json({ error: conflictError });
+      }
+    }
+
     const updated = pipeline.projectProgress.setCharacterDNAFeatures(characterName, features);
     if (!updated) {
       return res.status(404).json({ error: `未找到角色「${characterName}」` });
@@ -884,6 +909,17 @@ app.put('/api/projects/:projectName/characters/:characterName/proxy', async (req
 
     if (!characterName) {
       return res.status(400).json({ error: "角色名不能为空" });
+    }
+
+    // 全书脸模唯一 + 性别匹配校验（人物不得重复、男女要匹配）；force=true 可跳过
+    const conflictError = findProxyBindingConflict(
+      pipeline.projectProgress.getGlobalCharacters(),
+      characterName,
+      proxyCharacter,
+      { force: req.body?.force === true }
+    );
+    if (conflictError) {
+      return res.status(409).json({ error: conflictError });
     }
 
     const updated = pipeline.projectProgress.setCharacterDNAProxy(characterName, proxyCharacter);
@@ -1016,7 +1052,7 @@ app.post('/api/projects/:projectName/pipeline/render-ready', async (req, res) =>
     } else {
       if (Array.isArray(pipeline.chapters)) {
         for (const c of pipeline.chapters) {
-          const ck = pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+          const ck = pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal);
           if (completedChapters[ck]) {
             candidateChapterKeys.push(ck);
           }
@@ -1329,7 +1365,7 @@ app.post('/api/projects/:projectName/build-epub', async (req, res) => {
 
     // 3. 填入所有章节内容
     for (const chap of pipeline.chapters) {
-      const chapKey = pipeline.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+      const chapKey = pipeline.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter, chap.ordinal);
       const progress = pipeline.projectProgress.getCompletedChapters()[chapKey];
       let content = chap.content;
 

@@ -2358,24 +2358,31 @@ export class LLMExtractor {
         })), null, 2)
       : "[]";
     const sourceChapters = Array.isArray(effectiveContext?.sourceChapters) ? effectiveContext.sourceChapters : [];
+    const knownCharactersObj = effectiveContext?.knownCharacters && typeof effectiveContext.knownCharacters === 'object' && !Array.isArray(effectiveContext.knownCharacters)
+      ? effectiveContext.knownCharacters
+      : {};
     const url = `${this.baseUrl}/chat/completions`;
+    const baseUserContentParts = [
+      "分析以下完整小说切片正文，提炼或更新主要人物及他们的角色外貌 DNA 属性。",
+      "请把【已知角色库】视为上一轮结果：同一角色请沿用既有 name，并把新称谓写入 aliases；不要因为称谓变化创建重复角色。",
+      `【本切片章节】: ${sourceChapters.join(", ") || "未知"}`,
+      "",
+      "【已知角色库】",
+      knownCharacters,
+      "",
+      "【小说切片正文】",
+      cleanedSliceText
+    ];
+    const buildUserContent = (extraFeedback = '') => (extraFeedback
+      ? [...baseUserContentParts, "", extraFeedback].join("\n")
+      : baseUserContentParts.join("\n"));
     const payload = {
       model,
       messages: [
         { role: "system", content: systemPrompt },
         {
           role: "user",
-          content: [
-            "分析以下完整小说切片正文，提炼或更新主要人物及他们的角色外貌 DNA 属性。",
-            "请把【已知角色库】视为上一轮结果：同一角色请沿用既有 name，并把新称谓写入 aliases；不要因为称谓变化创建重复角色。",
-            `【本切片章节】: ${sourceChapters.join(", ") || "未知"}`,
-            "",
-            "【已知角色库】",
-            knownCharacters,
-            "",
-            "【小说切片正文】",
-            cleanedSliceText
-          ].join("\n")
+          content: buildUserContent()
         },
         buildAssistantPrefill('角色 DNA 提炼', {
           opener: '先完成提取，然后输出 JSON 数组：'
@@ -2434,6 +2441,25 @@ export class LLMExtractor {
 
       // 对大模型提取出的角色 DNA 进行后处理二次净化，滤除任何瞬时/场景状态标签
       const sanitized = rawList.map(char => sanitizeCharacterDnaEntry(char, { defaultSourceChapters: sourceChapters }));
+
+      // 同人脸模唯一性 + 性别匹配校验：违规时携带修正令重试；最后一轮仍违规则确定性去重兜底。
+      // 约束：同一 danbooru_tag 全书只能绑定给一个角色；男性角色只能绑男性脸模，女性角色只能绑女性脸模。
+      const proxyIssues = findProxyAssignmentIssues(sanitized, knownCharactersObj);
+      if (proxyIssues.length > 0) {
+        for (const issue of proxyIssues) {
+          progressCb?.(`[角色 DNA 提炼] 同人脸模违规: ${issue.message}`, 'warning');
+        }
+        if (attempt >= this.maxRetries) {
+          const fixCount = applyProxyAssignmentFixes(sanitized, knownCharactersObj);
+          progressCb?.(`[角色 DNA 提炼] 重试后仍存在同人脸模冲突，已执行确定性去重兜底（解除 ${fixCount} 处冲突绑定）`, 'warning');
+        } else {
+          payload.messages[1].content = buildUserContent(buildProxyRetryFeedback(proxyIssues));
+          const violationError = new Error(`同人脸模分配违规（第 ${attempt}/${this.maxRetries} 轮）: ${proxyIssues.map(issue => issue.message).join('；')}`);
+          violationError.isProxyAssignmentViolation = true;
+          throw violationError;
+        }
+      }
+
       if (sanitized.length === 0) {
         progressCb?.(`[角色 DNA 提炼] 本切片未发现新主要角色或返回列表为空`, 'info');
       } else {
@@ -2467,7 +2493,8 @@ export class LLMExtractor {
         if (error?.code === 'LLM_429_EXHAUSTED') {
           break;
         }
-        if (this._switchOnBusinessFailure(`角色 DNA 提炼失败: ${error.message}`)) {
+        // 同人脸模违规属于内容问题，换预设解决不了，只做常规重试，不触发预设轮换。
+        if (!error?.isProxyAssignmentViolation && this._switchOnBusinessFailure(`角色 DNA 提炼失败: ${error.message}`)) {
           progressCb?.(`[角色 DNA 提炼] 已自动切换到下一个 LLM 预设重试`, 'warning');
           attempt = 0;
           continue;
@@ -3153,6 +3180,255 @@ export class LLMExtractor {
   }
 }
 
+// ── 同人脸模唯一性与性别匹配校验 ─────────────────────────────────────────────
+// 约束：生成角色 DNA 脸模时，同一 danbooru_tag 在全书角色库中只能绑定给一个角色（人物不得重复），
+// 且脸模性别必须与角色性别一致（男女要匹配）。
+
+const KNOWN_PROXY_GENDER_MAP = {
+  // 常见女性一线脸模
+  'kasugano_sora': 'female',
+  'rem_(re:zero)': 'female',
+  'asuka_langley_soryu': 'female',
+  'frieren': 'female',
+  'fern_(frieren)': 'female',
+  'yor_forger': 'female',
+  'tifa_lockhart': 'female',
+  'yukino_yukinoshita': 'female',
+  'chitanda_eru': 'female',
+  'shinomiya_kaguya': 'female',
+  'marin_kitagawa': 'female',
+  'hatsune_miku': 'female',
+  'megumin': 'female',
+  'zero_two_(darling_in_the_franxx)': 'female',
+  'saber': 'female',
+  'saber_(fate/stay_night)': 'female',
+  'elaina': 'female',
+  'violet_evergarden': 'female',
+  'makima_(chainsaw_man)': 'female',
+  'power_(chainsaw_man)': 'female',
+  'ganyu_(genshin_impact)': 'female',
+  'raiden_shogun_(genshin_impact)': 'female',
+  'hu_tao_(genshin_impact)': 'female',
+  'furina_(genshin_impact)': 'female',
+  'tohsaka_rin': 'female',
+  // 常见男性一线脸模
+  'gojo_satoru': 'male',
+  'levi_ackerman': 'male',
+  'loid_forger': 'male',
+  'kamado_tanjiro': 'male',
+  'dazai_osamu': 'male',
+  'nanami_kento': 'male',
+  'killua_zoldyck': 'male',
+  'izuku_midoriya': 'male',
+  'geto_suguru': 'male',
+  'kageyama_tobio': 'male',
+  'edward_elric': 'male',
+  'toji_fushiguro': 'male'
+};
+
+/** 归一化脸模自身性别声明：male/female；不可判定返回 null */
+export function normalizeProxyGender(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return null;
+  if (/^(?:male|man|boy|男性|男|m)$/.test(v)) return 'male';
+  if (/^(?:female|woman|girl|女性|女|f)$/.test(v)) return 'female';
+  return null;
+}
+
+/** 归一化小说角色性别：boy/man→male，girl/woman→female；creature/unknown 等返回 null（跳过性别校验） */
+export function normalizeCharacterGender(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return null;
+  if (/^(?:man|boy|male|男性|男)$/.test(v)) return 'male';
+  if (/^(?:woman|girl|female|女性|女)$/.test(v)) return 'female';
+  return null;
+}
+
+function normalizeProxyTag(proxy) {
+  return String(proxy?.danbooru_tag || '').trim().toLowerCase().replace(/\s+/g, '_');
+}
+
+function proxyGenderOf(proxy) {
+  if (!proxy || typeof proxy !== 'object') return null;
+  const declared = normalizeProxyGender(proxy.gender);
+  if (declared) return declared;
+  return KNOWN_PROXY_GENDER_MAP[normalizeProxyTag(proxy)] || null;
+}
+
+function isSameCharacterIdentity(char, knownName, knownData) {
+  const name = String(char?.name || '').trim();
+  if (!name) return true; // 无名条目不参与冲突判定
+  if (name === String(knownName || '').trim()) return true;
+  const charAliases = Array.isArray(char.aliases) ? char.aliases.map(a => String(a || '').trim()) : [];
+  const knownAliases = Array.isArray(knownData?.aliases) ? knownData.aliases.map(a => String(a || '').trim()) : [];
+  return charAliases.includes(String(knownName || '').trim()) || knownAliases.includes(name);
+}
+
+/**
+ * 校验一批角色 DNA 的脸模分配：重复绑定 / 与已知角色库冲突 / 性别错配。
+ * 返回问题列表（每项含 type/tag/message）；合规时返回 []。
+ */
+export function findProxyAssignmentIssues(chars, knownCharacters = {}) {
+  const issues = [];
+  const list = Array.isArray(chars) ? chars : [];
+  const known = knownCharacters && typeof knownCharacters === 'object' ? knownCharacters : {};
+
+  const byTag = new Map();
+  for (const char of list) {
+    const tag = normalizeProxyTag(char?.proxy_character);
+    if (!tag) continue;
+    if (!byTag.has(tag)) byTag.set(tag, []);
+    byTag.get(tag).push(char);
+  }
+  for (const [tag, owners] of byTag) {
+    if (owners.length > 1) {
+      issues.push({
+        type: 'duplicate',
+        tag,
+        owners: owners.map(c => c.name),
+        message: `脸模 danbooru_tag「${tag}」被多个角色同时绑定（${owners.map(c => c.name).join('、')}）——同一同人脸模在全书角色库中只能绑定给一个角色`
+      });
+    }
+  }
+
+  for (const char of list) {
+    const tag = normalizeProxyTag(char?.proxy_character);
+    if (!tag) continue;
+    for (const [knownName, knownData] of Object.entries(known)) {
+      if (isSameCharacterIdentity(char, knownName, knownData)) continue;
+      if (normalizeProxyTag(knownData?.proxy_character) === tag) {
+        issues.push({
+          type: 'conflict_known',
+          tag,
+          charName: char.name,
+          knownName,
+          message: `脸模「${tag}」已被已知角色「${knownName}」绑定，不能改配给「${char.name}」`
+        });
+      }
+    }
+  }
+
+  for (const char of list) {
+    const tag = normalizeProxyTag(char?.proxy_character);
+    if (!tag) continue;
+    const charGender = normalizeCharacterGender(char.gender);
+    const proxyGender = proxyGenderOf(char.proxy_character);
+    if (!charGender || !proxyGender || charGender === proxyGender) continue;
+    issues.push({
+      type: 'gender_mismatch',
+      tag,
+      charName: char.name,
+      charGender,
+      proxyGender,
+      message: `角色「${char.name}」性别为${charGender === 'male' ? '男性' : '女性'}，却绑定了${proxyGender === 'male' ? '男性' : '女性'}脸模「${tag}」`
+    });
+  }
+
+  return issues;
+}
+
+/** 把脸模违规渲染成下一轮重试的修正令文本 */
+export function buildProxyRetryFeedback(issues) {
+  const lines = (Array.isArray(issues) ? issues : []).map((issue, index) => `${index + 1}. ${issue.message}`);
+  return [
+    '【同人脸模修正令 - 本轮输出必须逐条修正以下违规】',
+    ...lines,
+    '修正铁律：',
+    '- 同一 danbooru_tag 在全书角色库中只能绑定给一个角色：发生重复时，只为契合度最高的角色保留该脸模，其余角色必须改选气质相近但完全不同的知名同人脸模。',
+    '- 男性角色（boy/man）只能绑定男性同人脸模（如 gojo_satoru、levi_ackerman、loid_forger、kamado_tanjiro、dazai_osamu、nanami_kento）；女性角色（girl/woman）只能绑定女性同人脸模（如 kasugano_sora、rem_(re:zero)、yor_forger、frieren、megumin、marin_kitagawa）。',
+    '- 【已知角色库】中已绑定的脸模必须原样沿用给本人，不得改配给其他角色，也不得为其他角色重复选用。',
+    '- proxy_character.gender 必须如实填写该同人角色自身的性别（male/female）。',
+    '未修正以上任何一条的输出将被判为失败并重新生成。'
+  ].join('\n');
+}
+
+/**
+ * 确定性兜底：解除性别错配绑定、已知库冲突绑定，并在批内重复时按
+ * 「性别匹配 > confidence 高 > 靠前」保留一条、其余解除。返回解除的绑定数。
+ */
+export function applyProxyAssignmentFixes(chars, knownCharacters = {}) {
+  const list = Array.isArray(chars) ? chars : [];
+  const known = knownCharacters && typeof knownCharacters === 'object' ? knownCharacters : {};
+  let fixCount = 0;
+
+  const clearProxy = (char) => {
+    if (char && char.proxy_character) {
+      char.proxy_character = null;
+      fixCount += 1;
+    }
+  };
+
+  // 1) 性别错配直接解除绑定：错误的锁脸比没有锁脸更糟
+  for (const char of list) {
+    const charGender = normalizeCharacterGender(char.gender);
+    const proxyGender = proxyGenderOf(char.proxy_character);
+    if (charGender && proxyGender && charGender !== proxyGender) {
+      clearProxy(char);
+    }
+  }
+
+  // 2) 与已知角色库冲突：已知角色的既有绑定不动，当前条目解除
+  const knownTagOwners = new Map();
+  for (const [knownName, knownData] of Object.entries(known)) {
+    const knownTag = normalizeProxyTag(knownData?.proxy_character);
+    if (knownTag && !knownTagOwners.has(knownTag)) knownTagOwners.set(knownTag, knownName);
+  }
+  for (const char of list) {
+    const tag = normalizeProxyTag(char?.proxy_character);
+    if (!tag) continue;
+    const owner = knownTagOwners.get(tag);
+    if (owner && !isSameCharacterIdentity(char, owner, known[owner])) {
+      clearProxy(char);
+    }
+  }
+
+  // 3) 批内重复：性别匹配者优先，其次 confidence 高者优先，再次靠前者保留，其余解除
+  const byTag = new Map();
+  list.forEach((char, index) => {
+    const tag = normalizeProxyTag(char?.proxy_character);
+    if (!tag) return;
+    if (!byTag.has(tag)) byTag.set(tag, []);
+    byTag.get(tag).push({ char, index });
+  });
+  for (const owners of byTag.values()) {
+    if (owners.length <= 1) continue;
+    const proxyGender = proxyGenderOf(owners[0].char.proxy_character);
+    const scored = owners.map(entry => ({
+      ...entry,
+      genderMatch: proxyGender ? normalizeCharacterGender(entry.char.gender) === proxyGender : false,
+      confidence: Number.isFinite(Number(entry.char.confidence)) ? Number(entry.char.confidence) : 0
+    }));
+    scored.sort((a, b) => ((b.genderMatch === true) - (a.genderMatch === true)) || (b.confidence - a.confidence) || (a.index - b.index));
+    for (const loser of scored.slice(1)) clearProxy(loser.char);
+  }
+
+  return fixCount;
+}
+
+/**
+ * 手动绑定/更新同人脸模时的全书唯一性与性别校验。
+ * 返回错误消息字符串；无冲突返回 null。globalCharacters 为项目当前角色库，force=true 跳过校验。
+ */
+export function findProxyBindingConflict(globalCharacters, characterName, proxyCharacter, { force = false } = {}) {
+  if (force) return null;
+  const tag = normalizeProxyTag(proxyCharacter);
+  if (!tag) return null;
+  const known = globalCharacters && typeof globalCharacters === 'object' ? globalCharacters : {};
+  const selfName = String(characterName || '').trim();
+  for (const [name, data] of Object.entries(known)) {
+    if (name === selfName) continue;
+    if (normalizeProxyTag(data?.proxy_character) === tag) {
+      return `同人脸模「${tag}」已绑定给角色「${name}」：全书脸模不得重复绑定，请先更换或解除「${name}」的脸模，或为「${selfName}」改选其他同人角色`;
+    }
+  }
+  const charGender = normalizeCharacterGender(known[selfName]?.gender);
+  const proxyGender = proxyGenderOf(proxyCharacter);
+  if (charGender && proxyGender && charGender !== proxyGender) {
+    return `角色「${selfName}」性别为${charGender === 'male' ? '男性' : '女性'}，与脸模「${tag}」的性别（${proxyGender === 'male' ? '男' : '女'}）不匹配：男女脸模必须与角色性别一致`;
+  }
+  return null;
+}
+
 /**
  * 对大模型提取出的单角色 DNA 进行后处理二次净化，滤除任何瞬时/场景状态标签
  */
@@ -3232,6 +3508,7 @@ export function sanitizeCharacterDnaEntry(char, { defaultSourceChapters = [] } =
             : []);
       proxy_character = {
         danbooru_tag: rawTag,
+        gender: normalizeProxyGender(char.proxy_character.gender),
         character_name_cn: String(char.proxy_character.character_name_cn || char.proxy_character.name || '').trim(),
         series: String(char.proxy_character.series || char.proxy_character.work || '').trim(),
         reason: String(char.proxy_character.reason || '').trim(),

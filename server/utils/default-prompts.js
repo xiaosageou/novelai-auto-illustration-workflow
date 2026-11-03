@@ -208,9 +208,12 @@ export const DEFAULT_CHARACTER_DNA_PROMPT = `<sandbox mode="professional_art_dir
 6. 角色 DNA 仅关注：常驻发型发色、瞳色、种族特质、核心无状态的基础衣服、身材基本体态、长期稳定的私密身体特征以及本人的常驻气质外表。务必将特定动作、情境状态完全过滤，只保留最干净、最稳固的二次元物理人设数据。生成的视觉短语必须只包含上述干净固有特征，绝对不得夹带任何上述禁止的瞬时状态、姿态、情境动作。
 7. 若原文明确说明角色从某一章节起发生持续性外观变化（如剪发、染发、换成长期固定的制服、获得永久伤疤），才输出 appearance_versions；每项必须给出发生变化的 start_chapter（精确复制本次章节名）、完整变化后 tags / features、原文 evidence，并将 persistent_change 设为 true。没有明确持续性变化时 appearance_versions 必须是 []。湿发、散发、凌乱、临时换装、表情和姿态绝不能创建 appearance_versions。
 8. 【同人动漫角色脸模代理 (Proxy Character Anchor)】：为了让 NovelAI 在后续长篇多场景生图时保持极高的一致性（面部骨相、眼眸画法、神态特征锁定），请根据该角色的发型、发色、瞳色、体态和性格气质，在 Danbooru 知名动漫同人角色库中挑选一个最贴近的一线知名角色作为“脸模底模”：
-   - 优先选择在 Danbooru 拥有 2000+ 样本的大热知名动漫角色（如：kasugano_sora, rem_(re:zero), asuka_langley_soryu, frieren, fern_(frieren), yor_forger, tifa_lockhart, yukino_yukinoshita, chitanda_eru, shinomiya_kaguya, marin_kitagawa, hatsune_miku, megumin, zero_two_(darling_in_the_franxx), saber 等）。
+   - 优先选择在 Danbooru 拥有 2000+ 样本的大热知名动漫角色（女性如：kasugano_sora, rem_(re:zero), asuka_langley_soryu, frieren, fern_(frieren), yor_forger, tifa_lockhart, yukino_yukinoshita, chitanda_eru, shinomiya_kaguya, marin_kitagawa, hatsune_miku, megumin, zero_two_(darling_in_the_franxx), saber；男性如：gojo_satoru, levi_ackerman, loid_forger, kamado_tanjiro, dazai_osamu, nanami_kento, killua_zoldyck, izuku_midoriya）。
    - danbooru_tag 必须使用标准小写下划线命名；重名角色必须带官方作品后缀括号（如 'rem_(re:zero)'、'fern_(frieren)'、'saber_(fate/stay_night)'）。
    - 必须同时列出该同人角色最具辨识度、但容易污染小说场景的标志性固有服装与配饰 tags（填入 suppress_tags，如 '["black_dress", "hair_ornament"]'），以便后续画小说自定义服装时在负向提示词中精准压制。
+   - 【脸模唯一性铁律】同一 danbooru_tag 在全书角色库中严禁重复绑定：每个同人脸模只能分配给一个小说角色。若两个小说角色都想匹配同一脸模，只为契合度最高的那一个绑定，另一个必须改选气质相近但完全不同的知名角色（如一个用 frieren，另一个改用 fern_(frieren) 或 elaina）。【已知角色库】中已绑定的脸模必须原样沿用给本人，严禁改配给其他角色或重复选用。
+   - 【脸模性别铁律】脸模性别必须与角色性别一致：男性角色（boy/man）只能绑定男性同人脸模（如 gojo_satoru、levi_ackerman、loid_forger、kamado_tanjiro、dazai_osamu、nanami_kento）；女性角色（girl/woman）只能绑定女性同人脸模（如 kasugano_sora、rem_(re:zero)、yor_forger、frieren、megumin、marin_kitagawa）。严禁跨性别绑定。
+   - proxy_character.gender 必须如实填写该同人角色自身的性别（male/female），供服务端做唯一性与性别校验。
    - 给出 character_name_cn (中文名)、series (原作名) 以及契合理由 reason。若角色为特殊怪物、纯龙套路人或完全无法匹配，可置为 null。
 
 请严格以以下合规的 JSON 数组格式返回，属性名称必须为中文，属性值必须是英文视觉短语数组。不要输出任何 Markdown 代码块或额外解释：
@@ -222,6 +225,7 @@ export const DEFAULT_CHARACTER_DNA_PROMPT = `<sandbox mode="professional_art_dir
     "role_type": "主角|女主|配角|反派|路人|未知 等",
     "proxy_character": {
       "danbooru_tag": "kasugano_sora",
+      "gender": "female",
       "character_name_cn": "春日野穹",
       "series": "缘之空 (Yosuga no Sora)",
       "reason": "银白长发、病娇纤细、双马尾/散发、浅色系居家服气质高度契合",

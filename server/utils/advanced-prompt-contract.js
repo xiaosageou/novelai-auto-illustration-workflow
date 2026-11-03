@@ -42,11 +42,15 @@ export function normalizeCharacterDnaPromptForConfig(taskPrompt) {
 请在每个角色的 JSON 输出中必须包含 "proxy_character" 字段（若角色为怪物或完全无法匹配可填 null）：
 "proxy_character": {
   "danbooru_tag": "kasugano_sora",
+  "gender": "female",
   "character_name_cn": "春日野穹",
   "series": "缘之空 (Yosuga no Sora)",
   "reason": "银白长发、病娇纤细、双马尾/散发、浅色系居家服气质高度契合",
   "suppress_tags": ["black_dress", "hair_ornament"]
-}`;
+}
+脸模铁律（服务端强制校验，违反即判失败重试）：
+1) 脸模唯一：同一 danbooru_tag 在全书角色库中只能绑定给一个小说角色；发生重复时只为契合度最高者保留，其余改选气质相近但不同的知名角色。已知角色库中已绑定的脸模必须原样沿用，不得改配给其他角色。
+2) 性别匹配：男性角色（boy/man）只能绑定男性同人脸模（如 gojo_satoru、levi_ackerman、loid_forger、kamado_tanjiro）；女性角色（girl/woman）只能绑定女性同人脸模。proxy_character.gender 必须如实填写同人角色自身性别（male/female）。`;
 }
 
 export function normalizeAdvancedPromptForConfig(taskPrompt) {
