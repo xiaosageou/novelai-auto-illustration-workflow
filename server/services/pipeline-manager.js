@@ -373,6 +373,7 @@ export class PipelineManager {
   async parseNovel() {
     if (!existsSync(this.novelPath)) {
       this.chapters = [];
+      this.assignChapterKeys();
       return;
     }
 
@@ -423,7 +424,49 @@ export class PipelineManager {
 
     } catch (error) {
       console.error("[Pipeline] 解析小说文本失败:", error);
+    } finally {
+      this.assignChapterKeys();
     }
+  }
+
+  /**
+   * 给每章分配稳定唯一标识。
+   * 同名同卷章节（例如两章都叫「第19章」）默认会生成完全相同的 key，
+   * 导致正文定位、生图进度、队列状态、选区缓存全部串号。
+   * 这里给同名章节除首个外追加 `#序号` 后缀，同时保证旧数据（无后缀）仍对应首个同名章。
+   */
+  assignChapterKeys() {
+    const groups = new Map();
+    this.chapters.forEach((chap, index) => {
+      chap.ordinal = index;
+      const base = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+      if (!groups.has(base)) groups.set(base, []);
+      groups.get(base).push(index);
+    });
+    this.chapterKeyGroups = groups;
+    this.chapters.forEach((chap) => {
+      const base = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+      const group = groups.get(base);
+      const isDuplicate = Array.isArray(group) && group.length > 1;
+      chap.chapterKey = isDuplicate && chap.ordinal !== group[0] ? `${base}#${chap.ordinal}` : base;
+    });
+    if (this.projectProgress) {
+      this.projectProgress.resolveChapterKey = (volume, chapter, ordinal) => {
+        const base = `${volume}_${chapter}`.replace(/\s+/g, '_');
+        const group = this.chapterKeyGroups?.get(base);
+        if (!Array.isArray(group) || group.length < 2) return base;
+        if (!Number.isInteger(ordinal)) return base;
+        return ordinal === group[0] ? base : `${base}#${ordinal}`;
+      };
+    }
+  }
+
+  /** 取章节的唯一 key（优先使用 parseNovel 分配的 chapterKey） */
+  chapterKeyOf(chap) {
+    if (!chap) return '';
+    if (chap.chapterKey) return chap.chapterKey;
+    return this.projectProgress?.getEffectiveChapKey?.(chap.volume, chap.chapter, chap.ordinal)
+      || `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
   }
 
   /**
@@ -771,7 +814,7 @@ export class PipelineManager {
     this.abortController = new AbortController();
     await this.initialize();
     this.chapterIndexMap = new Map(this.chapters.map((c, index) => [
-      this.projectProgress.getEffectiveChapKey(c.volume, c.chapter),
+      this.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal),
       index
     ]));
     const autoUpdateCharacterDna = Boolean(options.autoUpdateCharacterDna);
@@ -804,7 +847,7 @@ export class PipelineManager {
         // 单章模式
         const targetNormalized = this.projectProgress.normalizeKey(targetChapterKey);
         const idx = this.chapters.findIndex(c => {
-          const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+          const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal);
           return this.projectProgress.normalizeKey(ck) === targetNormalized;
         });
         if (idx === -1) {
@@ -828,12 +871,12 @@ export class PipelineManager {
   async prepareSingleSceneForRedraw(chapterKey, sceneIdx) {
     await this.initialize();
     const chap = this.chapters.find(c => {
-      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal);
       return this.projectProgress.normalizeKey(ck) === this.projectProgress.normalizeKey(chapterKey);
     });
     if (!chap) throw new Error(`找不到章节: ${chapterKey}`);
 
-    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter, chap.ordinal);
     const currentProgress = this.projectProgress.getCompletedChapters()[chapKey];
     if (!currentProgress || !Array.isArray(currentProgress.scenes)) {
       throw new Error(`该章节尚未生成过场景卡片，请先整体生成。`);
@@ -863,7 +906,7 @@ export class PipelineManager {
     this.abortController = new AbortController();
     await this.initialize();
     this.chapterIndexMap = new Map(this.chapters.map((c, index) => [
-      this.projectProgress.getEffectiveChapKey(c.volume, c.chapter),
+      this.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal),
       index
     ]));
     const autoUpdateCharacterDna = Boolean(options.autoUpdateCharacterDna);
@@ -910,7 +953,7 @@ export class PipelineManager {
       }
 
       const chap = this.chapters[idx];
-      const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+      const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter, chap.ordinal);
 
       if (this.projectProgress.normalizeKey(chapKey) !== this.projectProgress.normalizeKey(targetChapterKey)) {
         continue;
@@ -1408,7 +1451,7 @@ export class PipelineManager {
   async prepareSingleScenePrompt(chap, scene, scenes, chapKey, llmModel) {
     // A. 智能命中角色 DNA 标签组
     const chapterIndex = this.chapterIndexMap?.get(chapKey)
-      ?? this.chapters.findIndex(item => item.volume === chap.volume && item.chapter === chap.chapter);
+      ?? this.chapters.findIndex(item => this.chapterKeyOf(item) === this.chapterKeyOf(chap));
     const matchedAnchors = this.autoMatchCharacterDNA(scene, chap.content, Math.max(0, chapterIndex));
 
     // B. 高级参数生成
@@ -1806,7 +1849,7 @@ export class PipelineManager {
   async _processChapterLlmPhase(chap, idx, totalChapters, sceneModel, naiTagsModel, naiQueue, autoUpdateCharacterDna, { resetScenes = false } = {}) {
     if (!this.isRunning) return null;
 
-    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter, chap.ordinal);
 
     // ── DNA 切片检查（带并发锁）────────────────────────────────────────────
     const dnaSlice = this.getCharacterDnaSliceInfoByChapterIndex(idx);
@@ -2092,12 +2135,12 @@ export class PipelineManager {
     }
 
     const chap = this.chapters.find(c => {
-      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal);
       return this.projectProgress.normalizeKey(ck) === this.projectProgress.normalizeKey(chapterKey);
     });
     if (!chap) throw new Error(`找不到章节: ${chapterKey}`);
 
-    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter, chap.ordinal);
     const currentProgress = this.projectProgress.getCompletedChapters()[chapKey];
     if (!currentProgress || !Array.isArray(currentProgress.scenes)) {
       throw new Error(`该章节尚未生成过场景卡片，请先整体生成。`);
@@ -2163,12 +2206,12 @@ export class PipelineManager {
     }
 
     const chap = this.chapters.find(c => {
-      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal);
       return this.projectProgress.normalizeKey(ck) === this.projectProgress.normalizeKey(chapterKey);
     });
     if (!chap) throw new Error(`找不到章节: ${chapterKey}`);
 
-    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter, chap.ordinal);
     const currentProgress = this.projectProgress.getCompletedChapters()[chapKey];
     if (!currentProgress || !Array.isArray(currentProgress.scenes)) {
       throw new Error("该章节尚未生成过场景卡片，请先整体生成。");
@@ -2302,12 +2345,12 @@ export class PipelineManager {
     await this.initialize();
 
     const chap = this.chapters.find(c => {
-      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal);
       return this.projectProgress.normalizeKey(ck) === this.projectProgress.normalizeKey(chapterKey);
     });
     if (!chap) throw new Error(`找不到章节: ${chapterKey}`);
 
-    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter, chap.ordinal);
     const currentProgress = this.projectProgress.getCompletedChapters()[chapKey];
     if (!currentProgress || !Array.isArray(currentProgress.scenes)) {
       throw new Error(`该章节尚未生成过场景卡片，请先整体生成。`);
@@ -2394,12 +2437,12 @@ export class PipelineManager {
     }
 
     const chap = this.chapters.find(c => {
-      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal);
       return this.projectProgress.normalizeKey(ck) === this.projectProgress.normalizeKey(chapterKey);
     });
     if (!chap) throw new Error(`找不到章节: ${chapterKey}`);
 
-    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter, chap.ordinal);
     const currentProgress = this.projectProgress.getCompletedChapters()[chapKey];
     if (!currentProgress || !Array.isArray(currentProgress.scenes)) {
       throw new Error(`该章节尚未生成过场景卡片，无法删除场景。`);
@@ -2450,12 +2493,12 @@ export class PipelineManager {
     }
 
     const chap = this.chapters.find(c => {
-      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal);
       return this.projectProgress.normalizeKey(ck) === this.projectProgress.normalizeKey(chapterKey);
     });
     if (!chap) throw new Error(`找不到章节: ${chapterKey}`);
 
-    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter, chap.ordinal);
     const currentProgress = this.projectProgress.getCompletedChapters()[chapKey];
     if (!currentProgress || !Array.isArray(currentProgress.scenes)) {
       throw new Error('该章节尚未生成过场景卡片，无法编辑。');
@@ -2577,7 +2620,7 @@ export class PipelineManager {
     await this.initialize();
 
     const chap = this.chapters.find(c => {
-      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+      const ck = this.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal);
       return this.projectProgress.normalizeKey(ck) === this.projectProgress.normalizeKey(chapterKey);
     });
     if (!chap) throw new Error(`找不到章节: ${chapterKey}`);
@@ -2598,7 +2641,7 @@ export class PipelineManager {
       throw new Error("没有可用的正文选段，正文可能已变化，请刷新后重试。");
     }
 
-    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter, chap.ordinal);
     const currentProgress = this.projectProgress.getCompletedChapters()[chapKey] || {};
     const scenes = Array.isArray(currentProgress.scenes)
       ? currentProgress.scenes.map(scene => ({ ...scene }))
@@ -2695,7 +2738,7 @@ export class PipelineManager {
     const completedChapters = this.projectProgress.getCompletedChapters();
 
     for (const chap of this.chapters) {
-      const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+      const chapKey = this.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter, chap.ordinal);
       const progress = completedChapters[chapKey];
       let content = chap.content;
 

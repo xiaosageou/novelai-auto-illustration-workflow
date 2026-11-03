@@ -141,6 +141,18 @@ function App() {
   // LLM API 预设：内联编辑草稿（null 表示没有正在编辑的卡片）
   const [llmPresetDraft, setLlmPresetDraft] = useState(null);
 
+  // 章节唯一标识：后端会为同名同卷章节（如两章都叫「第19章」）分配带 #序号 的 chapterKey
+  const chapterKeyOf = (chap, fallbackChapter) => {
+    if (chap && typeof chap === 'object') {
+      if (chap.chapterKey) return chap.chapterKey;
+      return `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+    }
+    if (typeof chap === 'string') {
+      return fallbackChapter ? `${chap}_${fallbackChapter}`.replace(/\s+/g, '_') : chap;
+    }
+    return '';
+  };
+
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState("");
   const [projectDetails, setProjectDetails] = useState(null);
@@ -366,6 +378,7 @@ function App() {
     return {
       volume: selectedChapter.volume,
       chapter: selectedChapter.chapter,
+      chapterKey: chapterKeyOf(selectedChapter),
       paragraphIndex,
       percent
     };
@@ -430,7 +443,7 @@ function App() {
   const openReaderChapter = (chap) => {
     if (!chap) return;
     if (activeProject && selectedChapter && textSelections.length > 0) {
-      const previousChapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+      const previousChapterKey = chapterKeyOf(selectedChapter);
       saveReaderSelections(activeProject, previousChapterKey, textSelections);
     }
     flushReaderProgress();
@@ -443,7 +456,7 @@ function App() {
 
   const readerChapters = projectDetails?.chapters || [];
   const currentReaderChapterIndex = selectedChapter
-    ? readerChapters.findIndex(chap => chap.volume === selectedChapter.volume && chap.chapter === selectedChapter.chapter)
+    ? readerChapters.findIndex(chap => chapterKeyOf(chap) === chapterKeyOf(selectedChapter))
     : -1;
 
   const goReaderChapter = (delta) => {
@@ -485,12 +498,13 @@ function App() {
     const saved = forced || readReaderProgressMap()[activeProject];
     readerRestoreRef.current = null;
     if (!saved) return;
-    const target = chapters.find(chap => chap.chapter === saved.chapter && chap.volume === saved.volume);
+    // 优先按唯一 chapterKey 匹配，回退到 volume+chapter（兼容旧进度记录）
+    const target = (saved.chapterKey && chapters.find(chap => chap.chapterKey === saved.chapterKey))
+      || chapters.find(chap => chap.chapter === saved.chapter && chap.volume === saved.volume);
     if (!target) return;
-    const isSameChapter = selectedChapter
-      && selectedChapter.chapter === target.chapter
-      && selectedChapter.volume === target.volume;
+    const isSameChapter = chapterKeyOf(selectedChapter) === chapterKeyOf(target);
     readerScrollRestoreRef.current = {
+      chapterKey: chapterKeyOf(target),
       volume: target.volume,
       chapter: target.chapter,
       paragraphIndex: Number.isFinite(saved.paragraphIndex) ? saved.paragraphIndex : 0,
@@ -511,8 +525,7 @@ function App() {
     const pending = readerScrollRestoreRef.current;
     const shouldRestore = pending
       && selectedChapter
-      && pending.chapter === selectedChapter.chapter
-      && pending.volume === selectedChapter.volume
+      && pending.chapterKey === chapterKeyOf(selectedChapter)
       && (pending.paragraphIndex > 0 || pending.percent > 0);
     if (!shouldRestore) {
       // 不要清空 pending：章节内容可能先于目标章节渲染，留给下一次匹配
@@ -875,7 +888,7 @@ function App() {
       setTextSelections([]);
       return;
     }
-    const chapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+    const chapterKey = chapterKeyOf(selectedChapter);
     let cancelled = false;
     setChapterContent(null);
     fetch(`${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/chapters/${encodeURIComponent(chapterKey)}/content`)
@@ -1060,7 +1073,7 @@ function App() {
 
   const selectProject = async (name, shouldSwitchTab = false) => {
     if (activeProject && selectedChapter && textSelections.length > 0) {
-      const previousChapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+      const previousChapterKey = chapterKeyOf(selectedChapter);
       saveReaderSelections(activeProject, previousChapterKey, textSelections);
     }
     setEditingCharacterName("");
@@ -1195,7 +1208,7 @@ function App() {
       setIsExtractingDna(true);
       const chapters = projectDetails?.chapters || [];
       const selectedIndex = selectedChapter
-        ? chapters.findIndex(chap => chap.volume === selectedChapter.volume && chap.chapter === selectedChapter.chapter)
+        ? chapters.findIndex(chap => chapterKeyOf(chap) === chapterKeyOf(selectedChapter))
         : 0;
       const chapterIndex = selectedIndex >= 0 ? selectedIndex : 0;
       const sliceIndex = Math.floor(chapterIndex / 10);
@@ -1256,7 +1269,7 @@ function App() {
 
   const generateSingleChapter = async (chap, mode = 'complete') => {
     if (!activeProject || !chap) return;
-    const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+    const chapKey = chapterKeyOf(chap);
     const chapterStateKey = getChapterQueueStateKey(activeProject, chapKey);
     const actionLabel = mode === 'redraw' ? '清空重绘' : '补完';
     try {
@@ -1291,7 +1304,7 @@ function App() {
 
   const redrawScene = async (chap, sceneIdx) => {
     if (!activeProject || !chap) return;
-    const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+    const chapKey = chapterKeyOf(chap);
     const sceneKey = `${chapKey}_${sceneIdx}`;
 
     try {
@@ -1324,7 +1337,7 @@ function App() {
 
   const redrawSceneNaiOnly = async (chap, sceneIdx) => {
     if (!activeProject || !chap) return;
-    const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+    const chapKey = chapterKeyOf(chap);
     const sceneKey = `${chapKey}_${sceneIdx}`;
 
     try {
@@ -1413,7 +1426,7 @@ function App() {
 
   const deleteScene = async (chap, sceneIdx) => {
     if (!activeProject || !chap) return;
-    const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+    const chapKey = chapterKeyOf(chap);
     const sceneKey = `${chapKey}_${sceneIdx}`;
     const confirmed = window.confirm(`确定删除场景 #${sceneIdx} 吗？删除后会清除对应图片并重排后续编号。`);
     if (!confirmed) return;
@@ -1469,7 +1482,7 @@ function App() {
 
   const regenerateScene = async (chap, sceneIdx) => {
     if (!activeProject || !chap) return;
-    const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+    const chapKey = chapterKeyOf(chap);
     const sceneKey = `${chapKey}_${sceneIdx}`;
 
     try {
@@ -1566,17 +1579,20 @@ function App() {
     };
   };
 
-  const getChapterProgress = (volume, chapter) => {
+  const getChapterProgress = (chapOrVolume, chapter) => {
     if (!projectDetails || !projectDetails.progress || !projectDetails.progress.completed_chapters) return null;
     const completed = projectDetails.progress.completed_chapters;
-    const standardKey = `${volume}_${chapter}`.replace(/\s+/g, '_');
-    const targetNorm = standardKey.replace(/[\s_]+/g, '').toLowerCase();
+    const targetKey = chapterKeyOf(chapOrVolume, chapter);
+    if (!targetKey) return null;
+    if (completed[targetKey]) return completed[targetKey];
+    // 同名章节的 key 带 #序号，精确匹配失败时再回退归化匹配（兼容旧数据）
+    const targetNorm = targetKey.replace(/[\s_]+/g, '').toLowerCase();
     for (const [key, val] of Object.entries(completed)) {
       if (key.replace(/[\s_]+/g, '').toLowerCase() === targetNorm) {
         return val;
       }
     }
-    return completed[standardKey]; // 兜底直接取
+    return null;
   };
 
   const progressInfo = getProgress();
@@ -2292,7 +2308,7 @@ function App() {
       if (prev.some(item => item.paragraphIndex === paragraphIndex && item.text === text)) return prev;
       const next = [...prev, { paragraphIndex, paragraph, text }];
       if (activeProject && selectedChapter) {
-        const chapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+        const chapterKey = chapterKeyOf(selectedChapter);
         saveReaderSelections(activeProject, chapterKey, next);
       }
       return next;
@@ -2302,7 +2318,7 @@ function App() {
 
   const generateSelectedParagraphs = async () => {
     if (!activeProject || !selectedChapter || !chapterContent || textSelections.length === 0) return;
-    const chapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+    const chapterKey = chapterKeyOf(selectedChapter);
     const selections = [...textSelections].sort((a, b) => a.paragraphIndex - b.paragraphIndex);
     setIsSubmittingSelections(true);
     setPipelineRunning(true);
@@ -2320,7 +2336,7 @@ function App() {
       addLog(`📝 ${data.message}`);
       setTextSelections([]);
       if (activeProject && selectedChapter) {
-        const chapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+        const chapterKey = chapterKeyOf(selectedChapter);
         saveReaderSelections(activeProject, chapterKey, []);
       }
       setWorkspaceTab('scenes');
@@ -2939,18 +2955,18 @@ function App() {
               {/* 章节导航树 */}
               <div className="glass-panel" style={{ height: '100%', overflowY: 'auto', padding: '8px' }}>
                 {projectDetails.chapters.map(chap => {
-                  const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
-                  const state = getChapterProgress(chap.volume, chap.chapter);
+                  const chapKey = chapterKeyOf(chap);
+                  const state = getChapterProgress(chap);
                   const isCompleted = state?.status === 'completed';
                   const isGenerating = state?.status === 'generating';
                   
                   return (
                     <div 
                       key={chapKey}
-                      className={`chapter-item ${selectedChapter?.chapter === chap.chapter ? 'active' : ''}`}
+                      className={`chapter-item ${chapterKeyOf(selectedChapter) === chapterKeyOf(chap) ? 'active' : ''}`}
                       onClick={() => {
                         if (activeProject && selectedChapter && textSelections.length > 0) {
-                          const previousChapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+                          const previousChapterKey = chapterKeyOf(selectedChapter);
                           saveReaderSelections(activeProject, previousChapterKey, textSelections);
                         }
                         setSelectedChapter(chap);
@@ -2972,9 +2988,9 @@ function App() {
                 {selectedChapter && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {(() => {
-                      const selectedChapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+                      const selectedChapterKey = chapterKeyOf(selectedChapter);
                       const selectedChapterQueueState = chapterQueueStates[getChapterQueueStateKey(activeProject, selectedChapterKey)];
-                      const selectedChapterProgress = getChapterProgress(selectedChapter.volume, selectedChapter.chapter);
+                      const selectedChapterProgress = getChapterProgress(selectedChapter);
                       const isSceneExtractionFailed = selectedChapterProgress?.status === 'failed'
                         && (selectedChapterProgress?.scenes || []).length === 0;
                       return (
@@ -3037,8 +3053,8 @@ function App() {
 
                     {/* 渲染当前章节的场景卡片 */}
                     {(() => {
-                      const chapKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
-                      const progress = getChapterProgress(selectedChapter.volume, selectedChapter.chapter);
+                      const chapKey = chapterKeyOf(selectedChapter);
+                      const progress = getChapterProgress(selectedChapter);
                       const scenes = progress?.scenes || [];
 
                       if (scenes.length === 0) {
@@ -4099,11 +4115,11 @@ function App() {
                 {!readerSettings.immersive && (
                   <div className="glass-panel reader-chapters">
                     {projectDetails.chapters.map(chap => {
-                      const chapKey = `${chap.volume}_${chap.chapter}`.replace(/\s+/g, '_');
+                      const chapKey = chapterKeyOf(chap);
                       return (
                         <button
                           key={`reader-${chapKey}`}
-                          className={`chapter-item ${selectedChapter?.chapter === chap.chapter ? 'active' : ''}`}
+                          className={`chapter-item ${chapterKeyOf(selectedChapter) === chapterKeyOf(chap) ? 'active' : ''}`}
                           onClick={() => openReaderChapter(chap)}
                         >
                           <span>{chap.chapter}</span>
@@ -4209,7 +4225,7 @@ function App() {
                             onClick={() => setTextSelections(prev => {
                               const next = prev.filter((_, itemIndex) => itemIndex !== index);
                               if (activeProject && selectedChapter) {
-                                const chapterKey = `${selectedChapter.volume}_${selectedChapter.chapter}`.replace(/\s+/g, '_');
+                                const chapterKey = chapterKeyOf(selectedChapter);
                                 saveReaderSelections(activeProject, chapterKey, next);
                               }
                               return next;
@@ -4234,7 +4250,7 @@ function App() {
                     {!chapterContent ? (
                       <div className="reader-empty">正在载入正文...</div>
                     ) : (() => {
-                      const scenes = getChapterProgress(selectedChapter.volume, selectedChapter.chapter)?.scenes || [];
+                      const scenes = getChapterProgress(selectedChapter)?.scenes || [];
                       const paragraphScenePlacements = placeReaderScenesByParagraph(chapterContent.paragraphs, scenes);
                       return chapterContent.paragraphs.map((paragraph, paragraphIndex) => {
                       const paragraphScenes = paragraphScenePlacements[paragraphIndex] || [];

@@ -147,10 +147,10 @@ export function createAgentRouter({ baseDir, getPipeline, enqueueRedraw, queueSt
     const pipeline = await getPipeline(args.projectName);
     if (!args.chapterKey) return { pipeline, dir };
     const chap = pipeline.chapters.find(c => pipeline.projectProgress.normalizeKey(
-      pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter)
+      pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal)
     ) === pipeline.projectProgress.normalizeKey(args.chapterKey));
     requireValue(chap, 404, 'NOT_FOUND', '章节不存在；使用 projects.get 返回的 chapterKey');
-    const chapterKey = pipeline.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter);
+    const chapterKey = pipeline.projectProgress.getEffectiveChapKey(chap.volume, chap.chapter, chap.ordinal);
     const scenes = pipeline.projectProgress.getCompletedChapters()[chapterKey]?.scenes || [];
     const target = scenes.find(s => Number(s.scene_idx) === args.sceneIdx);
     if (withScene) requireValue(target, 404, 'NOT_FOUND', '场景不存在');
@@ -246,7 +246,7 @@ export function createAgentRouter({ baseDir, getPipeline, enqueueRedraw, queueSt
     }
     if (name === 'projects.get') return {
       projectName: args.projectName,
-      chapters: pipeline.chapters.map(c => ({ chapterKey: pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter),
+      chapters: pipeline.chapters.map(c => ({ chapterKey: c.chapterKey || pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal),
         volume: c.volume, chapter: c.chapter, characterCount: c.content.length })),
       characters: pipeline.projectProgress.getGlobalCharacters(), progress: pipeline.projectProgress.data
     };

@@ -94,11 +94,14 @@ html {
     padding-top: calc(8px + env(safe-area-inset-top, 0px));
   }
 
-  /* brand / pill / 设置按钮同排，流水线控件自动落到第二行 */
+  /* brand / pill / 设置按钮同排；手机上收起顶栏流水线控件（工作台内已有等价按钮） */
   .app-header-left,
-  .app-header-right,
-  .header-pipeline-controls {
+  .app-header-right {
     display: contents;
+  }
+
+  .header-pipeline-controls {
+    display: none;
   }
 
   .app-brand {
@@ -116,11 +119,6 @@ html {
 
   .app-header-right > .btn-secondary {
     order: 3;
-    flex: 0 0 auto;
-  }
-
-  .header-pipeline-controls > * {
-    order: 4;
     flex: 0 0 auto;
   }
 
@@ -150,17 +148,6 @@ html {
 
   .main-tab-item > svg {
     flex: 0 0 auto;
-  }
-
-  /* header 里的流水线按钮压缩 */
-  .header-pipeline-controls {
-    gap: 6px;
-  }
-
-  .header-pipeline-controls .btn-primary,
-  .header-pipeline-controls .btn-secondary {
-    padding: 4px 9px !important;
-    font-size: 0.74rem !important;
   }
 
   .active-project-pill {
@@ -442,7 +429,86 @@ html {
   }
 
   .workbench-tab-view {
-    padding: 10px;
+    padding: 8px;
+  }
+
+  /* 工作台：压缩标题与按钮行，把高度让给场景卡片 */
+  .workbench-tab-view > .column-header {
+    margin-bottom: 8px;
+    gap: 6px;
+  }
+
+  .workbench-tab-view > .column-header > div:first-child {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .workbench-tab-view > .column-header > div:first-child > span:first-child {
+    font-size: 0.95rem !important;
+    line-height: 1.3;
+  }
+
+  .workbench-tab-view > .column-header > div:first-child > span:not(:first-child) {
+    font-size: 0.74rem !important;
+  }
+
+  .workbench-tab-view > .column-header > div:last-child {
+    gap: 6px;
+  }
+
+  .workbench-tab-view > .column-header > div:last-child > button {
+    padding: 5px 9px;
+    font-size: 0.74rem;
+  }
+
+  .workspace-tabs {
+    margin-bottom: 8px;
+  }
+
+  /* 场景生图：章节列 → 横向胶囊条，行高交给内容 */
+  [style*="grid-template-columns: 200px 1fr"],
+  [style*="grid-template-columns:200px 1fr"] {
+    grid-template-rows: auto minmax(0, 1fr) !important;
+    gap: 8px !important;
+  }
+
+  [style*="grid-template-columns: 200px 1fr"] > div:first-child,
+  [style*="grid-template-columns:200px 1fr"] > div:first-child {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center;
+    height: auto !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    gap: 6px;
+    padding: 6px !important;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  [style*="grid-template-columns: 200px 1fr"] > div:first-child::-webkit-scrollbar,
+  [style*="grid-template-columns:200px 1fr"] > div:first-child::-webkit-scrollbar {
+    display: none;
+  }
+
+  [style*="grid-template-columns: 200px 1fr"] > div:first-child .chapter-item,
+  [style*="grid-template-columns:200px 1fr"] > div:first-child .chapter-item {
+    flex: 0 0 auto;
+    margin-bottom: 0 !important;
+    padding: 7px 10px !important;
+    min-height: 0 !important;
+    white-space: nowrap;
+  }
+
+  /* 章节详情卡片：标题在上、操作按钮在下，避免挤压标题文字 */
+  .column-body > div > .glass-panel {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 10px;
+  }
+
+  .column-body > div > .glass-panel > div:last-child {
+    justify-content: flex-start;
   }
 
   /* 工作区切换 Tab 横向滚动 */

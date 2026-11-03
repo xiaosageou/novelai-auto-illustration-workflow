@@ -135,8 +135,10 @@ export class ProjectProgress {
     return key.replace(/[\s_]+/g, '').toLowerCase();
   }
 
-  getEffectiveChapKey(volume, chapter) {
-    const standardKey = `${volume}_${chapter}`.replace(/\s+/g, '_');
+  getEffectiveChapKey(volume, chapter, ordinal) {
+    const standardKey = typeof this.resolveChapterKey === 'function'
+      ? this.resolveChapterKey(volume, chapter, ordinal)
+      : `${volume}_${chapter}`.replace(/\s+/g, '_');
     const standardNorm = this.normalizeKey(standardKey);
     const completed = this.getCompletedChapters();
     for (const existingKey of Object.keys(completed)) {
@@ -148,8 +150,7 @@ export class ProjectProgress {
   }
 
   getEffectiveChapKeyByRaw(rawKey) {
-    const rawNorm = this.normalizeKey(rawKey);
-    const completed = this.getCompletedChapters();
+    const rawNorm = this.normalizeKey(rawKey);    const completed = this.getCompletedChapters();
     for (const existingKey of Object.keys(completed)) {
       if (this.normalizeKey(existingKey) === rawNorm) {
         return existingKey;

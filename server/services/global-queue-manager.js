@@ -426,7 +426,7 @@ export class GlobalQueueManager extends EventEmitter {
               const allSuccess = progress.scenes.every(s => s.status === 'SUCCESS');
               if (allSuccess && progress.status !== 'completed') {
                 const chap = pipeline.chapters.find(c => {
-                  const ck = pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter);
+                  const ck = pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal);
                   return pipeline.projectProgress.normalizeKey(ck) === pipeline.projectProgress.normalizeKey(job.chapterKey);
                 });
                 const content = String(chap?.content || '').trim();

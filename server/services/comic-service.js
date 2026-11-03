@@ -243,7 +243,7 @@ export class ComicService {
   async execute(name, args, actionId, owner = null) {
     if (name === 'comics.sources.get') {
       const { pipeline, chap, chapterKey } = await this.resolve(args);
-      return { chapters: pipeline.chapters.map(c => ({ chapterKey: pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter),
+      return { chapters: pipeline.chapters.map(c => ({ chapterKey: c.chapterKey || pipeline.projectProgress.getEffectiveChapKey(c.volume, c.chapter, c.ordinal),
         title: c.chapter, volume: c.volume, characterCount: c.content.length })), characters: pipeline.projectProgress.getGlobalCharacters(),
         ...(chap ? { chapterKey, content: chap.content } : {}) };
     }
