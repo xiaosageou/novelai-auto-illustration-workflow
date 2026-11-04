@@ -539,15 +539,32 @@ html {
     -webkit-overflow-scrolling: touch;
   }
 
+  /* 保持纵向 flex，让弹窗内部的滚动区（如设置表单）继续生效 */
   .modal-content {
-    display: block !important;
+    display: flex !important;
+    flex-direction: column !important;
     width: 100% !important;
     max-width: 100% !important;
     max-height: calc(100dvh - 20px) !important;
     padding: 14px !important;
     border-radius: 14px;
     overflow-y: auto !important;
+    overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
+    contain: none;
+  }
+
+  /* 弹窗内部的滚动容器（设置表单 / 场景编辑器内容区）接管滚动 */
+  .modal-content > form,
+  .modal-content > div[style*="overflow-y: auto"],
+  .modal-content > div[style*="overflow-y:auto"],
+  .modal-content > div[style*="overflow: auto"],
+  .modal-content > div[style*="overflow:auto"] {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
 
   .modal-content h2 {
