@@ -168,6 +168,28 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// 兼容层：历史数据可能残留 .png 引用，而实际文件已压缩为 .webp。
+// 请求的 .png 不存在但同名 .webp 存在时，302 重写到 .webp，避免预览 404。
+const pngToWebpCache = new Map();
+app.use('/projects', (req, res, next) => {
+  if (!/\.png$/i.test(req.path)) return next();
+  try {
+    const decoded = decodeURIComponent(req.path);
+    const absPath = path.join(BASE_DIR, 'projects', decoded);
+    if (existsSync(absPath)) return next();
+    let remap = pngToWebpCache.get(absPath);
+    if (remap === undefined) {
+      remap = existsSync(absPath.replace(/\.png$/i, '.webp'));
+      if (pngToWebpCache.size > 4096) pngToWebpCache.clear();
+      pngToWebpCache.set(absPath, remap);
+    }
+    if (!remap) return next();
+    return res.redirect(302, req.originalUrl.replace(/\.png(?=$|\?)/i, '.webp'));
+  } catch {
+    return next();
+  }
+});
+
 // 缩略图服务（当请求携带 ?w= 或 ?width= 时动态生成/提供轻量 WebP 缩略图与长效缓存）
 app.use('/projects', createThumbnailMiddleware({ projectsDir: path.join(BASE_DIR, 'projects') }));
 
