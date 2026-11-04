@@ -16,6 +16,7 @@ import { compressFile, DEFAULT_QUALITY } from './image-compress.js';
 import { ConcurrencyQueue } from '../utils/job-queue.js';
 import { stripAgeWords } from '../utils/age-tags.js';
 import { resolveLlmRetryLimits } from '../utils/llm-retry.js';
+import { LLMConnectionPool } from '../utils/llm-pool.js';
 import {
   proxyAgeTagsForLlm,
   proxyFeaturesForLlm,
@@ -66,7 +67,9 @@ function normalizePresetList(presets = []) {
     ...preset,
     rateLimitEnabled: preset?.rateLimitEnabled !== false,
     rateLimitRpm: Number(preset?.rateLimitRpm) || 3,
-    failoverEligible: preset?.failoverEligible !== false
+    failoverEligible: preset?.failoverEligible !== false,
+    // 多模型并发：显式勾选才参与，默认不参与，避免用户没勾就被拉到别的供应商出图
+    poolEnabled: preset?.poolEnabled === true
   }));
 }
 
@@ -186,6 +189,85 @@ export function resolveTaskLlmChain(config = {}, task = 'scene') {
   })).filter(item => Boolean(item.baseUrl));
 }
 
+/**
+ * 构建某个任务的「多模型并发槽位池」。
+ *
+ * 与旧 resolveTaskLlmChain 的区别：
+ *   - 旧队列是请求失败之后才轮到下一个连接（事后回退），前期 429 已经吃满；
+ *   - 这里的槽位从第一发请求起就参与轮转，多路并发各自领一个槽位，
+ *     单模型的请求密度被按槽位数摊薄，429 自然变少。
+ *
+ * 入选条件：预设勾选了 poolEnabled（或任务当前绑定的那一个永远入池）、填了 URL。
+ * 当前任务生效的连接排第一位，其余按前端预设列表顺序。
+ *
+ * @param {object} config 全局配置
+ * @param {string} task   任务类型（scene / characterDna / naiTags / trim）
+ * @returns {Array<object>} 槽位连接列表
+ */
+export function resolveTaskLlmPool(config = {}, task = 'scene') {
+  // trim 是另一套链路（短文本纠错），不参与分摊，避免跨供应商改写风格
+  if (task === 'trim') return [];
+  if (config?.llm_multi_model_enabled === false) return [];
+
+  const presets = normalizePresetList(config.llm_api_presets)
+    .filter(preset => String(preset?.url || '').trim());
+
+  const active = resolveTaskLlmConfig(config, task);
+  const isActivePreset = preset => `preset:${preset.id}` === active.rateLimitKey;
+
+  const eligible = presets.filter(preset => preset.poolEnabled === true || isActivePreset(preset));
+  const activeIndex = eligible.findIndex(isActivePreset);
+  const ordered = activeIndex > 0
+    ? [eligible[activeIndex], ...eligible.slice(0, activeIndex), ...eligible.slice(activeIndex + 1)]
+    : eligible;
+
+  const slots = ordered.map(preset => {
+    const isActive = isActivePreset(preset);
+    return {
+      key: `preset:${preset.id}`,
+      id: preset.id,
+      label: preset.name || preset.id,
+      baseUrl: String(preset.url || '').trim().replace(/\/+$/, ''),
+      apiKey: String(preset.key || '').trim(),
+      // 当前生效预设可以带任务级模型覆盖（用户手填过的 llm_scene_model 等）
+      model: (isActive ? active.model : '') || String(preset.model || '').trim(),
+      reasoningEffort: normalizeReasoningEffort(preset.reasoningEffort) || (isActive ? active.reasoningEffort : ''),
+      rateLimit: {
+        enabled: preset.rateLimitEnabled !== false,
+        rpm: Number(preset.rateLimitRpm) || 3,
+        key: `preset:${preset.id}`
+      }
+    };
+  }).filter(item => Boolean(item.baseUrl));
+
+  // 当前任务是「直连 URL」而不是预设时，直连连接本身也入池，
+  // 否则勾选的预设会抢走全部流量，当前手填的配置反而闲置。
+  if (activeIndex < 0 && active.baseUrl) {
+    const normalizedUrl = String(active.baseUrl).trim().replace(/\/+$/, '');
+    const normalizedKey = String(active.apiKey || '').trim();
+    const duplicated = slots.some(slot => slot.baseUrl === normalizedUrl && slot.apiKey === normalizedKey);
+    if (!duplicated) {
+      slots.unshift({
+        key: active.rateLimitKey || `direct:${task}`,
+        id: '',
+        label: '直连',
+        baseUrl: normalizedUrl,
+        apiKey: normalizedKey,
+        model: String(active.model || '').trim(),
+        reasoningEffort: active.reasoningEffort,
+        rateLimit: {
+          enabled: active.rateLimitEnabled !== false,
+          rpm: Number(active.rateLimitRpm) || 3,
+          key: active.rateLimitKey || `direct:${task}`
+        }
+      });
+    }
+  }
+
+  // 至少两个槽位才值得开分摊，单槽位走原单路逻辑
+  return slots.length >= 2 ? slots : [];
+}
+
 export class PipelineManager {
   constructor(config = {}) {
     this.config = config;
@@ -276,10 +358,26 @@ export class PipelineManager {
     return resolveLlmRetryLimits(this.config).maxRetries;
   }
 
-  createLlmExtractor(task) {
+  createLlmExtractor(task, previousPool = null) {
     const connection = resolveTaskLlmConfig(this.config, task);
     const trimConnection = resolveTaskLlmConfig(this.config, 'trim');
     const retryLimits = resolveLlmRetryLimits(this.config);
+    // 多模型并发：多个模型轮转分摊同一批并发请求（旧失败回退已停用）
+    const poolConnections = resolveTaskLlmPool(this.config, task);
+    let connectionPool = null;
+    if (poolConnections.length >= 2) {
+      // 配置热更新时若槽位没变就复用旧池，否则保存一次配置就把各地冷却状态清空，刚被限流的模型会立刻再挨一发
+      if (previousPool && typeof previousPool.matches === 'function' && previousPool.matches(poolConnections)) {
+        previousPool.setConnections(poolConnections);
+        previousPool.hopOn429 = this.config.llm_pool_hop_on_429 !== false;
+        connectionPool = previousPool;
+      } else {
+        connectionPool = new LLMConnectionPool(poolConnections, {
+          cooldownMs: Math.max(3000, Number(this.config.llm_pool_cooldown_seconds) * 1000 || 20000),
+          hopOn429: this.config.llm_pool_hop_on_429 !== false
+        });
+      }
+    }
     return new LLMExtractor({
       baseUrl: connection.baseUrl,
       apiKey: connection.apiKey,
@@ -297,15 +395,23 @@ export class PipelineManager {
       trimKey: trimConnection.apiKey,
       trimModel: trimConnection.model,
       reasoningEffort: connection.reasoningEffort,
-      failoverChain: resolveTaskLlmChain(this.config, task),
-      failoverEnabled: this.config.llm_failover_enabled !== false
+      connectionPool,
+      poolHopOn429: this.config.llm_pool_hop_on_429 !== false,
+      // 旧失败回退：代码保留但不再启用
+      failoverChain: [],
+      failoverEnabled: false
     });
   }
 
   rebuildLlmExtractors() {
-    this.characterDnaExtractor = this.createLlmExtractor('characterDna');
-    this.sceneExtractor = this.createLlmExtractor('scene');
-    this.naiTagsExtractor = this.createLlmExtractor('naiTags');
+    const previousPools = {
+      characterDna: this.characterDnaExtractor?.connectionPool || null,
+      scene: this.sceneExtractor?.connectionPool || null,
+      naiTags: this.naiTagsExtractor?.connectionPool || null
+    };
+    this.characterDnaExtractor = this.createLlmExtractor('characterDna', previousPools.characterDna);
+    this.sceneExtractor = this.createLlmExtractor('scene', previousPools.scene);
+    this.naiTagsExtractor = this.createLlmExtractor('naiTags', previousPools.naiTags);
     // Keep the legacy property for external callers that may still reference it.
     this.llmExtractor = this.sceneExtractor;
   }
@@ -327,13 +433,15 @@ export class PipelineManager {
         presetId: info.presetId || '',
         presetLabel: info.presetLabel || '',
         baseUrl: info.baseUrl || connection.baseUrl || '',
-        failoverEnabled: info.failoverEnabled !== false,
-        failoverChainLength: Number(info.failoverChainLength) || 0,
-        failoverIndex: Number(info.failoverIndex) || 0
+        failoverEnabled: false,
+        failoverChainLength: 0,
+        failoverIndex: 0,
+        pool: info.pool || null
       };
     };
     return {
-      failoverEnabled: this.config.llm_failover_enabled !== false,
+      failoverEnabled: false,
+      poolEnabled: this.config.llm_multi_model_enabled !== false,
       scene: build(this.sceneExtractor, 'scene'),
       characterDna: build(this.characterDnaExtractor, 'characterDna'),
       naiTags: build(this.naiTagsExtractor, 'naiTags')

@@ -12,6 +12,7 @@ import { extractTargetSliceFromContext } from '../utils/chapter-scene-batching.j
 import { stripAgeWords } from '../utils/age-tags.js';
 import { DEFAULT_LLM_MAX_RETRIES, DEFAULT_LLM_429_MAX_RETRIES, LLM_MAX_RETRIES_CEILING, LLM_429_MAX_RETRIES_CEILING, clampLlmRetries } from '../utils/llm-retry.js';
 import { scrubChatPayload } from '../utils/age-text-scrubber.js';
+import { slotToConnection } from '../utils/llm-pool.js';
 
 export { ensureAdvancedPromptContract, withSystemPrefix } from '../utils/advanced-prompt-contract.js';
 
@@ -1023,7 +1024,7 @@ export function normalizeReasoningEffort(value) {
   return ['low', 'medium', 'high'].includes(effort) ? effort : '';
 }
 
-export async function postChatCompletionWith429Retry({ url, headers, payload, idleTimeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null, signal = null, failover = null }) {
+export async function postChatCompletionWith429Retry({ url, headers, payload, idleTimeoutMs = 120000, max429Retries = 5, initialDelaySeconds = 10, logPrefix = "[LLM Extractor]", rateLimit = null, signal = null, failover = null, pool = null, poolHopOn429 = true }) {
   // 出站正文脱敏：小说原文 / 场景描述里「十五岁的少女」「她才 15 岁」这类未成年年龄表达
   // 在发请求前物理删除，生成 prompt 的 LLM 看不到；18 岁及以上原样保留。
   // 幂等，重试安全；不改动调用方 payload。
@@ -1034,12 +1035,98 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
     throw err;
   }
 
-  // 预设故障转移：当前连接 429/500 重试耗尽、或请求直接抛网络异常时，
-  // 按「LLM API 预设」在配置里的顺序切到下一个连接，用同一份 payload 重试。
-  // failover.next() 由 LLMExtractor 提供，返回 null 表示队列里没有更多可切换的预设。
   let activeUrl = url;
   let activeHeaders = headers;
   let activeRateLimit = rateLimit;
+
+  /**
+   * 统一应用「换连接」结果。pool 槽位与旧 failover 的 next() 结构同形，
+   * 所以两条路径共用这一段，避免模型 / 思考等级与应用字段漂移。
+   */
+  const applyConnection = (connection) => {
+    if (!connection) return;
+    if (connection.url) activeUrl = connection.url;
+    if (connection.headers) activeHeaders = connection.headers;
+    if (connection.rateLimit !== undefined) activeRateLimit = connection.rateLimit;
+    if (safePayload && typeof safePayload === 'object') {
+      if (connection.model) safePayload.model = connection.model;
+      // 思考等级跟着连接走：切到不支持该参数的预设时必须移除，避免上游对未知参数报 400
+      if (connection.reasoningEffort) safePayload.reasoning_effort = connection.reasoningEffort;
+      else delete safePayload.reasoning_effort;
+    }
+  };
+
+  // ── 多模型并发槽位池 ──────────────────────────────────────────
+  // 与旧「失败回退」的区别：这里在请求发出前就把并发摊到不同模型上，
+  // 每个槽位带自己的 RPM 限流器 key，单模型不会被同一时刻的多路请求同时顶爆。
+  const poolUsable = Boolean(pool && typeof pool.acquire === 'function' && Number(pool.size) >= 2);
+  const hopEnabled = poolUsable && poolHopOn429 !== false && pool.hopOn429 !== false;
+  const hopBudget = poolUsable
+    ? (Number(pool.hopBudget) > 0 ? Math.floor(Number(pool.hopBudget)) : Math.max(2, max429Retries * Math.max(2, Number(pool.size) || 2)))
+    : 0;
+  let hopCount = 0;
+  let lease = null;
+
+  const releaseLease = () => {
+    if (lease) {
+      lease.release();
+      lease = null;
+    }
+  };
+
+  const takePoolSlot = async (excludeKeys = []) => {
+    const got = pool.acquire({ excludeKeys });
+    if (!got) return null;
+    const slotLimiter = got.slot.rateLimit?.enabled !== false ? getRateLimiter(got.slot.rateLimit) : null;
+    if (slotLimiter) await slotLimiter.acquire();
+    if (signal?.aborted) {
+      got.release();
+      const err = new Error("Operation aborted by user");
+      err.name = "AbortError";
+      throw err;
+    }
+    lease = got;
+    applyConnection(slotToConnection(got.slot));
+    return got;
+  };
+
+  // 429/5xx 时把当前槽冻结，换到池内另一个还没被限流的模型重投
+  const hopToOtherSlot = async (reason = '') => {
+    if (!hopEnabled || hopCount >= hopBudget) return false;
+    const currentKey = lease?.key;
+    if (lease) {
+      lease.penalize();
+      lease = null;
+    }
+    let got = null;
+    try {
+      got = await takePoolSlot(currentKey ? [currentKey] : []);
+    } catch (hopError) {
+      if (hopError?.name === 'AbortError') throw hopError;
+      got = null;
+    }
+    if (!got) return false;
+    hopCount += 1;
+    console.warn(`${logPrefix} ${reason}，换到并发槽位「${got.slot.label}」${got.slot.model ? `（${got.slot.model}）` : ''}重投`);
+    return true;
+  };
+
+  if (poolUsable) {
+    for (;;) {
+      if (await takePoolSlot()) break;
+      const waitMsLeft = pool.nextAvailableDelayMs() || 1000;
+      if (signal?.aborted) {
+        const err = new Error("Operation aborted by user");
+        err.name = "AbortError";
+        throw err;
+      }
+      console.warn(`${logPrefix} 并发槽位全部在冷却，等待 ${(Math.min(waitMsLeft, 30000) / 1000).toFixed(1)} 秒后继续...`);
+      await waitMs(Math.min(waitMsLeft + 50, 30000), signal);
+    }
+  }
+
+  // 旧「失败回退」路径保留调用协议，但上层已不再投放 failover 控制器，
+  // 因此这里天然不会触发（多模型分摊由上面的 pool 承担）。
   const tryFailover = (reason) => {
     if (!failover || typeof failover.next !== 'function') return null;
     let next = null;
@@ -1050,20 +1137,12 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
       return null;
     }
     if (!next) return null;
-    if (next.url) activeUrl = next.url;
-    if (next.headers) activeHeaders = next.headers;
-    if (next.rateLimit !== undefined) activeRateLimit = next.rateLimit;
-    if (safePayload && typeof safePayload === 'object') {
-      if (next.model) safePayload.model = next.model;
-      // 思考等级跟着预设走：切到不支持该参数的预设时必须移除，避免上游对未知参数报 400
-      if (next.reasoningEffort) safePayload.reasoning_effort = next.reasoningEffort;
-      else delete safePayload.reasoning_effort;
-    }
+    applyConnection(next);
     console.warn(`${logPrefix} ${reason}，自动切换到下一个预设${next.label ? `：${next.label}` : ''}，继续重试`);
     return next;
   };
 
-  let limiter = activeRateLimit ? getRateLimiter(activeRateLimit) : null;
+  let limiter = poolUsable ? null : (activeRateLimit ? getRateLimiter(activeRateLimit) : null);
   if (limiter) {
     await limiter.acquire();
     if (signal?.aborted) {
@@ -1075,6 +1154,7 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
 
   for (let attempt = 0; ; attempt++) {
     if (signal?.aborted) {
+      releaseLease();
       const err = new Error("Operation aborted by user");
       err.name = "AbortError";
       throw err;
@@ -1103,6 +1183,8 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
       // 502/503/504 保持原有上层处理语义，避免吞掉代理或服务维护等明确错误。
       const isTransientServerError = res.status === 500;
       if (!isRateLimited && !isTransientServerError) {
+        // 连接已拿到响应，槽位立即归还，后续流式读取不占槽位
+        releaseLease();
         if (res.status >= 400) {
           let errBody = "";
           try { errBody = await res.text(); } catch {}
@@ -1114,6 +1196,11 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
 
       if (attempt >= max429Retries) {
         const status = res.status;
+        if (await hopToOtherSlot(`LLM 返回 ${status}，${max429Retries} 次重试已耗尽`)) {
+          limiter = activeRateLimit ? getRateLimiter(activeRateLimit) : null;
+          attempt = -1; // 换到新槽位后重新计数
+          continue;
+        }
         const switched = tryFailover(`LLM 返回 ${status}，${max429Retries} 次重试已耗尽`);
         if (switched) {
           limiter = activeRateLimit ? getRateLimiter(activeRateLimit) : null;
@@ -1121,6 +1208,7 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
           attempt = -1; // 换连接后重新计数
           continue;
         }
+        releaseLease();
         const error = new Error(`LLM 返回 ${status}，已重试 ${max429Retries} 次仍失败`);
         error.code = isRateLimited ? "LLM_429_EXHAUSTED" : "LLM_SERVER_ERROR_EXHAUSTED";
         error.status = status;
@@ -1132,14 +1220,34 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
         baseDelaySeconds: initialDelaySeconds,
         maxDelaySeconds: 120
       });
+
+      // 池内还有别的模型没被限流时，不陪着当前槽一起等：立刻换槽重投。
+      // 这是「并发分摊」而不是「失败回退」——被换下的槽只是短暂冷却，下一批请求还会轮到它。
+      if (hopEnabled && hopCount < hopBudget && lease && pool.hasOtherSlot([lease.key])) {
+        if (await hopToOtherSlot(`触发 ${res.status}`)) {
+          limiter = activeRateLimit ? getRateLimiter(activeRateLimit) : null;
+          attempt = -1;
+          continue;
+        }
+      }
+
       console.warn(`${logPrefix} 触发 ${res.status}，${delaySeconds} 秒后重试（${attempt + 1}/${max429Retries}）...`);
-      
+
       // 临时 500 和 429 都冻结同一连接的队列，避免继续向不稳定的上游施压。
       limiter?.notify429(delaySeconds * 1000);
+      if (lease) lease.penalize(delaySeconds * 1000);
 
       await waitMs(delaySeconds * 1000, signal);
     } catch (requestError) {
-      if (signal?.aborted || requestError?.name === 'AbortError') throw requestError;
+      if (signal?.aborted || requestError?.name === 'AbortError') {
+        releaseLease();
+        throw requestError;
+      }
+      if (await hopToOtherSlot(`请求异常 ${requestError?.message || requestError}`)) {
+        limiter = activeRateLimit ? getRateLimiter(activeRateLimit) : null;
+        attempt = -1;
+        continue;
+      }
       const switched = tryFailover(`请求异常 ${requestError?.message || requestError}`);
       if (switched) {
         limiter = activeRateLimit ? getRateLimiter(activeRateLimit) : null;
@@ -1147,6 +1255,7 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
         attempt = -1; // 换连接后重新计数
         continue;
       }
+      releaseLease();
       throw requestError;
     } finally {
       if (signal) signal.removeEventListener('abort', forwardAbort);
@@ -1650,7 +1759,7 @@ function buildSceneExtractionUserContent({
 }
 
 export class LLMExtractor {
-  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", streamEnabled = true, rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "", maxRetries = DEFAULT_LLM_MAX_RETRIES, max429Retries = DEFAULT_LLM_429_MAX_RETRIES, retryDelayMs = 5000, reasoningEffort = "", failoverChain = [], failoverEnabled = true } = {}) {
+  constructor({ baseUrl = "https://api.openai.com/v1", apiKey = "", system_prompt_extract_scenes = "", system_prompt_character_dna = "", system_prompt_advanced_prompt = "", system_prompt_advanced_prompt_nl = "", system_prompt_regenerate_scene = "", streamEnabled = true, rateLimitEnabled = true, rateLimitRpm = 3, rateLimitKey = "default", trimUrl = "", trimKey = "", trimModel = "", maxRetries = DEFAULT_LLM_MAX_RETRIES, max429Retries = DEFAULT_LLM_429_MAX_RETRIES, retryDelayMs = 5000, reasoningEffort = "", failoverChain = [], failoverEnabled = true, connectionPool = null, poolHopOn429 = true } = {}) {
     this.baseUrl = baseUrl.trim().replace(/\/+$/, "");
     this.apiKey = apiKey.trim();
     this.system_prompt_extract_scenes = system_prompt_extract_scenes;
@@ -1671,14 +1780,18 @@ export class LLMExtractor {
     this.retryDelayMs = Number.isFinite(Number(retryDelayMs)) ? Math.max(0, Number(retryDelayMs)) : 5000;
     this.activeControllers = new Set();
 
-    // 预设故障转移：failoverChain 是「当前预设打头、按全局配置顺序排列」的连接队列。
-    // 前端排序即优先级；当前连接连续失败时自动排到下一个。
-    this.failoverEnabled = failoverEnabled !== false;
+    // 旧「失败回退其他 LLM」已停用：failoverChain 不再参与调度，代码保留但永不启用。
+    // 现在由 connectionPool（多模型并发槽位池）在请求发出前就把并发摊到不同模型上。
+    this.failoverEnabled = false;
+    this.connectionPool = connectionPool && typeof connectionPool.acquire === 'function' ? connectionPool : null;
+    this.poolHopOn429 = poolHopOn429 !== false;
     // 当前实际在用的模型 / 预设，供前端展示（切换后跟着变）
     this.activeModel = '';
     this.activePresetLabel = '';
     this.activePresetId = '';
-    this.setFailoverChain(failoverChain);
+    this.failoverChain = [];
+    this.failoverCursor = 0;
+    this.businessFailoverBudget = 0;
   }
 
   /** 更新故障转移队列（配置热更新时调用） */
@@ -1736,7 +1849,7 @@ export class LLMExtractor {
     return next;
   }
 
-  /** 单次请求内的故障转移控制器：一圈内不重复回切 */
+  /** 单次请求内的故障转移控制器：一圈内不重复回切。旧回退机制已停用，恒为 null。 */
   buildFailoverController() {
     if (this.failoverEnabled === false) return null;
     const total = Array.isArray(this.failoverChain) ? this.failoverChain.length : 0;
@@ -1766,21 +1879,27 @@ export class LLMExtractor {
     };
   }
 
-  /** 业务层（JSON 解析/数量不符/空返回）连续失败时切下一个预设；预算用完返回 false */
-  _switchOnBusinessFailure(reason = '') {
-    if (this.businessFailoverBudget <= 0) return false;
-    const next = this._rotateConnection(reason);
-    if (!next) return false;
-    this.businessFailoverBudget -= 1;
-    return true;
+  /**
+   * 业务层（JSON 解析/数量不符/空返回）失败时不再换模型：
+   * 回退到别的 LLM 会污染同一章的文风与结构，改为同模型带修正提示重试。
+   * 方法保留以兼容既有调用点，恒返回 false。
+   */
+  _switchOnBusinessFailure(_reason = '') {
+    return false;
   }
 
-  /** 统一出口：自动挂上预设故障转移控制器 */
+  /** 统一出口：挂上多模型并发槽位池（旧 failover 恒为 null，不再生效） */
   async postChatCompletion(options = {}) {
     const requestedModel = options?.payload?.model;
-    if (requestedModel) this.activeModel = String(requestedModel);
-    const failover = options.failover === undefined ? this.buildFailoverController() : options.failover;
-    return postChatCompletionWith429Retry({ ...options, failover });
+    if (requestedModel && !this.connectionPool) this.activeModel = String(requestedModel);
+    const failover = options.failover === undefined ? null : options.failover;
+    const pool = options.pool === undefined ? this.connectionPool : options.pool;
+    return postChatCompletionWith429Retry({
+      ...options,
+      failover,
+      pool,
+      poolHopOn429: options.poolHopOn429 === undefined ? this.poolHopOn429 : options.poolHopOn429
+    });
   }
 
   /** 当前实际在用的连接指纹，供前端展示「现在用的是哪个模型」 */
@@ -1791,9 +1910,10 @@ export class LLMExtractor {
       presetLabel: this.activePresetLabel || '',
       presetId: this.activePresetId || '',
       baseUrl: this.baseUrl || '',
-      failoverEnabled: this.failoverEnabled !== false,
-      failoverChainLength: Array.isArray(this.failoverChain) ? this.failoverChain.length : 0,
-      failoverIndex: Number(this.failoverCursor) || 0
+      failoverEnabled: false,
+      failoverChainLength: 0,
+      failoverIndex: 0,
+      pool: this.connectionPool ? this.connectionPool.stats() : null
     };
   }
 
@@ -1827,10 +1947,15 @@ export class LLMExtractor {
     if (max429Retries !== undefined) this.max429Retries = clampLlmRetries(max429Retries, this.max429Retries, 0, LLM_429_MAX_RETRIES_CEILING);
   }
 
-  /** 热更新故障转移开关与队列 */
-  updateFailoverConfig({ failoverChain, failoverEnabled } = {}) {
-    if (failoverEnabled !== undefined) this.failoverEnabled = failoverEnabled !== false;
-    if (failoverChain !== undefined) this.setFailoverChain(failoverChain);
+  /** 旧回退开关保留为空操作，避免外部调用点报错 */
+  updateFailoverConfig() {}
+
+  /** 热更新多模型并发槽位池（配置保存时调用） */
+  updatePoolConfig({ connectionPool, poolHopOn429 } = {}) {
+    if (connectionPool !== undefined) {
+      this.connectionPool = connectionPool && typeof connectionPool.acquire === 'function' ? connectionPool : null;
+    }
+    if (poolHopOn429 !== undefined) this.poolHopOn429 = poolHopOn429 !== false;
   }
 
   getRateLimitConfig() {

@@ -98,6 +98,9 @@ function App() {
     llm_max_retries: 3,
     llm_429_max_retries: 5,
     llm_failover_enabled: true,
+    llm_multi_model_enabled: true,
+    llm_pool_hop_on_429: true,
+    llm_pool_cooldown_seconds: 20,
     llm_api_presets: [],
     llm_character_dna_url: "",
     llm_character_dna_key: "",
@@ -953,6 +956,9 @@ function App() {
         ...data,
         llm_stream_enabled: data.llm_stream_enabled !== false,
         llm_failover_enabled: data.llm_failover_enabled !== false,
+        llm_multi_model_enabled: data.llm_multi_model_enabled !== false,
+        llm_pool_hop_on_429: data.llm_pool_hop_on_429 !== false,
+        llm_pool_cooldown_seconds: Number(data.llm_pool_cooldown_seconds) > 0 ? Number(data.llm_pool_cooldown_seconds) : 20,
         llm_rate_limit_enabled: data.llm_rate_limit_enabled !== false,
         llm_rate_limit_rpm: Number(data.llm_rate_limit_rpm) || 3,
         llm_max_retries: Number(data.llm_max_retries) >= 1 ? Math.min(10, Math.floor(Number(data.llm_max_retries))) : 3,
@@ -1001,7 +1007,9 @@ function App() {
     rateLimitEnabled: preset?.rateLimitEnabled !== false,
     rateLimitRpm: Number(preset?.rateLimitRpm) || 3,
     reasoningEffort: normalizeEffortValue(preset?.reasoningEffort),
-    // 失败自动切换是可选能力：取消勾选的预设不会被当作接盘的「下一个」
+    // 多模型并发是可选能力：只有勾选的预设才会参与并发分摊（默认不参与）
+    poolEnabled: preset?.poolEnabled === true,
+    // 旧失败自动切换字段保留以兼容老配置，但服务端已不再据此回退
     failoverEligible: preset?.failoverEligible !== false
   });
 
@@ -4463,7 +4471,10 @@ function App() {
                         scene.presetLabel ? `当前预设: ${scene.presetLabel}` : '',
                         llm.failoverEnabled
                           ? `失败自动切换: 已开启（队列 ${scene.failoverChainLength || 0} 个${scene.failoverIndex ? `，当前已排到第 ${Number(scene.failoverIndex) + 1} 个` : ''}）`
-                          : '失败自动切换: 已关闭',
+                          : '失败自动切换: 已停用',
+                        scene.pool?.enabled
+                          ? `多模型并发: 已开启（槽位 ${scene.pool.size} 个｜${(scene.pool.slots || []).map(slot => `${slot.label}${slot.coolingForMs > 0 ? '·冷却' : ''}${slot.inflight > 0 ? `·${slot.inflight}在飞` : ''}`).join(' / ')}）`
+                          : '多模型并发: 未启用（在预设里勾选「参与并发」）',
                         describe('场景提炼', scene),
                         describe('角色 DNA', dna),
                         describe('NAI 标签', tags),
@@ -4594,8 +4605,8 @@ function App() {
                     <span className="queue-pending-info">
                       当前 LLM 模型: <strong>{globalQueueState.llm?.scene?.model || config.llm_model || '未配置'}</strong>
                       {globalQueueState.llm?.scene?.presetLabel ? ` （${globalQueueState.llm.scene.presetLabel}）` : ''}
-                      {globalQueueState.llm?.failoverEnabled && (globalQueueState.llm?.scene?.failoverChainLength || 0) > 1
-                        ? ` · 可自动切换 ${globalQueueState.llm.scene.failoverChainLength} 个预设`
+                      {globalQueueState.llm?.scene?.pool?.enabled
+                        ? ` · 多模型分摊 ${globalQueueState.llm.scene.pool.size} 个槽位`
                         : ''}
                     </span>
                   </div>
@@ -5330,7 +5341,8 @@ function App() {
                             rateLimitEnabled: config.llm_rate_limit_enabled !== false,
                             rateLimitRpm: Number(config.llm_rate_limit_rpm) || 3,
                             reasoningEffort: '',
-                            failoverEligible: true
+                            failoverEligible: true,
+                            poolEnabled: false
                           };
                           const presets = [...(config.llm_api_presets || []), newPreset];
                           setConfig({ ...config, llm_api_presets: presets });
@@ -5359,15 +5371,15 @@ function App() {
                     <div style={{ display: 'grid', gap: '8px', marginTop: '-2px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
                         <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                          顺序即优先级：#1 优先使用，当前预设连续失败（429 / 500 / 网络异常 / 多次解析失败）后自动排到下一位。
+                          勾选「参与并发」的预设会组成多模型槽位池：#1 优先，多路并发请求按「最少在飞」摊到不同模型上，单模型不再被同一时刻的多路请求顶爆 429。
                         </div>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: 'var(--text-secondary)' }} title="开启后，并发请求会轮换使用已勾选「参与并发」的预设；未勾选任何预设时仍只用当前预设">
                           <input
                             type="checkbox"
-                            checked={config.llm_failover_enabled !== false}
-                            onChange={(e) => setConfig({ ...config, llm_failover_enabled: e.target.checked })}
+                            checked={config.llm_multi_model_enabled !== false}
+                            onChange={(e) => setConfig({ ...config, llm_multi_model_enabled: e.target.checked })}
                           />
-                          LLM 一直失败时自动切换下一个预设
+                          多模型并发分摊请求
                         </label>
                       </div>
                       {(config.llm_api_presets || []).map((rawPreset, presetIndex) => {
@@ -5442,7 +5454,8 @@ function App() {
                                       rateLimitEnabled: preset.rateLimitEnabled !== false,
                                       rateLimitRpm: Number(preset.rateLimitRpm) || 3,
                                       reasoningEffort: preset.reasoningEffort || '',
-                                      failoverEligible: preset.failoverEligible !== false
+                                      failoverEligible: preset.failoverEligible !== false,
+                                      poolEnabled: preset.poolEnabled === true
                                     });
                                   }}
                                   style={{ padding: '4px 10px', fontSize: '0.75rem' }}
@@ -5517,19 +5530,19 @@ function App() {
                                   style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
                                 />
                               </label>
-                              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: preset.failoverEligible === false ? 'var(--text-muted)' : 'var(--text-secondary)', fontSize: '0.8rem' }} title="取消后，当前预设失败时不会自动排到它">
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: preset.poolEnabled === true ? 'var(--text-secondary)' : 'var(--text-muted)', fontSize: '0.8rem' }} title="勾选后该预设加入多模型并发槽位池：并行请求会被分摊到它上面，单个模型不容易触发 429">
                                 <input
                                   type="checkbox"
-                                  checked={preset.failoverEligible !== false}
+                                  checked={preset.poolEnabled === true}
                                   onChange={(e) => setConfig(prev => ({
                                     ...prev,
                                     llm_api_presets: (prev.llm_api_presets || []).map(item => item.id === preset.id ? {
                                       ...item,
-                                      failoverEligible: e.target.checked
+                                      poolEnabled: e.target.checked
                                     } : item)
                                   }))}
                                 />
-                                参与失败自动切换
+                                参与并发
                               </label>
                               <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)' }} title="思考模型（如 IFM/K2-Horizon）请求时携带的 reasoning_effort；留空则不传参数">
                                 思考等级
@@ -5613,13 +5626,13 @@ function App() {
                                       style={{ width: '100%', marginTop: '4px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '7px 8px', color: 'white' }}
                                     />
                                   </label>
-                                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.8rem' }} title="取消后，当前预设失败时不会自动排到它">
+                                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '0.8rem' }} title="勾选后该预设加入多模型并发槽位池，并行请求会被分摊到它上面">
                                     <input
                                       type="checkbox"
-                                      checked={llmPresetDraft.failoverEligible !== false}
-                                      onChange={(e) => setLlmPresetDraft(prev => ({ ...prev, failoverEligible: e.target.checked }))}
+                                      checked={llmPresetDraft.poolEnabled === true}
+                                      onChange={(e) => setLlmPresetDraft(prev => ({ ...prev, poolEnabled: e.target.checked }))}
                                     />
-                                    参与失败自动切换
+                                    参与并发
                                   </label>
                                   <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-muted)' }} title="思考模型（如 IFM/K2-Horizon）请求时携带的 reasoning_effort；留空则不传参数">
                                     思考等级
@@ -5659,7 +5672,8 @@ function App() {
                                           rateLimitEnabled: llmPresetDraft.rateLimitEnabled !== false,
                                           rateLimitRpm: Number(llmPresetDraft.rateLimitRpm) || 3,
                                           reasoningEffort: normalizeEffortValue(llmPresetDraft.reasoningEffort),
-                                          failoverEligible: llmPresetDraft.failoverEligible !== false
+                                          failoverEligible: llmPresetDraft.failoverEligible !== false,
+                                          poolEnabled: llmPresetDraft.poolEnabled === true
                                         } : item)
                                       }));
                                       setLlmPresetDraft(null);
