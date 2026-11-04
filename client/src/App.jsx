@@ -4473,7 +4473,7 @@ function App() {
                           ? `失败自动切换: 已开启（队列 ${scene.failoverChainLength || 0} 个${scene.failoverIndex ? `，当前已排到第 ${Number(scene.failoverIndex) + 1} 个` : ''}）`
                           : '失败自动切换: 已停用',
                         scene.pool?.enabled
-                          ? `多模型并发: 已开启（槽位 ${scene.pool.size} 个｜${(scene.pool.slots || []).map(slot => `${slot.label}${slot.coolingForMs > 0 ? '·冷却' : ''}${slot.inflight > 0 ? `·${slot.inflight}在飞` : ''}`).join(' / ')}）`
+                          ? `多模型并发: 已开启（槽位 ${scene.pool.size} 个｜${(scene.pool.slots || []).map(slot => `${slot.label}${slot.coolingForMs > 0 ? '·冷却' : ''}${slot.businessCoolingForMs > 0 ? '·业务降级' : ''}${slot.inflight > 0 ? `·${slot.inflight}在飞` : ''}`).join(' / ')}）`
                           : '多模型并发: 未启用（在预设里勾选「参与并发」）',
                         describe('场景提炼', scene),
                         describe('角色 DNA', dna),

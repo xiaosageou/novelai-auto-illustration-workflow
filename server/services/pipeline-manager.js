@@ -225,6 +225,7 @@ export function resolveTaskLlmPool(config = {}, task = 'scene') {
     const isActive = isActivePreset(preset);
     return {
       key: `preset:${preset.id}`,
+      slotKey: `preset:${preset.id}`,
       id: preset.id,
       label: preset.name || preset.id,
       baseUrl: String(preset.url || '').trim().replace(/\/+$/, ''),
@@ -249,6 +250,7 @@ export function resolveTaskLlmPool(config = {}, task = 'scene') {
     if (!duplicated) {
       slots.unshift({
         key: active.rateLimitKey || `direct:${task}`,
+        slotKey: active.rateLimitKey || `direct:${task}`,
         id: '',
         label: '直连',
         baseUrl: normalizedUrl,
@@ -365,18 +367,20 @@ export class PipelineManager {
     // 多模型并发：多个模型轮转分摊同一批并发请求（旧失败回退已停用）
     const poolConnections = resolveTaskLlmPool(this.config, task);
     let connectionPool = null;
-    if (poolConnections.length >= 2) {
-      // 配置热更新时若槽位没变就复用旧池，否则保存一次配置就把各地冷却状态清空，刚被限流的模型会立刻再挨一发
-      if (previousPool && typeof previousPool.matches === 'function' && previousPool.matches(poolConnections)) {
-        previousPool.setConnections(poolConnections);
-        previousPool.hopOn429 = this.config.llm_pool_hop_on_429 !== false;
-        connectionPool = previousPool;
-      } else {
-        connectionPool = new LLMConnectionPool(poolConnections, {
-          cooldownMs: Math.max(3000, Number(this.config.llm_pool_cooldown_seconds) * 1000 || 20000),
-          hopOn429: this.config.llm_pool_hop_on_429 !== false
-        });
-      }
+    const poolCooldownMs = Math.max(3000, Number(this.config.llm_pool_cooldown_seconds) * 1000 || 20000);
+    if (previousPool && typeof previousPool.setConnections === 'function') {
+      // 原地热更新：正在跑的那批调用持有的是旧 extractor 实例，它们共享同一个池对象。
+      // 这里直接改池里的槽位列表，取消勾选的模型下一发请求就不会再被选中，
+      // 不需要等 this.sceneExtractor 被替换成新实例。
+      previousPool.setConnections(poolConnections);
+      previousPool.cooldownMs = poolCooldownMs;
+      previousPool.hopOn429 = this.config.llm_pool_hop_on_429 !== false;
+      connectionPool = poolConnections.length >= 2 ? previousPool : null;
+    } else if (poolConnections.length >= 2) {
+      connectionPool = new LLMConnectionPool(poolConnections, {
+        cooldownMs: poolCooldownMs,
+        hopOn429: this.config.llm_pool_hop_on_429 !== false
+      });
     }
     return new LLMExtractor({
       baseUrl: connection.baseUrl,

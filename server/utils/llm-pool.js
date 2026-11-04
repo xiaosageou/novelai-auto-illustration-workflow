@@ -47,7 +47,7 @@ export class LLMConnectionPool {
         if (!baseUrl) return null;
         const model = String(connection?.model || '').trim();
         const rateLimitKey = String(connection?.rateLimit?.key || connection?.rateLimitKey || `preset:${connection?.id || baseUrl}`);
-        // 槽位标识优先用预设 id；不要在 url/key 不完整时回退到 apiKey（那是密钥，不是身份）
+        // 槽位标识用显式 slotKey；不要回退到 connection.key（前端预设里那是 API 密钥）
         const key = String(connection?.slotKey || connection?.id || `${baseUrl}::${model}` || rateLimitKey);
         if (seen.has(key)) return null;
         seen.add(key);
@@ -68,6 +68,9 @@ export class LLMConnectionPool {
           inflight: old?.inflight || 0,
           served: old?.served || 0,
           cooldownUntil: old?.cooldownUntil || 0,
+          // 业务层失败（JSON 不合合约 / 数量不符 / 空返回）的软惩罚：
+          // 只降优先级，不像 429 那样硬烧穿；全池都失败时仍能取回使用
+          businessPenaltyUntil: old?.businessPenaltyUntil || 0,
           lastUsedAt: old?.lastUsedAt || 0
         };
       })
@@ -95,14 +98,24 @@ export class LLMConnectionPool {
     if (!this.slots.length) return null;
     const excluded = new Set(Array.isArray(excludeKeys) ? excludeKeys : []);
     const now = Date.now();
-    const available = [];
-    for (let i = 0; i < this.slots.length; i++) {
-      const index = (this.cursor + i) % this.slots.length;
-      const slot = this.slots[index];
-      if (excluded.has(slot.key)) continue;
-      if (slot.cooldownUntil > now) continue;
-      available.push({ slot, index });
-    }
+
+    // 两轮扫描：
+    //   1. 先只挑「没被业务失败标记」的槽位，让失败过的模型先去凉一会；
+    //   2. 若全被标记（模型都写不出合规 JSON），回落成按硬冷却挑选，避免一直干等。
+    const pick = (ignoreBusinessPenalty) => {
+      const available = [];
+      for (let i = 0; i < this.slots.length; i++) {
+        const index = (this.cursor + i) % this.slots.length;
+        const slot = this.slots[index];
+        if (excluded.has(slot.key)) continue;
+        if (slot.cooldownUntil > now) continue;
+        if (!ignoreBusinessPenalty && slot.businessPenaltyUntil > now) continue;
+        available.push({ slot, index });
+      }
+      return available;
+    };
+
+    const available = pick(false).length ? pick(false) : pick(true);
     if (!available.length) return null;
 
     const minInflight = Math.min(...available.map(item => item.slot.inflight));
@@ -112,6 +125,34 @@ export class LLMConnectionPool {
     chosen.slot.lastUsedAt = now;
     this.cursor = (chosen.index + 1) % this.slots.length;
     return this._createLease(chosen.slot);
+  }
+
+  /**
+   * 业务层失败（模型返回了 200 但内容不合合约）时调用：
+   * 给该槽位打一个软惩罚，让下一发请求优先换到别的模型。
+   * @param {string} key 槽位 key
+   * @param {number} ms 惩罚时长，默认 90 秒（足够跳过本轮重试，又不至于永久禁用）
+   */
+  markBusinessFailure(key, ms = 90000) {
+    const slot = this.slots.find(item => item.key === key);
+    if (!slot) return null;
+    const penalty = Number.isFinite(Number(ms)) && Number(ms) >= 0 ? Number(ms) : 90000;
+    slot.businessPenaltyUntil = Math.max(slot.businessPenaltyUntil, Date.now() + penalty);
+    return slot;
+  }
+
+  /** 该槽位这轮写对了：解除业务惩罚 */
+  clearBusinessFailure(key) {
+    const slot = this.slots.find(item => item.key === key);
+    if (!slot) return null;
+    slot.businessPenaltyUntil = 0;
+    return slot;
+  }
+
+  /** 业务失败惩罚是否还有未过期的槽位（供上层判断“是不是已经轮过一圈”） */
+  businessPenalizedKeys() {
+    const now = Date.now();
+    return this.slots.filter(slot => slot.businessPenaltyUntil > now).map(slot => slot.key);
   }
 
   _createLease(slot) {
@@ -178,7 +219,8 @@ export class LLMConnectionPool {
         model: slot.model,
         inflight: slot.inflight,
         served: slot.served,
-        coolingForMs: Math.max(0, slot.cooldownUntil - now)
+        coolingForMs: Math.max(0, slot.cooldownUntil - now),
+        businessCoolingForMs: Math.max(0, slot.businessPenaltyUntil - now)
       }))
     };
   }

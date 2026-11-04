@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 
 import { LLMConnectionPool, slotToConnection, DEFAULT_POOL_COOLDOWN_MS } from '../utils/llm-pool.js';
 import { LLMExtractor } from '../services/llm-extractor.js';
-import { resolveTaskLlmPool } from '../services/pipeline-manager.js';
+import { resolveTaskLlmPool, PipelineManager } from '../services/pipeline-manager.js';
 
 const preset = (id, model, extra = {}) => ({
   id,
+  slotKey: `preset:${id}`,
   name: `P${id}`,
   url: `https://api-${id}.example.com/v1`,
   key: `sk-${id}`,
@@ -161,4 +162,107 @@ test('旧「失败回退」已停用：extractor 不再构建 failover 控制器
   assert.equal(info.failoverEnabled, false);
   assert.equal(info.pool.size, 2);
   assert.equal(info.pool.enabled, true);
+});
+
+test('运行中取消勾选：池对象原地热更新，正在跑的旧 extractor 也不再选到被取消的模型', () => {
+  const baseConfig = {
+    llm_api_presets: [
+      preset('a', 'model-a'),
+      preset('b', 'model-b'),
+      preset('c', 'model-c')
+    ],
+    llm_scene_preset_id: 'a'
+  };
+  const pipeline = new PipelineManager(baseConfig);
+  const runningExtractor = pipeline.sceneExtractor;
+  assert.equal(runningExtractor.connectionPool.slots.length, 3);
+
+  // 运行途中取消 b 的「参与并发」
+  pipeline.updateConfig({
+    ...baseConfig,
+    llm_api_presets: baseConfig.llm_api_presets.map(item => (
+      item.id === 'b' ? { ...item, poolEnabled: false } : item
+    ))
+  });
+
+  // 旧实例仍在使用中，但它的池已被原地摘掉 b
+  assert.equal(runningExtractor.connectionPool, pipeline.sceneExtractor.connectionPool, '新旧实例应共享同一个池对象');
+  const keys = runningExtractor.connectionPool.slots.map(slot => slot.key);
+  assert.equal(keys.includes('preset:b'), false, '被取消的模型必须立刻退出槽位');
+  assert.deepEqual(keys.sort(), ['preset:a', 'preset:c']);
+
+  // 之后从旧实例取槽，永远拿不到被取消的模型
+  for (let i = 0; i < 6; i++) {
+    const lease = runningExtractor.connectionPool.acquire();
+    assert.ok(lease);
+    assert.notEqual(lease.key, 'preset:b');
+    lease.release();
+  }
+});
+
+test('运行中关掉勾选到只剩一个槽位：池清空，旧实例回落到单连接', () => {
+  const baseConfig = {
+    llm_api_presets: [preset('a', 'model-a'), preset('b', 'model-b')],
+    llm_scene_preset_id: 'a'
+  };
+  const pipeline = new PipelineManager(baseConfig);
+  const runningExtractor = pipeline.sceneExtractor;
+  assert.equal(runningExtractor.connectionPool.slots.length, 2);
+
+  pipeline.updateConfig({
+    ...baseConfig,
+    llm_api_presets: baseConfig.llm_api_presets.map(item => (
+      item.id === 'b' ? { ...item, poolEnabled: false } : item
+    ))
+  });
+
+  assert.equal(runningExtractor.connectionPool.slots.length, 0, '旧实例的池应被清空');
+  assert.equal(pipeline.sceneExtractor.connectionPool, null, '新实例退回单连接');
+});
+
+test('业务层失败换模型：标记失败的槽位并让它短暂降级，下一次请求落到别的模型', () => {
+  const pool = new LLMConnectionPool([preset('a', 'model-a'), preset('b', 'model-b')]);
+  const extractor = new LLMExtractor({
+    baseUrl: 'https://api-a.example.com/v1',
+    apiKey: 'sk-a',
+    connectionPool: pool
+  });
+
+  // A 返回 200 但内容不合合约 → 换模型
+  assert.equal(extractor._switchOnBusinessFailure('场景提炼失败: JSON 解析失败', 'preset:a'), true);
+  assert.deepEqual(pool.businessPenalizedKeys(), ['preset:a']);
+
+  // 下一发请求不会再落到 A
+  const lease = pool.acquire();
+  assert.equal(lease.key, 'preset:b');
+  lease.release();
+
+  // B 也失败 → 池里轮完一圈，不再换模型（返回 false，交给原语义重试/报错）
+  assert.equal(extractor._switchOnBusinessFailure('场景提炼失败: 数量不符', 'preset:b'), false);
+
+  // A 这轮写对了 → 立刻解除惩罚，重新参与分摊
+  pool.clearBusinessFailure('preset:a');
+  assert.deepEqual(pool.businessPenalizedKeys(), []);
+});
+
+test('业务失败不传槽位时不乱换模型；单槽位也不换', () => {
+  const pool = new LLMConnectionPool([preset('a', 'model-a'), preset('b', 'model-b')]);
+  const extractor = new LLMExtractor({ baseUrl: 'https://api-a.example.com/v1', apiKey: 'sk-a', connectionPool: pool });
+  assert.equal(extractor._switchOnBusinessFailure('未知失败'), false);
+  assert.deepEqual(pool.businessPenalizedKeys(), []);
+
+  const single = new LLMConnectionPool([preset('a', 'model-a')]);
+  const singleExtractor = new LLMExtractor({ baseUrl: 'https://api-a.example.com/v1', apiKey: 'sk-a', connectionPool: single });
+  assert.equal(singleExtractor._switchOnBusinessFailure('失败', 'preset:a'), false);
+});
+
+test('全部槽位都有业务惩罚时，池仍能取回使用（软惩罚不锁死流水线）', () => {
+  const pool = new LLMConnectionPool([preset('a', 'model-a'), preset('b', 'model-b')]);
+  pool.markBusinessFailure('preset:a');
+  pool.markBusinessFailure('preset:b');
+  assert.equal(pool.businessPenalizedKeys().length, 2);
+
+  const lease = pool.acquire();
+  assert.ok(lease, '全标记时应回落挑选，不能返回 null 让整条流水线干等');
+  lease.release();
 });

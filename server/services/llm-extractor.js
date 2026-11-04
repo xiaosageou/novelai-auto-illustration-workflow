@@ -1038,6 +1038,8 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
   let activeUrl = url;
   let activeHeaders = headers;
   let activeRateLimit = rateLimit;
+  // 当前这次请求实际落到的槽位 key（业务层失败时用来"怪到正确的模型头上"）
+  let currentConnectionKey = null;
 
   /**
    * 统一应用「换连接」结果。pool 槽位与旧 failover 的 next() 结构同形，
@@ -1045,6 +1047,7 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
    */
   const applyConnection = (connection) => {
     if (!connection) return;
+    if (connection.key) currentConnectionKey = connection.key;
     if (connection.url) activeUrl = connection.url;
     if (connection.headers) activeHeaders = connection.headers;
     if (connection.rateLimit !== undefined) activeRateLimit = connection.rateLimit;
@@ -1185,6 +1188,8 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
       if (!isRateLimited && !isTransientServerError) {
         // 连接已拿到响应，槽位立即归还，后续流式读取不占槽位
         releaseLease();
+        // 把"这次响应是哪个模型给的"带给上层：业务解析失败时才能换掉真正失败的那个
+        res.__llmSlotKey = currentConnectionKey;
         if (res.status >= 400) {
           let errBody = "";
           try { errBody = await res.text(); } catch {}
@@ -1880,12 +1885,33 @@ export class LLMExtractor {
   }
 
   /**
-   * 业务层（JSON 解析/数量不符/空返回）失败时不再换模型：
-   * 回退到别的 LLM 会污染同一章的文风与结构，改为同模型带修正提示重试。
-   * 方法保留以兼容既有调用点，恒返回 false。
+   * 业务层失败（JSON 解析失败 / 数量不符 / 字段不合合约 / 空返回）时换一个模型再试。
+   *
+   * 和 429 不同，这类失败拿到的是 200 响应，只能由上层解析阶段发现；
+   * 所以用池的「业务惩罚」软标记失败的槽位（默认 90 秒），让下一发请求
+   * 优先落到别的模型上。池内模型都失败过一轮后返回 false，交给调用点
+   * 按原语义带修正提示重试 / 最终报错，不会无限换模型。
+   *
+   * @param {string} reason        失败原因（写日志用）
+   * @param {string|null} failedSlotKey 失败响应来自哪个槽位（res.__llmSlotKey）
+   * @returns {boolean} true = 已换模型，调用点应重置 attempt 重试
    */
-  _switchOnBusinessFailure(_reason = '') {
-    return false;
+  _switchOnBusinessFailure(reason = '', failedSlotKey = null) {
+    const pool = this.connectionPool;
+    if (!pool || pool.isUsable !== true || typeof pool.markBusinessFailure !== 'function') return false;
+    if (!failedSlotKey) return false;
+
+    const penalized = new Set(typeof pool.businessPenalizedKeys === 'function' ? pool.businessPenalizedKeys() : []);
+    penalized.add(failedSlotKey);
+    if (penalized.size >= pool.size) {
+      console.warn(`[LLM Extractor] ${reason}，池内 ${pool.size} 个模型本轮都已业务失败，不再换模型，按原语义重试`);
+      return false;
+    }
+
+    const slot = pool.markBusinessFailure(failedSlotKey);
+    if (!slot) return false;
+    console.warn(`[LLM Extractor] ${reason}，模型「${slot.label}」（${slot.model || '默认模型'}）本轮业务失败，换下一个模型重试`);
+    return true;
   }
 
   /** 统一出口：挂上多模型并发槽位池（旧 failover 恒为 null，不再生效） */
@@ -1894,12 +1920,17 @@ export class LLMExtractor {
     if (requestedModel && !this.connectionPool) this.activeModel = String(requestedModel);
     const failover = options.failover === undefined ? null : options.failover;
     const pool = options.pool === undefined ? this.connectionPool : options.pool;
-    return postChatCompletionWith429Retry({
+    const res = await postChatCompletionWith429Retry({
       ...options,
       failover,
       pool,
       poolHopOn429: options.poolHopOn429 === undefined ? this.poolHopOn429 : options.poolHopOn429
     });
+    // 这次这个模型写对了：解除它的业务惩罚，别让它因为上一轮失败一直被排到最后
+    if (res && res.status < 400 && res.__llmSlotKey && pool && typeof pool.clearBusinessFailure === 'function') {
+      pool.clearBusinessFailure(res.__llmSlotKey);
+    }
+    return res;
   }
 
   /** 当前实际在用的连接指纹，供前端展示「现在用的是哪个模型」 */
@@ -2073,6 +2104,7 @@ export class LLMExtractor {
 
     const reqController = this._createRequestController();
     let lastError = null;
+    let lastSlotKey = null;
     try {
       for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
         if (reqController.signal.aborted) {
@@ -2098,6 +2130,7 @@ export class LLMExtractor {
           rateLimit: this.getRateLimitConfig(),
           signal: reqController.signal
         });
+        lastSlotKey = res?.__llmSlotKey || null;
 
         if (res.status !== 200) {
           throw new Error(`HTTP Error ${res.status}${res.__errorBody ? `: ${String(res.__errorBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
@@ -2135,7 +2168,7 @@ export class LLMExtractor {
         if (error?.code === 'LLM_429_EXHAUSTED') {
           break;
         }
-        if (this._switchOnBusinessFailure(`场景提炼失败: ${error.message}`)) {
+        if (this._switchOnBusinessFailure(`场景提炼失败: ${error.message}`, lastSlotKey)) {
           onProgressLog?.(`[LLM] 已自动切换到下一个 LLM 预设重新提炼`, "warning");
           attempt = 0;
           continue;
@@ -2211,6 +2244,7 @@ export class LLMExtractor {
       };
 
       let lastError = null;
+      let lastSlotKey = null;
       for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
         if (signal?.aborted) {
           const err = new Error("Operation aborted by user");
@@ -2248,6 +2282,7 @@ export class LLMExtractor {
             rateLimit: this.getRateLimitConfig(),
             signal
           });
+          lastSlotKey = res?.__llmSlotKey || null;
 
           if (res.status !== 200) {
             throw new Error(`HTTP Error ${res.status}${res.__errorBody ? `: ${String(res.__errorBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
@@ -2283,7 +2318,7 @@ export class LLMExtractor {
           if (error?.code === 'LLM_429_EXHAUSTED') {
             break;
           }
-          if (this._switchOnBusinessFailure(`单场景描述重构失败: ${error.message}`)) {
+          if (this._switchOnBusinessFailure(`单场景描述重构失败: ${error.message}`, lastSlotKey)) {
             attempt = 0;
             continue;
           }
@@ -2360,6 +2395,7 @@ export class LLMExtractor {
     });
 
     let lastError = null;
+    let lastSlotKey = null;
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       if (signal?.aborted) {
         const err = new Error("Operation aborted by user");
@@ -2392,6 +2428,7 @@ export class LLMExtractor {
           rateLimit: this.getRateLimitConfig(),
           signal
         });
+        lastSlotKey = res?.__llmSlotKey || null;
 
         if (res.status !== 200) {
           throw new Error(`HTTP Error ${res.status}${res.__errorBody ? `: ${String(res.__errorBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
@@ -2435,7 +2472,7 @@ export class LLMExtractor {
         if (error?.code === 'LLM_429_EXHAUSTED') {
           break;
         }
-        if (this._switchOnBusinessFailure(`正文选段批量重构失败: ${error.message}`)) {
+        if (this._switchOnBusinessFailure(`正文选段批量重构失败: ${error.message}`, lastSlotKey)) {
           attempt = 0;
           continue;
         }
@@ -2521,6 +2558,7 @@ export class LLMExtractor {
     progressCb?.(`[角色 DNA 提炼] 正在调用大模型分析切片 (${sourceChapters.join(', ') || '未知章节'}, 切片长度: ${sliceText.length} 字)...`);
 
     let lastError = null;
+    let lastSlotKey = null;
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       if (signal?.aborted) {
         const err = new Error("Operation aborted by user");
@@ -2540,6 +2578,7 @@ export class LLMExtractor {
         rateLimit: this.getRateLimitConfig(),
         signal
       });
+      lastSlotKey = res?.__llmSlotKey || null;
 
       if (res.status !== 200) {
         throw new Error(`HTTP Error ${res.status}${res.__errorBody ? `: ${String(res.__errorBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
@@ -2619,7 +2658,7 @@ export class LLMExtractor {
           break;
         }
         // 同人脸模违规属于内容问题，换预设解决不了，只做常规重试，不触发预设轮换。
-        if (!error?.isProxyAssignmentViolation && this._switchOnBusinessFailure(`角色 DNA 提炼失败: ${error.message}`)) {
+        if (!error?.isProxyAssignmentViolation && this._switchOnBusinessFailure(`角色 DNA 提炼失败: ${error.message}`, lastSlotKey)) {
           progressCb?.(`[角色 DNA 提炼] 已自动切换到下一个 LLM 预设重试`, 'warning');
           attempt = 0;
           continue;
@@ -2952,6 +2991,7 @@ export class LLMExtractor {
         characterContext
       ].join("\n");
       let lastAttemptError = null;
+      let lastSlotKey = null;
 
       for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
         if (effectiveAbortSignal?.aborted) {
@@ -2987,6 +3027,7 @@ export class LLMExtractor {
             rateLimit: this.getRateLimitConfig(),
             signal: effectiveAbortSignal
           });
+          lastSlotKey = res?.__llmSlotKey || null;
           if (res.status !== 200) throw new Error(`HTTP Error ${res.status}${res.__errorBody ? `: ${String(res.__errorBody).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
 
           const { responseData, content: rawContent } = await readLlmResponse(res, {
@@ -3195,7 +3236,7 @@ export class LLMExtractor {
           if (attemptError?.code === 'LLM_429_EXHAUSTED') {
             break;
           }
-          if (this._switchOnBusinessFailure(`参数生成失败: ${attemptError.message}`)) {
+          if (this._switchOnBusinessFailure(`参数生成失败: ${attemptError.message}`, lastSlotKey)) {
             onProgressLog?.(`[LLM] 已自动切换到下一个 LLM 预设重新生成参数`, "warning");
             attempt = 0;
             continue;
