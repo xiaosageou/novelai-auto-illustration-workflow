@@ -619,7 +619,8 @@ app.get('/api/projects', async (req, res) => {
         } catch (err) {
           console.warn(`[Server] 生成项目「${name}」进度摘要失败:`, err.message);
         }
-        projects.push({ name, createdAt: stats.birthtime, progress });
+        const pendingImages = await countPendingImages(name).catch(() => 0);
+        projects.push({ name, createdAt: stats.birthtime, progress, pendingImages });
       }
     }
     res.json(projects);
@@ -662,6 +663,26 @@ async function collectCompressTargets(projectName) {
     add(path.join(projectsDir, name, 'comic', 'assets'), true);
   }
   return targets;
+}
+
+/** 待压缩图片计数（只列目录不 stat，带短 TTL 缓存，供前端置灰用） */
+const pendingScanCache = new Map();
+const PENDING_SCAN_TTL = 5000;
+
+async function countPendingImages(projectName) {
+  const cached = pendingScanCache.get(projectName);
+  if (cached && Date.now() - cached.at < PENDING_SCAN_TTL) return cached.count;
+  const base = path.join(BASE_DIR, 'projects', projectName);
+  let count = 0;
+  const dirs = [
+    [path.join(base, 'illustrations'), false],
+    [path.join(base, 'comic', 'assets'), true]
+  ];
+  for (const [dir, recursive] of dirs) {
+    count += (await listImages(dir, { recursive }).catch(() => [])).length;
+  }
+  pendingScanCache.set(projectName, { at: Date.now(), count });
+  return count;
 }
 
 function publicJob(job) {
@@ -742,6 +763,7 @@ async function runCompressJob(job) {
   job.status = job.cancelRequested ? 'cancelled' : 'done';
   job.finishedAt = new Date().toISOString();
   job.current = '';
+  pendingScanCache.clear();
   emit(true);
   return job;
 }

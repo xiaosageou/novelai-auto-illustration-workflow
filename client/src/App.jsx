@@ -2491,6 +2491,14 @@ function App() {
   };
 
 
+  // 待压缩统计：所有项目都已无 PNG 时，压缩按钮置灰
+  const totalPendingImages = useMemo(
+    () => projects.reduce((n, p) => n + (p.pendingImages ?? 0), 0),
+    [projects]
+  );
+  const allCompressed = projects.length > 0 && totalPendingImages === 0;
+  const isCompressing = compressJob?.status === 'running' || compressJob?.status === 'scanning';
+
   const renderBooksTab = () => (
     <div className="books-tab-view">
       <div className="tab-view-header">
@@ -2518,10 +2526,12 @@ function App() {
           <button
             className="btn-secondary"
             onClick={() => startCompressImages()}
-            disabled={isStartingCompress || compressJob?.status === 'running' || compressJob?.status === 'scanning'}
-            title="把全部项目已生成的 PNG 插图转成 WebP q85（原图替换，prompt/seed 另存 .txt）"
+            disabled={isStartingCompress || isCompressing || allCompressed}
+            title={allCompressed
+              ? '所有项目的插图都已压缩为 WebP，无需处理'
+              : `将全部项目 ${totalPendingImages} 张待压缩 PNG 转成 WebP q85（原图替换，prompt/seed 另存 .txt）`}
           >
-            <ImageIcon size={16} /> 一键压缩旧图
+            <ImageIcon size={16} /> {allCompressed ? '已全部压缩' : '一键压缩旧图'}
           </button>
           <button className="btn-primary" onClick={() => setIsNewProjectOpen(true)}>
             <Plus size={16} /> 导入新书籍
@@ -2566,9 +2576,9 @@ function App() {
                   <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
                     <button
                       className="btn-secondary book-delete-btn"
-                      title="压缩该项目旧图"
+                      title={(proj.pendingImages ?? 0) === 0 ? '该项目图片已全部压缩' : `压缩该项目 ${proj.pendingImages} 张旧图`}
                       onClick={(e) => { e.stopPropagation(); startCompressImages(proj.name); }}
-                      disabled={isStartingCompress || compressJob?.status === 'running' || compressJob?.status === 'scanning'}
+                      disabled={isStartingCompress || isCompressing || (proj.pendingImages ?? 0) === 0}
                     >
                       <ImageIcon size={13} />
                     </button>
