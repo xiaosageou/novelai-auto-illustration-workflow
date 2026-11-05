@@ -167,6 +167,14 @@ function App() {
   const [mainTab, setMainTab] = useState('workbench'); // 'books' | 'dna' | 'workbench'
   const [isLogsOpen, setIsLogsOpen] = useState(false);
   const [isLogsMaximized, setIsLogsMaximized] = useState(false);
+  // 日志抽屉高度（0 = 用 CSS 自适应默认值；拖动后记 localStorage）
+  const [logsDockHeight, setLogsDockHeight] = useState(() => {
+    const saved = Number(window.localStorage.getItem('logDockHeight'));
+    return Number.isFinite(saved) && saved >= 280 ? saved : 0;
+  });
+  const [isLogResizing, setIsLogResizing] = useState(false);
+  const [isQueueMonitorCollapsed, setIsQueueMonitorCollapsed] = useState(false);
+  const logDockRef = useRef(null);
   const [workspaceTab, setWorkspaceTab] = useState('scenes');
   const [selectedDnaCharacter, setSelectedDnaCharacter] = useState('');
   const [dnaSearchQuery, setDnaSearchQuery] = useState('');
@@ -637,6 +645,31 @@ function App() {
 
   const logsEndRef = useRef(null);
   const naiLogsEndRef = useRef(null);
+
+  // 拖动日志区上沿调整整体高度（向上拖变高），松手后写入 localStorage
+  const startLogResize = (e) => {
+    if (isLogsMaximized) return;
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = logDockRef.current?.getBoundingClientRect().height || 420;
+    setIsLogResizing(true);
+    const onMove = (ev) => {
+      const max = Math.max(320, window.innerHeight - 120);
+      const next = Math.max(280, Math.min(max, startHeight + (startY - ev.clientY)));
+      setLogsDockHeight(Math.round(next));
+    };
+    const onUp = () => {
+      setIsLogResizing(false);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  useEffect(() => {
+    if (logsDockHeight > 0) window.localStorage.setItem('logDockHeight', String(Math.round(logsDockHeight)));
+  }, [logsDockHeight]);
 
   // 初始化加载
   useEffect(() => {
@@ -4435,7 +4468,11 @@ function App() {
     })();
 
     return (
-      <div className={`log-dock-container ${isLogsOpen ? (isLogsMaximized ? 'maximized' : 'expanded') : 'collapsed'}`}>
+      <div
+        ref={logDockRef}
+        className={`log-dock-container ${isLogsOpen ? (isLogsMaximized ? 'maximized' : 'expanded') : 'collapsed'}${isLogResizing ? ' resizing' : ''}`}
+        style={isLogsOpen && !isLogsMaximized && logsDockHeight > 0 ? { height: `${logsDockHeight}px` } : undefined}
+      >
         {!isLogsOpen ? (
           <div className="log-dock-collapsed-bar" onClick={() => setIsLogsOpen(true)} title="点击展开实时运行日志">
             <div className="log-dock-bar-left">
@@ -4553,6 +4590,16 @@ function App() {
                 <button
                   type="button"
                   className="btn-secondary"
+                  onClick={() => setIsQueueMonitorCollapsed(!isQueueMonitorCollapsed)}
+                  style={{ padding: '4px 8px', fontSize: '0.78rem' }}
+                  title={isQueueMonitorCollapsed ? '显示队列监控卡' : '隐藏队列监控卡，把空间全给日志'}
+                >
+                  {isQueueMonitorCollapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+                </button>
+
+                <button
+                  type="button"
+                  className="btn-secondary"
                   onClick={() => { setLogs([]); setNaiLogs([]); }}
                   style={{ padding: '4px 10px', fontSize: '0.78rem' }}
                   title="清空日志"
@@ -4584,7 +4631,7 @@ function App() {
 
             {/* 全局跨项目双队列监控横栏 */}
             {globalQueueState && (
-              <div className="log-dock-queue-monitor-bar">
+              <div className={`log-dock-queue-monitor-bar${isQueueMonitorCollapsed ? ' collapsed' : ''}`}>
                 <div className="queue-monitor-card prompt-card">
                   <div className="card-header">
                     <span className="card-title">⚙️ LLM Prompt 提炼队列 (跨项目 FIFO)</span>
@@ -4666,6 +4713,15 @@ function App() {
                 </div>
               </div>
             )}
+
+            <div
+              className="log-dock-resizer"
+              onMouseDown={startLogResize}
+              onDoubleClick={() => setLogsDockHeight(0)}
+              title="拖动调整日志区高度；双击恢复默认"
+            >
+              <span className="log-dock-resizer-grip" />
+            </div>
 
             <div className="logs-split-container">
               {/* 左半部分：常规/LLM日志 */}

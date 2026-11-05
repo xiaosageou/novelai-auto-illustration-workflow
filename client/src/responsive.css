@@ -319,8 +319,8 @@ html {
   }
 
   .log-dock-container.expanded {
-    height: 50vh;
-    min-height: 0;
+    height: 58vh;
+    min-height: 320px;
   }
 
   .log-dock-container.maximized {
@@ -380,11 +380,18 @@ html {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
     gap: 8px;
+    min-height: 180px;
   }
 
   .log-scroll-area {
     padding: 8px 10px;
     font-size: 0.76rem;
+    min-height: 80px;
+  }
+
+  .log-dock-resizer {
+    height: 14px;
+    margin: 0 0 6px;
   }
 }
 
