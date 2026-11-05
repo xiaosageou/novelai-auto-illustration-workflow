@@ -1063,6 +1063,10 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
   // 与旧「失败回退」的区别：这里在请求发出前就把并发摊到不同模型上，
   // 每个槽位带自己的 RPM 限流器 key，单模型不会被同一时刻的多路请求同时顶爆。
   const poolUsable = Boolean(pool && typeof pool.acquire === 'function' && Number(pool.size) >= 2);
+  // 统计与「分摊」解耦：就算只配了一个模型（单槽位），也要统计调用次数 / 成功率
+  const statsPool = pool && typeof pool.recordCall === 'function' ? pool : null;
+  const statsKey = () => currentConnectionKey
+    || (statsPool && Number(statsPool.size) === 1 ? (statsPool.slots?.[0]?.key || null) : null);
   const hopEnabled = poolUsable && poolHopOn429 !== false && pool.hopOn429 !== false;
   const hopBudget = poolUsable
     ? (Number(pool.hopBudget) > 0 ? Math.floor(Number(pool.hopBudget)) : Math.max(2, max429Retries * Math.max(2, Number(pool.size) || 2)))
@@ -1172,6 +1176,8 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
 
     try {
       const streamEnabled = safePayload?.stream !== false;
+      // 统计口径：每一次真实发出的 HTTP 请求算一次调用（重试各算一次）
+      if (statsPool) statsPool.recordCall(statsKey());
       const res = await fetch(activeUrl, {
         method: "POST",
         headers: activeHeaders,
@@ -1185,11 +1191,20 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
       // flash-lite 的 500 是上游偶发的临时失败；快速模型的突发请求尤其容易遇到它。
       // 502/503/504 保持原有上层处理语义，避免吞掉代理或服务维护等明确错误。
       const isTransientServerError = res.status === 500;
+      if ((isRateLimited || isTransientServerError) && statsPool) {
+        statsPool.recordHttpFailure(statsKey(), isRateLimited ? 'rateLimited' : 'serverError');
+      }
       if (!isRateLimited && !isTransientServerError) {
         // 连接已拿到响应，槽位立即归还，后续流式读取不占槽位
         releaseLease();
         // 把"这次响应是哪个模型给的"带给上层：业务解析失败时才能换掉真正失败的那个
         res.__llmSlotKey = currentConnectionKey;
+        // HTTP 2xx 先记成功；若上层解析发现内容不合合约，会由 recordBusinessFailure 撤回
+        if (statsPool && res.status < 400) {
+          statsPool.recordSuccess(statsKey());
+        } else if (statsPool && res.status >= 400) {
+          statsPool.recordHttpFailure(statsKey(), 'serverError');
+        }
         if (res.status >= 400) {
           let errBody = "";
           try { errBody = await res.text(); } catch {}
@@ -1247,6 +1262,9 @@ export async function postChatCompletionWith429Retry({ url, headers, payload, id
       if (signal?.aborted || requestError?.name === 'AbortError') {
         releaseLease();
         throw requestError;
+      }
+      if (statsPool) {
+        statsPool.recordHttpFailure(statsKey(), 'networkError');
       }
       if (await hopToOtherSlot(`请求异常 ${requestError?.message || requestError}`)) {
         limiter = activeRateLimit ? getRateLimiter(activeRateLimit) : null;
@@ -1910,6 +1928,8 @@ export class LLMExtractor {
 
     const slot = pool.markBusinessFailure(failedSlotKey);
     if (!slot) return false;
+    // 记一笔业务失败，并把之前记上的那次 success 撤回，成功率才反映真实可用性
+    if (typeof pool.recordBusinessFailure === 'function') pool.recordBusinessFailure(failedSlotKey);
     console.warn(`[LLM Extractor] ${reason}，模型「${slot.label}」（${slot.model || '默认模型'}）本轮业务失败，换下一个模型重试`);
     return true;
   }

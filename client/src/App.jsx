@@ -97,6 +97,8 @@ function App() {
     llm_rate_limit_rpm: 3,
     llm_max_retries: 3,
     llm_429_max_retries: 5,
+    llm_concurrency: 2,
+    max_scene_prompt_concurrency: 5,
     llm_failover_enabled: true,
     llm_multi_model_enabled: true,
     llm_pool_hop_on_429: true,
@@ -963,6 +965,8 @@ function App() {
         llm_rate_limit_rpm: Number(data.llm_rate_limit_rpm) || 3,
         llm_max_retries: Number(data.llm_max_retries) >= 1 ? Math.min(10, Math.floor(Number(data.llm_max_retries))) : 3,
         llm_429_max_retries: Number.isFinite(Number(data.llm_429_max_retries)) ? Math.max(0, Math.min(20, Math.floor(Number(data.llm_429_max_retries)))) : 5,
+        llm_concurrency: Number.isFinite(Number(data.llm_concurrency)) && Number(data.llm_concurrency) > 0 ? Math.max(1, Math.min(8, Math.floor(Number(data.llm_concurrency)))) : 2,
+        max_scene_prompt_concurrency: Number.isFinite(Number(data.max_scene_prompt_concurrency)) && Number(data.max_scene_prompt_concurrency) > 0 ? Math.max(1, Math.min(8, Math.floor(Number(data.max_scene_prompt_concurrency)))) : 5,
         llm_api_presets: (data.llm_api_presets || []).map(normalizePreset),
         artist_presets: Array.isArray(data.artist_presets) ? data.artist_presets : []
       });
@@ -4608,7 +4612,33 @@ function App() {
                       {globalQueueState.llm?.scene?.pool?.enabled
                         ? ` · 多模型分摊 ${globalQueueState.llm.scene.pool.size} 个槽位`
                         : ''}
+                      {globalQueueState.llm?.llmConcurrency
+                        ? ` · 章节并发 ${globalQueueState.llm.llmConcurrency} / 单章场景并发 ${globalQueueState.llm.scenePromptConcurrency || 5}`
+                        : ''}
                     </span>
+                    {Array.isArray(globalQueueState.llm?.poolStats) && globalQueueState.llm.poolStats.length > 0 && (
+                      <div style={{ display: 'grid', gap: '3px', marginTop: '6px', paddingTop: '6px', borderTop: '1px dashed rgba(255,255,255,0.1)' }}>
+                        <span className="queue-pending-info" style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>各模型调用统计（累计）</span>
+                        {[...globalQueueState.llm.poolStats]
+                          .sort((a, b) => (b.calls || 0) - (a.calls || 0))
+                          .map(stat => (
+                            <span key={stat.key} className="queue-pending-info" style={{ fontSize: '0.72rem', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'baseline' }}>
+                              <strong style={{ color: 'var(--text-secondary)' }}>{stat.label}{stat.model ? `（${stat.model}）` : ''}</strong>
+                              <span>调用 {stat.calls || 0} 次</span>
+                              <span>成功 {stat.success || 0}</span>
+                              <span style={{ color: stat.successRate == null ? 'var(--text-muted)' : (stat.successRate >= 0.8 ? '#52c41a' : stat.successRate >= 0.5 ? '#faad14' : '#ff4d4f') }}>
+                                成功率 {stat.successRate == null ? '—' : `${(stat.successRate * 100).toFixed(1)}%`}
+                              </span>
+                              {stat.rateLimited > 0 && <span style={{ color: '#faad14' }}>429 {stat.rateLimited}</span>}
+                              {stat.businessFailures > 0 && <span style={{ color: '#ff7875' }}>内容不合格 {stat.businessFailures}</span>}
+                              {(stat.serverErrors > 0 || stat.networkErrors > 0) && <span style={{ color: '#ff7875' }}>异常 {stat.serverErrors + stat.networkErrors}</span>}
+                              {stat.inflight > 0 && <span style={{ color: '#9ad1ff' }}>{stat.inflight} 在飞</span>}
+                              {stat.coolingForMs > 0 && <span style={{ color: 'var(--text-muted)' }}>冷却 {Math.ceil(stat.coolingForMs / 1000)}s</span>}
+                              {stat.businessCoolingForMs > 0 && <span style={{ color: 'var(--text-muted)' }}>业务降级 {Math.ceil(stat.businessCoolingForMs / 1000)}s</span>}
+                            </span>
+                          ))}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -5800,6 +5830,32 @@ function App() {
                         style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                       />
                       <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '4px 0 0' }}>HTTP 429 / 500 等传输层退避重试次数（0-20，默认 5）</p>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>LLM 章节并发</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="8"
+                        step="1"
+                        value={config.llm_concurrency ?? 2}
+                        onChange={(e) => setConfig({ ...config, llm_concurrency: Math.max(1, Math.min(8, Math.floor(Number(e.target.value) || 2))) })}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                      />
+                      <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '4px 0 0' }}>同时处理几个章节的 LLM 提炼（1-8，默认 2）。多模型并发开启时，这些并发会摊到各模型上</p>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>单章场景并发</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="8"
+                        step="1"
+                        value={config.max_scene_prompt_concurrency ?? 5}
+                        onChange={(e) => setConfig({ ...config, max_scene_prompt_concurrency: Math.max(1, Math.min(8, Math.floor(Number(e.target.value) || 5))) })}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
+                      />
+                      <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '4px 0 0' }}>同一章内同时翻译几个场景的 prompt（1-8，默认 5）</p>
                     </div>
                   </div>
                   <div className="llm-routing-panel">

@@ -36,6 +36,9 @@ const DEFAULT_CONFIG = {
   llm_rate_limit_rpm: 3,
   llm_max_retries: 3,
   llm_429_max_retries: 5,
+  // 并行数量（前端可调）：章节级 LLM 生产者并发 / 单章内场景 prompt 并发
+  llm_concurrency: 2,
+  max_scene_prompt_concurrency: 5,
   llm_failover_enabled: true,
   llm_multi_model_enabled: true,
   llm_pool_hop_on_429: true,
@@ -85,6 +88,15 @@ const DEFAULT_CONFIG = {
   artist_presets: []
 };
 
+/** 并行数量归一化：1-8 的整数，非法值回落到默认值 */
+function clampConcurrency(value, fallback = 2) {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'object' || typeof value === 'boolean') return fallback;
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return fallback;
+  return Math.max(1, Math.min(8, Math.floor(num)));
+}
+
 function normalizeConfig(config = {}) {
   const normalized = { ...DEFAULT_CONFIG, ...config };
   normalized.artist_presets = Array.isArray(config.artist_presets) ? config.artist_presets : [];
@@ -92,6 +104,8 @@ function normalizeConfig(config = {}) {
   const retryLimits = resolveLlmRetryLimits(normalized);
   normalized.llm_max_retries = retryLimits.maxRetries;
   normalized.llm_429_max_retries = retryLimits.max429Retries;
+  normalized.llm_concurrency = clampConcurrency(normalized.llm_concurrency, 2);
+  normalized.max_scene_prompt_concurrency = clampConcurrency(normalized.max_scene_prompt_concurrency, 5);
   const promptDefaults = {
     system_prompt_extract_scenes: DEFAULT_EXTRACT_SCENES_PROMPT,
     system_prompt_character_dna: DEFAULT_CHARACTER_DNA_PROMPT,

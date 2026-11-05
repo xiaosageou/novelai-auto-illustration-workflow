@@ -71,6 +71,13 @@ export class LLMConnectionPool {
           // 业务层失败（JSON 不合合约 / 数量不符 / 空返回）的软惩罚：
           // 只降优先级，不像 429 那样硬烧穿；全池都失败时仍能取回使用
           businessPenaltyUntil: old?.businessPenaltyUntil || 0,
+          // ── 调用统计（给前端看）─────────────────────────────
+          calls: old?.calls || 0,                    // 总调用次数（含重试）
+          success: old?.success || 0,                // 通过业务校验的有效返回
+          rateLimited: old?.rateLimited || 0,        // 429 次数
+          serverErrors: old?.serverErrors || 0,      // 5xx 次数
+          networkErrors: old?.networkErrors || 0,    // 网络异常次数
+          businessFailures: old?.businessFailures || 0,
           lastUsedAt: old?.lastUsedAt || 0
         };
       })
@@ -149,6 +156,50 @@ export class LLMConnectionPool {
     return slot;
   }
 
+  // ── 调用统计 ──────────────────────────────────────────────────
+  // 口径：calls 记每一次真实发出的 HTTP 请求（重试各算一次），
+  //       success 只记「HTTP 2xx 且内容通过业务校验」的那一次，
+  //       所以业务失败会把已经记上的 success 撤回，成功率才反映真实可用性。
+  _findSlot(key) {
+    if (!key) return null;
+    return this.slots.find(item => item.key === key) || null;
+  }
+
+  /** 每发一次请求记一次调用 */
+  recordCall(key) {
+    const slot = this._findSlot(key);
+    if (!slot) return null;
+    slot.calls += 1;
+    return slot;
+  }
+
+  /** HTTP 2xx 且解析前暂视为成功（业务校验失败时由 recordBusinessFailure 撤回） */
+  recordSuccess(key) {
+    const slot = this._findSlot(key);
+    if (!slot) return null;
+    slot.success += 1;
+    return slot;
+  }
+
+  /** 传输层失败：rateLimited / serverError / networkError */
+  recordHttpFailure(key, kind = 'serverError') {
+    const slot = this._findSlot(key);
+    if (!slot) return null;
+    if (kind === 'rateLimited') slot.rateLimited += 1;
+    else if (kind === 'networkError') slot.networkErrors += 1;
+    else slot.serverErrors += 1;
+    return slot;
+  }
+
+  /** 业务校验失败：撤回先前记的成功，改记业务失败 */
+  recordBusinessFailure(key) {
+    const slot = this._findSlot(key);
+    if (!slot) return null;
+    if (slot.success > 0) slot.success -= 1;
+    slot.businessFailures += 1;
+    return slot;
+  }
+
   /** 业务失败惩罚是否还有未过期的槽位（供上层判断“是不是已经轮过一圈”） */
   businessPenalizedKeys() {
     const now = Date.now();
@@ -220,7 +271,14 @@ export class LLMConnectionPool {
         inflight: slot.inflight,
         served: slot.served,
         coolingForMs: Math.max(0, slot.cooldownUntil - now),
-        businessCoolingForMs: Math.max(0, slot.businessPenaltyUntil - now)
+        businessCoolingForMs: Math.max(0, slot.businessPenaltyUntil - now),
+        calls: slot.calls,
+        success: slot.success,
+        rateLimited: slot.rateLimited,
+        serverErrors: slot.serverErrors,
+        networkErrors: slot.networkErrors,
+        businessFailures: slot.businessFailures,
+        successRate: slot.calls > 0 ? Number((slot.success / slot.calls).toFixed(4)) : null
       }))
     };
   }

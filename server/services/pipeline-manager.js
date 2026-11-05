@@ -360,12 +360,45 @@ export class PipelineManager {
     return resolveLlmRetryLimits(this.config).maxRetries;
   }
 
+  /** LLM 章节生产者并发数（前端可调，默认 2，上限 8） */
+  get llmConcurrency() {
+    const raw = Number(this.config.llm_concurrency);
+    if (!Number.isFinite(raw) || raw <= 0) return 2;
+    return Math.max(1, Math.min(8, Math.floor(raw)));
+  }
+
+  /** 单章内逐场景 prompt 翻译并发数（前端可调，默认 5，上限 8） */
+  get scenePromptConcurrency() {
+    const raw = Number(this.config.max_scene_prompt_concurrency);
+    if (!Number.isFinite(raw) || raw <= 0) return 5;
+    return Math.max(1, Math.min(8, Math.floor(raw)));
+  }
+
   createLlmExtractor(task, previousPool = null) {
     const connection = resolveTaskLlmConfig(this.config, task);
     const trimConnection = resolveTaskLlmConfig(this.config, 'trim');
     const retryLimits = resolveLlmRetryLimits(this.config);
     // 多模型并发：多个模型轮转分摊同一批并发请求（旧失败回退已停用）
-    const poolConnections = resolveTaskLlmPool(this.config, task);
+    let poolConnections = resolveTaskLlmPool(this.config, task);
+    if (!poolConnections.length && connection.baseUrl) {
+      // 未启用分摊时也建一个单槽位池：分摊用不上，但「调用次数 / 成功率」统计需要它
+      const singleKey = connection.rateLimitKey || `single:${task}`;
+      poolConnections = [{
+        key: singleKey,
+        slotKey: singleKey,
+        id: '',
+        label: '单路',
+        baseUrl: String(connection.baseUrl || '').trim().replace(/\/+$/, ''),
+        apiKey: connection.apiKey,
+        model: connection.model,
+        reasoningEffort: connection.reasoningEffort,
+        rateLimit: {
+          enabled: connection.rateLimitEnabled !== false,
+          rpm: Number(connection.rateLimitRpm) || 3,
+          key: singleKey
+        }
+      }];
+    }
     let connectionPool = null;
     const poolCooldownMs = Math.max(3000, Number(this.config.llm_pool_cooldown_seconds) * 1000 || 20000);
     if (previousPool && typeof previousPool.setConnections === 'function') {
@@ -375,8 +408,8 @@ export class PipelineManager {
       previousPool.setConnections(poolConnections);
       previousPool.cooldownMs = poolCooldownMs;
       previousPool.hopOn429 = this.config.llm_pool_hop_on_429 !== false;
-      connectionPool = poolConnections.length >= 2 ? previousPool : null;
-    } else if (poolConnections.length >= 2) {
+      connectionPool = poolConnections.length >= 1 ? previousPool : null;
+    } else if (poolConnections.length >= 1) {
       connectionPool = new LLMConnectionPool(poolConnections, {
         cooldownMs: poolCooldownMs,
         hopOn429: this.config.llm_pool_hop_on_429 !== false
@@ -424,6 +457,54 @@ export class PipelineManager {
    * 当前实际在用的 LLM 连接（供前端展示「现在用的是哪个模型」）。
    * 包含故障转移后的真实模型，不是配置里的静态值。
    */
+  /**
+   * 合并三个任务池的模型级统计（按槽位 key 汇总）。
+   * 同一个预设可能同时服务场景 / 角色 DNA / NAI 标签，合并后前端才能看到「这个模型总共调了多少次、成功率多少」。
+   */
+  collectPoolStats() {
+    const pools = [
+      this.sceneExtractor?.connectionPool,
+      this.characterDnaExtractor?.connectionPool,
+      this.naiTagsExtractor?.connectionPool
+    ];
+    const merged = new Map();
+    for (const pool of pools) {
+      if (!pool || typeof pool.stats !== 'function') continue;
+      for (const slot of pool.stats().slots || []) {
+        const entry = merged.get(slot.key) || {
+          key: slot.key,
+          label: slot.label || slot.key,
+          model: slot.model || '',
+          calls: 0,
+          success: 0,
+          rateLimited: 0,
+          serverErrors: 0,
+          networkErrors: 0,
+          businessFailures: 0,
+          inflight: 0,
+          coolingForMs: 0,
+          businessCoolingForMs: 0
+        };
+        entry.calls += Number(slot.calls) || 0;
+        entry.success += Number(slot.success) || 0;
+        entry.rateLimited += Number(slot.rateLimited) || 0;
+        entry.serverErrors += Number(slot.serverErrors) || 0;
+        entry.networkErrors += Number(slot.networkErrors) || 0;
+        entry.businessFailures += Number(slot.businessFailures) || 0;
+        entry.inflight = Math.max(entry.inflight, Number(slot.inflight) || 0);
+        entry.coolingForMs = Math.max(entry.coolingForMs, Number(slot.coolingForMs) || 0);
+        entry.businessCoolingForMs = Math.max(entry.businessCoolingForMs, Number(slot.businessCoolingForMs) || 0);
+        if (!entry.model && slot.model) entry.model = slot.model;
+        if (!entry.label && slot.label) entry.label = slot.label;
+        merged.set(slot.key, entry);
+      }
+    }
+    return [...merged.values()].map(entry => ({
+      ...entry,
+      successRate: entry.calls > 0 ? Number((entry.success / entry.calls).toFixed(4)) : null
+    }));
+  }
+
   getActiveLlmInfo() {
     const build = (extractor, task) => {
       if (!extractor) return null;
@@ -446,6 +527,10 @@ export class PipelineManager {
     return {
       failoverEnabled: false,
       poolEnabled: this.config.llm_multi_model_enabled !== false,
+      llmConcurrency: this.llmConcurrency,
+      scenePromptConcurrency: this.scenePromptConcurrency,
+      // 各模型累计调用次数 / 成功率（三个任务池合并，前端直接渲染）
+      poolStats: this.collectPoolStats(),
       scene: build(this.sceneExtractor, 'scene'),
       characterDna: build(this.characterDnaExtractor, 'characterDna'),
       naiTags: build(this.naiTagsExtractor, 'naiTags')
@@ -949,11 +1034,11 @@ export class PipelineManager {
 
     try {
       if (!targetChapterKey) {
-        // 全书批量模式：2 并发生成 Prompt
-        this.writeLog("[Pipeline Prompt] 启动全书 Prompt 提炼（2 并发）...");
+        // 全书批量模式：按配置的并发生成 Prompt
+        this.writeLog(`[Pipeline Prompt] 启动全书 Prompt 提炼（${this.llmConcurrency} 并发）...`);
         this._pendingDnaSlices = new Set();
         const llmResult = await this._runLlmProducerWithConcurrency(
-          this.chapters, sceneModel, naiTagsModel, bridgeQueue, 2, autoUpdateCharacterDna
+          this.chapters, sceneModel, naiTagsModel, bridgeQueue, this.llmConcurrency, autoUpdateCharacterDna
         );
         return llmResult && llmResult.paused ? llmResult : { completed: true };
       } else {
@@ -1011,7 +1096,7 @@ export class PipelineManager {
   /**
    * 批量流水线核心循环。
    * - 单章模式（targetChapterKey 非空）：LLM 生成 Prompt + NAI 线性生图，两条流水线解耦。
-   * - 批量模式：LLM 2 并发生成 Prompt（完成即持久化）+ NAI 线性生图，两条流水线解耦。
+   * - 批量模式：LLM 多并发生成 Prompt（完成即持久化）+ NAI 线性生图，两条流水线解耦。
    */
   async processPipeline(targetChapterKey = null, options = {}) {
     this.isRunning = true;
@@ -1032,7 +1117,7 @@ export class PipelineManager {
 
     // ── 批量模式：LLM 双线 + NAI 线性并行 ──────────────────────────────────
     if (!targetChapterKey) {
-      this.writeLog("[Pipeline] 启动双线并行模式：LLM 2 并发生成 Prompt + NAI 线性生图...");
+      this.writeLog(`[Pipeline] 启动双线并行模式：LLM ${this.llmConcurrency} 并发生成 Prompt + NAI 线性生图...`);
       this._pendingDnaSlices = new Set();
 
       const naiQueue = []; // 共享 NAI 队列：{ chap, scene, scenes, chapKey }
@@ -1041,9 +1126,9 @@ export class PipelineManager {
       // 先启动 NAI 消费者（后台运行）
       const naiConsumerPromise = this._runNaiConsumerLinear(naiQueue, () => llmDone, naiModel);
 
-      // 运行 LLM 生产者（2 并发）
+      // 运行 LLM 生产者（并发数由配置决定）
       const llmResult = await this._runLlmProducerWithConcurrency(
-        this.chapters, sceneModel, naiTagsModel, naiQueue, 2, autoUpdateCharacterDna
+        this.chapters, sceneModel, naiTagsModel, naiQueue, this.llmConcurrency, autoUpdateCharacterDna
       );
 
       // LLM 全部完成，通知 NAI 消费者在队列耗尽后退出
@@ -1120,7 +1205,7 @@ export class PipelineManager {
             const naiQueue = [];
             let llmDone = false;
             const naiConsumerPromise = this._runNaiConsumerLinear(naiQueue, () => llmDone, naiModel);
-            const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+            const promptConcurrency = this.scenePromptConcurrency;
             const promptQueue = new ConcurrencyQueue(promptConcurrency);
             try {
               const newScenes = await this._extractExpansionScenesIncrementally(
@@ -1176,7 +1261,7 @@ export class PipelineManager {
           const naiQueue = [];
           let llmDone = false;
           const naiConsumerPromise = this._runNaiConsumerLinear(naiQueue, () => llmDone, naiModel);
-          const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+          const promptConcurrency = this.scenePromptConcurrency;
           const promptQueue = new ConcurrencyQueue(promptConcurrency);
           try {
             scenes = await this._extractChapterScenesIncrementally(chap, chapKey, sceneModel, '[Pipeline]', async (newScenes, allScenes) => {
@@ -1897,7 +1982,7 @@ export class PipelineManager {
 
     try {
       // 最多 5 个并发执行 LLM 提示词翻译，防止大章节内存暴涨
-      const concurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+      const concurrency = this.scenePromptConcurrency;
       const queue = new ConcurrencyQueue(concurrency);
       for (const scene of targetScenes) {
         queue.run(async () => {
@@ -2084,7 +2169,7 @@ export class PipelineManager {
           );
         }
         if (expansion.isExpanded) {
-          const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+          const promptConcurrency = this.scenePromptConcurrency;
           const promptQueue = new ConcurrencyQueue(promptConcurrency);
           const newScenes = await this._extractExpansionScenesIncrementally(
             chap,
@@ -2123,7 +2208,7 @@ export class PipelineManager {
           this.writeLog(`[Pipeline LLM] 章节「${chap.chapter}」恢复已有 ${scenes.length} 个分镜场景...`);
         }
       } else {
-        const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+        const promptConcurrency = this.scenePromptConcurrency;
         const promptQueue = new ConcurrencyQueue(promptConcurrency);
         scenes = await this._extractChapterScenesIncrementally(chap, chapKey, sceneModel, '[Pipeline LLM]', async (newScenes, allScenes) => {
           for (const scene of newScenes) {
@@ -2140,7 +2225,7 @@ export class PipelineManager {
       }
 
       // ── 逐场景 LLM 处理，完成后推入 NAI 队列 ─────────────────────────────
-      const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+      const promptConcurrency = this.scenePromptConcurrency;
       const promptQueue = new ConcurrencyQueue(promptConcurrency);
       for (let sIdx = 0; sIdx < scenes.length; sIdx++) {
         if (!this.isRunning) break;
@@ -2841,7 +2926,7 @@ export class PipelineManager {
 
       if (typeof options?.onScenePromptReady === 'function') {
         // 双队列解耦模式：仅跑 Prompt 提炼，完成后通过回调推入全局 Image 队列
-        const promptConcurrency = Math.min(5, Number(this.config.max_scene_prompt_concurrency) || 5);
+        const promptConcurrency = this.scenePromptConcurrency;
         const promptQueue = new ConcurrencyQueue(promptConcurrency);
         for (const scene of selectedScenes) {
           promptQueue.run(async () => {

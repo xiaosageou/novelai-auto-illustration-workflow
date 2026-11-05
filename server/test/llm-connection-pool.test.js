@@ -200,7 +200,7 @@ test('运行中取消勾选：池对象原地热更新，正在跑的旧 extract
   }
 });
 
-test('运行中关掉勾选到只剩一个槽位：池清空，旧实例回落到单连接', () => {
+test('运行中关掉勾选到只剩一个槽位：池退回单槽位，不再分摊但保留统计', () => {
   const baseConfig = {
     llm_api_presets: [preset('a', 'model-a'), preset('b', 'model-b')],
     llm_scene_preset_id: 'a'
@@ -216,8 +216,10 @@ test('运行中关掉勾选到只剩一个槽位：池清空，旧实例回落�
     ))
   });
 
-  assert.equal(runningExtractor.connectionPool.slots.length, 0, '旧实例的池应被清空');
-  assert.equal(pipeline.sceneExtractor.connectionPool, null, '新实例退回单连接');
+  assert.equal(runningExtractor.connectionPool.slots.length, 1, '旧实例的池应只剩当前连接');
+  assert.equal(runningExtractor.connectionPool.isUsable, false, '单槽位不再参与并发分摊');
+  assert.equal(pipeline.sceneExtractor.connectionPool.slots.length, 1, '保留单槽位用于统计');
+  assert.equal(pipeline.sceneExtractor.connectionPool.isUsable, false);
 });
 
 test('业务层失败换模型：标记失败的槽位并让它短暂降级，下一次请求落到别的模型', () => {
@@ -265,4 +267,77 @@ test('全部槽位都有业务惩罚时，池仍能取回使用（软惩罚不�
   const lease = pool.acquire();
   assert.ok(lease, '全标记时应回落挑选，不能返回 null 让整条流水线干等');
   lease.release();
+});
+
+test('调用统计口径：调用次数 / 成功率 / 429 / 业务失败', () => {
+  const pool = new LLMConnectionPool([preset('a', 'model-a'), preset('b', 'model-b')]);
+
+  // A：两次调用，一次成功、一次 429
+  pool.recordCall('preset:a');
+  pool.recordSuccess('preset:a');
+  pool.recordCall('preset:a');
+  pool.recordHttpFailure('preset:a', 'rateLimited');
+
+  // B：一次调用，HTTP 成功但业务校验失败 → 撤回 success
+  pool.recordCall('preset:b');
+  pool.recordSuccess('preset:b');
+  pool.recordBusinessFailure('preset:b');
+
+  const stats = pool.stats().slots;
+  const a = stats.find(slot => slot.key === 'preset:a');
+  const b = stats.find(slot => slot.key === 'preset:b');
+
+  assert.equal(a.calls, 2);
+  assert.equal(a.success, 1);
+  assert.equal(a.rateLimited, 1);
+  assert.equal(a.successRate, 0.5);
+
+  assert.equal(b.calls, 1);
+  assert.equal(b.success, 0);
+  assert.equal(b.businessFailures, 1);
+  assert.equal(b.successRate, 0);
+});
+
+test('统计随配置热更新保留，不会因为保存配置清零', () => {
+  const pool = new LLMConnectionPool([preset('a', 'model-a'), preset('b', 'model-b')]);
+  pool.recordCall('preset:a');
+  pool.recordSuccess('preset:a');
+
+  pool.setConnections([preset('a', 'model-a'), preset('b', 'model-b'), preset('c', 'model-c')]);
+  const a = pool.stats().slots.find(slot => slot.key === 'preset:a');
+  assert.equal(a.calls, 1);
+  assert.equal(a.success, 1);
+  assert.equal(a.successRate, 1);
+});
+
+test('并行数量可配置：章节并发默认 2、单章场景并发默认 5，均夹在 1-8', () => {
+  const make = config => new PipelineManager({ ...config, llm_api_presets: [] });
+
+  assert.equal(make({}).llmConcurrency, 2);
+  assert.equal(make({ llm_concurrency: 4 }).llmConcurrency, 4);
+  assert.equal(make({ llm_concurrency: 0 }).llmConcurrency, 2, '0 视为未设置');
+  assert.equal(make({ llm_concurrency: -3 }).llmConcurrency, 2);
+  assert.equal(make({ llm_concurrency: 99 }).llmConcurrency, 8, '上限 8');
+  assert.equal(make({ llm_concurrency: 'abc' }).llmConcurrency, 2);
+
+  assert.equal(make({}).scenePromptConcurrency, 5);
+  assert.equal(make({ max_scene_prompt_concurrency: 3 }).scenePromptConcurrency, 3);
+  assert.equal(make({ max_scene_prompt_concurrency: 50 }).scenePromptConcurrency, 8);
+  assert.equal(make({ max_scene_prompt_concurrency: 0 }).scenePromptConcurrency, 5);
+});
+
+test('单模型也建单槽位池用于统计，但不参与分摊', () => {
+  const pipeline = new PipelineManager({
+    llm_api_presets: [{ id: 'a', name: 'A', url: 'https://a/v1', key: 'ka', model: 'ma', poolEnabled: true }],
+    llm_scene_preset_id: 'a'
+  });
+  const pool = pipeline.sceneExtractor.connectionPool;
+  assert.ok(pool, '单模型也应有池对象');
+  assert.equal(pool.size, 1);
+  assert.equal(pool.isUsable, false, '单槽位不参与分摊');
+
+  const stats = pipeline.getActiveLlmInfo().poolStats;
+  assert.equal(stats.length, 1);
+  assert.equal(stats[0].calls, 0);
+  assert.equal(stats[0].successRate, null);
 });
