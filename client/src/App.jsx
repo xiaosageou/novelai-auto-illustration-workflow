@@ -4,7 +4,7 @@ import {
   RefreshCw, CheckCircle2, Sparkles, X, FileText, Clapperboard, Timer,
   Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil, Image as ImageIcon,
   Flame, Heart, Users, MapPin, Camera, ChevronDown, ChevronUp, Check, Terminal,
-  Maximize2, Minimize2, Clock, ChevronLeft, ChevronRight
+  Maximize2, Minimize2, Clock, ChevronLeft, ChevronRight, Brain
 } from 'lucide-react';
 import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
 import { isNaiLogMessage } from './logClassification.js';
@@ -876,7 +876,9 @@ function App() {
 
     eventSource.addEventListener('pipeline_completed', (e) => {
       const data = JSON.parse(e.data);
-      if (data?.type === 'chapter_generate' && data.chapterKey) {
+      if (data?.type === 'pipeline_llm_only') {
+        addLog(`🧠 项目 ${data.projectName} LLM 提炼完成（未生图），可用「仅生图」继续出图`);
+      } else if (data?.type === 'chapter_generate' && data.chapterKey) {
         addLog(`🎉 单章「${data.chapterKey}」重画完成！`);
       } else {
         addLog(`🎉 项目 ${data.projectName} 批量插画流水线大功告成！`);
@@ -1627,6 +1629,26 @@ function App() {
     } catch (e) {
       setPipelineRunning(false);
       addLog("流水线启动失败: " + e.message, "error");
+    }
+  };
+
+  // 仅提炼：只跑 LLM 阶段（分镜 + 角色 DNA + Prompt 组装），不进 NAI 生图队列。
+  // 场景 Prompt 落盘为 PROMPT_READY，之后可用「仅生图」继续出图。
+  const startLlmOnly = async () => {
+    if (!activeProject) return;
+    try {
+      setPipelineRunning(true);
+      addLog("🧠 仅 LLM 提炼启动中（不生图）...");
+      const res = await fetch(`${API_BASE}/api/projects/${activeProject}/pipeline/start-llm-only`, {
+        method: "POST"
+      });
+      const data = await res.json();
+      if (data.success) {
+        addLog(data.message);
+      }
+    } catch (e) {
+      setPipelineRunning(false);
+      addLog("LLM 提炼启动失败: " + e.message, "error");
     }
   };
 
@@ -3053,6 +3075,20 @@ function App() {
                   <>
                     <button className="btn-primary" onClick={startPipeline}>
                       <Play size={16} /> 启动
+                    </button>
+                    <button
+                      className="btn-secondary"
+                      onClick={startLlmOnly}
+                      title="只跑 LLM 提炼（分镜 + 角色 DNA + Prompt），不进 NAI 生图队列"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        borderColor: 'rgba(56, 189, 248, 0.6)',
+                        color: '#7dd3fc'
+                      }}
+                    >
+                      <Brain size={16} /> 仅提炼
                     </button>
                     <button
                       className="btn-secondary"
@@ -4866,9 +4902,27 @@ function App() {
                   <Square size={14} /> 暂停
                 </button>
               ) : (
-                <button className="btn-primary" style={{ padding: '5px 14px', fontSize: '0.8rem' }} onClick={startPipeline}>
-                  <Play size={14} /> 启动流水线
-                </button>
+                <>
+                  <button className="btn-primary" style={{ padding: '5px 14px', fontSize: '0.8rem' }} onClick={startPipeline}>
+                    <Play size={14} /> 启动流水线
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={startLlmOnly}
+                    title="只跑 LLM 提炼（分镜 + 角色 DNA + Prompt），不进 NAI 生图队列"
+                    style={{
+                      padding: '5px 12px',
+                      fontSize: '0.8rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      borderColor: 'rgba(56, 189, 248, 0.6)',
+                      color: '#7dd3fc'
+                    }}
+                  >
+                    <Brain size={14} /> 仅提炼
+                  </button>
+                </>
               )}
 
               {readyScenesCount > 0 && (

@@ -147,7 +147,24 @@ export class GlobalQueueManager extends EventEmitter {
             pipeline.isPausedByUser = false;
           }
 
-          if (job.type === 'pipeline') {
+          if (job.type === 'pipeline_llm_only') {
+            // 仅提炼：只跑 LLM 阶段，Prompt 落盘为 PROMPT_READY，但不推入生图队列。
+            // 与 job.type === 'pipeline' 的区别就是「不传 onScenePromptReady」——
+            // processPromptPhase 里的 bridgeQueue.push 因此变成空操作，场景准备好后不会进 NAI。
+            await pipeline.processPromptPhase(null, {
+              autoUpdateCharacterDna: Boolean(job.payload?.autoUpdateCharacterDna)
+            });
+            this.broadcastSSE?.('log', {
+              text: `🧠 项目「${job.projectName}」已完成 LLM 提炼（未生图），可在「仅生图」里继续出图`,
+              type: 'success'
+            });
+            // LLM-only 不进 Image 队列，而 pipeline_completed 只在 Image 队列的 finally 里广播，
+            // 走不到那里会让前端按钮永远卡在「暂停」态，这里显式收尾。
+            this.broadcastSSE?.('pipeline_completed', {
+              projectName: job.projectName,
+              type: 'pipeline_llm_only'
+            });
+          } else if (job.type === 'pipeline') {
             // 全书批量流水线：仅跑 Prompt 提炼，每就绪一个 scene 立即推入全局 Image 队列
             await pipeline.processPromptPhase(null, {
               autoUpdateCharacterDna: Boolean(job.payload?.autoUpdateCharacterDna),

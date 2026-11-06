@@ -1237,6 +1237,29 @@ app.post('/api/projects/:projectName/pipeline/start', async (req, res) => {
 });
 
 // 停止生图流水线（瞬时硬刹车 + 队列清空）
+app.post('/api/projects/:projectName/pipeline/start-llm-only', async (req, res) => {
+  try {
+    const { projectName } = req.params;
+    // 仅提炼：只跑 LLM 阶段（分镜 + 角色 DNA + Prompt 组装），不进 NAI 生图队列。
+    // 场景 Prompt 落盘为 PROMPT_READY，之后可用「仅生图」继续出图。
+    const queued = globalQueueManager.enqueuePromptJob({
+      projectName,
+      type: 'pipeline_llm_only',
+      payload: { autoUpdateCharacterDna: true }
+    });
+
+    const message = queued.duplicate
+      ? "LLM 提炼已在队列中，请勿重复启动"
+      : queued.state === 'starting'
+        ? "LLM 提炼已启动（仅提炼，不生图）..."
+        : `LLM 提炼已进入全局队列（仅提炼，不生图），当前排在第 ${queued.position} 位`;
+
+    res.json({ success: true, message, ...queued });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/projects/:projectName/pipeline/stop', async (req, res) => {
   try {
     const { projectName } = req.params;
