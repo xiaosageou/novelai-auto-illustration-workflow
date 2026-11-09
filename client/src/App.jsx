@@ -160,6 +160,7 @@ function App() {
 
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState("");
+  const [epubJob, setEpubJob] = useState(null);
   const [compressJob, setCompressJob] = useState(null);
   const [isStartingCompress, setIsStartingCompress] = useState(false);
   const [projectDetails, setProjectDetails] = useState(null);
@@ -1671,14 +1672,34 @@ function App() {
     }
   };
 
+  useEffect(() => {
+    if (!activeProject) { setEpubJob(null); return; }
+    let cancelled = false;
+    setEpubJob(null);
+    const refresh = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/epub-status`);
+        if (res.ok) {
+          const data = await res.json();
+          if (!cancelled) setEpubJob(data);
+        }
+      } catch { /* Retry on the next poll. */ }
+    };
+    refresh();
+    const timer = setInterval(refresh, 1500);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [activeProject]);
+
   const exportEPUB = async () => {
     if (!activeProject) return;
     try {
+      setEpubJob({ status: 'running', phase: '正在启动', done: 0, total: 0 });
       addLog("📚 正在构建高排版水准的 EPUB 电子书，打包高清插图中...");
-      const res = await fetch(`${API_BASE}/api/projects/${activeProject}/build-epub`, {
+      const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(activeProject)}/build-epub`, {
         method: "POST"
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `请求失败 (${res.status})`);
       if (data.success) {
         addLog(`🎉 EPUB 电子书编译打包大功告成！正在为您触发下载...`);
         // 触发下载
@@ -3107,11 +3128,23 @@ function App() {
                     </button>
                   </>
                 ))}
-                {workspaceTab !== 'comics' && <button className="btn-secondary" onClick={exportEPUB}>
+                {workspaceTab !== 'comics' && <button className="btn-secondary" onClick={exportEPUB} disabled={epubJob?.status === 'running'}>
                   <Download size={16} /> 编译 EPUB
                 </button>}
               </div>
             </div>
+
+            {workspaceTab !== 'comics' && epubJob && epubJob.status !== 'idle' && (
+              <div className="epub-progress" role="status" aria-live="polite">
+                <strong>EPUB · {epubJob.phase}</strong>
+                {epubJob.status === 'running' && epubJob.phase === '处理章节和插图' && <span>章节 {epubJob.done} / {epubJob.total}</span>}
+                {epubJob.status === 'running' && epubJob.phase === '压缩并写入电子书' && <span>打包 {epubJob.percent}%</span>}
+                {epubJob.status === 'failed' && <span>{epubJob.error}</span>}
+                {epubJob.status === 'done' && <a href={`${API_BASE}${epubJob.downloadUrl}`} download>下载 EPUB</a>}
+                {epubJob.status === 'running' && epubJob.phase === '压缩并写入电子书' && <progress max="100" value={epubJob.percent} aria-label="EPUB 打包进度" />}
+                {epubJob.status === 'running' && epubJob.phase === '处理章节和插图' && epubJob.total > 0 && <progress max={epubJob.total} value={epubJob.done} aria-label="EPUB 章节处理进度" />}
+              </div>
+            )}
 
             <div className="workspace-tabs" role="tablist" aria-label="项目工作区">
               <button className={workspaceTab === 'comics' ? 'active' : ''} onClick={() => setWorkspaceTab('comics')}>

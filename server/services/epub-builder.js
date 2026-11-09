@@ -169,7 +169,7 @@ p {
   /**
    * 打包构建并写入 EPUB 文件
    */
-  async build() {
+  async build(onProgress) {
     const zip = new JSZip();
 
     // 1. mimetype (必须是第一个文件，且不进行压缩存储)
@@ -361,7 +361,7 @@ p {
       type: "nodebuffer",
       compression: "DEFLATE",
       compressionOptions: { level: 9 }
-    });
+    }, metadata => onProgress?.(metadata.percent));
 
     // 确保输出路径父文件夹存在
     await fs.mkdir(path.dirname(this.outputPath), { recursive: true });

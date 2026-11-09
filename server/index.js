@@ -1650,15 +1650,27 @@ app.get('/api/global-queue/status', (req, res) => {
 
 // === 4. EPUB 打包编译 API ===
 
+const epubJobs = new Map();
+app.get('/api/projects/:projectName/epub-status', (req, res) => {
+  res.json(epubJobs.get(req.params.projectName) || { status: 'idle' });
+});
+
 app.post('/api/projects/:projectName/build-epub', async (req, res) => {
+  const { projectName } = req.params;
+  if (epubJobs.get(projectName)?.status === 'running') {
+    return res.status(409).json({ error: '该项目的 EPUB 正在打包' });
+  }
+  const job = { status: 'running', phase: '准备章节', done: 0, total: 0, percent: 0 };
+  epubJobs.set(projectName, job);
   try {
-    const { projectName } = req.params;
     const pipeline = await getPipeline(projectName);
 
     console.log(`[Server] 开始为项目 ${projectName} 构建 EPUB 电子书...`);
 
     // 刷新章节和进度；插图正文在下方按章节直接生成。
     await pipeline.initialize();
+    job.phase = '处理章节和插图';
+    job.total = pipeline.chapters.length;
 
     // 2. 实例化 EPUBBuilder
     const outputEpubName = `${projectName}.epub`;
@@ -1691,10 +1703,14 @@ app.post('/api/projects/:projectName/build-epub', async (req, res) => {
       }
 
       builder.addChapter(chap.volume, chap.chapter, content);
+      job.done++;
     }
 
     // 4. 执行打包输出
-    await builder.build();
+    job.phase = '压缩并写入电子书';
+    await builder.build(percent => { job.percent = Math.floor(percent); });
+
+    Object.assign(job, { status: 'done', phase: '打包完成', percent: 100, downloadUrl: `/projects/${encodeURIComponent(projectName)}/${encodeURIComponent(outputEpubName)}` });
 
     res.json({
       success: true,
@@ -1703,6 +1719,7 @@ app.post('/api/projects/:projectName/build-epub', async (req, res) => {
     });
 
   } catch (error) {
+    Object.assign(job, { status: 'failed', phase: '打包失败', error: error.message });
     console.error("[Server] EPUB 构建异常:", error);
     res.status(500).json({ error: error.message });
   }
