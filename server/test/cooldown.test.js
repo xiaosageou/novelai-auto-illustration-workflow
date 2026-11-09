@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CooldownManager } from '../utils/cooldown.js';
 
+test('429 request count includes retries even after success and recovery', () => {
+  const cooldown = new CooldownManager(15, 35);
+  cooldown.record429();
+  cooldown.record429();
+  cooldown.recordSuccess();
+  cooldown.degradedUntil = Date.now() - 1;
+  assert.equal(cooldown.getState().total429, 2);
+  cooldown.record429();
+  assert.equal(cooldown.getState().total429, 3);
+});
+
 // ── 429 冷却策略：一次 429 立即降级到 35s，30 分钟后自动恢复 ─────────────────
 
 test('cooldown: 一次 429 立即降级到 35s，不再需要连续三次', () => {

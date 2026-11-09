@@ -4811,6 +4811,9 @@ function App() {
                               {(st.skipped || 0) > 0 ? ` · 跳过 ${st.skipped}` : ''}
                             </span>
                           )}
+                          <span className="queue-pending-info" title="自服务启动以来 NovelAI 返回 429 的请求次数，包含重试后成功的请求">
+                            429 请求次数（服务启动以来）: <strong style={{ color: '#faad14' }}>{cooldownState.total429 ?? globalQueueState.cooldown?.total429 ?? 0}</strong>
+                          </span>
                           {kinds.length > 0 && (
                             <span className="queue-pending-info" style={{ fontSize: '0.72rem', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                               失败构成:

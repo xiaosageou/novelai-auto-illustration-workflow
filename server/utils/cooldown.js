@@ -6,6 +6,7 @@ export class CooldownManager {
     this.activeCooldownSeconds = this.cooldownSeconds;
     this.mode = 'normal';
     this.consecutive429 = 0;
+    this.total429 = 0;
     this.degradedSuccesses = 0;
     // 429 降级窗口：一次 429 就把间隔抬到降级档，并保持半小时。
     // 窗口内再撞 429 就重新计时；到期自动切回用户原本设置的间隔。
@@ -30,6 +31,7 @@ export class CooldownManager {
   }
 
   record429() {
+    this.total429 += 1;
     this.consecutive429 += 1;
     if (this.mode === 'degraded') {
       // 已在降级档：刷新半小时窗口，避免刚恢复就立刻又撞 429
@@ -98,6 +100,7 @@ export class CooldownManager {
       degradedCooldownSeconds: this.degradedCooldownSeconds,
       mode: this.mode,
       consecutive429: this.consecutive429,
+      total429: this.total429,
       degradedSuccesses: this.degradedSuccesses,
       degradedUntil: this.degradedUntil,
       degradedRemainingSeconds: this.mode === 'degraded'
