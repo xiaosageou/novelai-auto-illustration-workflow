@@ -44,7 +44,60 @@ export class GlobalQueueManager extends EventEmitter {
     this.imageJobActive = false;
     this.sceneMutationLock = false;
 
+    // 生图累计统计：让前端看得到失败与错误分布，而不是只知道「在跑」。
+    this.imageStats = {
+      completed: 0,
+      failed: 0,
+      skipped: 0,
+      byKind: { rateLimited: 0, timeout: 0, network: 0, content: 0, auth: 0, other: 0 },
+      lastError: null,
+      recentErrors: []
+    };
+
     this._jobSeq = 0;
+  }
+
+  /**
+   * 把生图异常归类，前端据此显示失败构成。
+   * 只做粗粒度分桶，不改变原有抛出/重试语义。
+   */
+  _classifyImageError(error) {
+    const raw = String(error?.message || error?.code || '');
+    if (/429|rate.?limit|too many requests|频控|频率/i.test(raw)) return 'rateLimited';
+    if (/timeout|timed out|etimedout|aborted|超时|中止/i.test(raw)) return 'timeout';
+    if (/econnreset|econnrefused|enotfound|socket|network|fetch failed|网络/i.test(raw)) return 'network';
+    if (/nsfw|censor|content.?filter|policy|审核|屏蔽|违规/i.test(raw)) return 'content';
+    if (/401|403|unauthorized|forbidden|token|auth|鉴权/i.test(raw)) return 'auth';
+    return 'other';
+  }
+
+  /** 累计一次生图结果（completed / failed / skipped） */
+  _recordImageOutcome(outcome, error, job) {
+    const stats = this.imageStats;
+    if (!stats) return;
+    if (outcome === 'completed') {
+      stats.completed += 1;
+      return;
+    }
+    if (outcome === 'skipped') {
+      stats.skipped += 1;
+      return;
+    }
+    stats.failed += 1;
+    const kind = this._classifyImageError(error);
+    stats.byKind[kind] = (stats.byKind[kind] || 0) + 1;
+    const entry = {
+      kind,
+      message: String(error?.message || error || '未知错误').slice(0, 200),
+      at: new Date().toISOString(),
+      projectName: job?.projectName || '',
+      chapterKey: job?.chapterKey || '',
+      sceneIdx: job?.sceneIdx ?? null
+    };
+    stats.lastError = entry;
+    stats.recentErrors.push(entry);
+    // 只留最近 20 条，避免长期运行后数组无限增长
+    if (stats.recentErrors.length > 20) stats.recentErrors.splice(0, stats.recentErrors.length - 20);
   }
 
   _generateJobId(prefix = 'job') {
@@ -467,6 +520,8 @@ export class GlobalQueueManager extends EventEmitter {
           console.error(`[GlobalQueue] 场景生图异常 (${job.projectName} / ${job.chapterKey} / #${job.sceneIdx}):`, error.message);
         } finally {
           this.imageJobActive = false;
+          // 先累计结果再清 current，避免 job 信息丢失
+          this._recordImageOutcome(outcome, generationError, job);
           try {
             await job.onFinished?.(generationError);
           } catch (e) {
@@ -715,6 +770,17 @@ export class GlobalQueueManager extends EventEmitter {
         priorityPendingCount: this.imageQueue.priorityItems.length,
         normalPendingCount: this.imageQueue.items.length,
         totalPendingCount: this.imageQueue.priorityItems.length + this.imageQueue.items.length,
+        // 当前出图间隔（秒）：正常 15s，429 降级后 35s；前端用它估算剩余耗时
+        intervalSeconds: Number(this.cooldownManager?.getState?.()?.cooldownSeconds) || null,
+        cooldownMode: this.cooldownManager?.getState?.()?.mode || 'normal',
+        stats: {
+          completed: this.imageStats.completed,
+          failed: this.imageStats.failed,
+          skipped: this.imageStats.skipped,
+          byKind: { ...this.imageStats.byKind },
+          lastError: this.imageStats.lastError,
+          recentErrors: this.imageStats.recentErrors.slice(-5)
+        },
         items: [
           ...this.imageQueue.priorityItems.map((item, idx) => ({
             position: idx + 1,

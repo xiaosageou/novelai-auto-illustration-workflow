@@ -11,6 +11,7 @@ import { globalCooldownManager } from './utils/cooldown.js';
 import { enqueueUniqueJob, removeQueuedJobs } from './utils/job-queue.js';
 import { readConfig, writeConfig } from './utils/config-store.js';
 import { resolveLlmRetryLimits } from './utils/llm-retry.js';
+import { LLM_POOL_STATS_VERSION } from './utils/llm-pool.js';
 import { parseFile } from './utils/file-parser.js';
 import { getProjectSummary } from './utils/project-summary.js';
 import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL } from './utils/default-prompts.js';
@@ -239,8 +240,19 @@ const globalQueueManager = new GlobalQueueManager({
  */
 function collectActiveLlmInfo() {
   const runningProject = globalQueueManager?.promptQueue?.current?.projectName;
+  // 先精确匹配；找不到时按归一化名称（去空格 / 大小写）再找一次。
+  // 以前只有精确匹配，一旦 key 有细微差异就会默默回退到「任意已加载项目」，
+  // 前端于是展示另一个项目（统计全 0）的池，看上去就像统计坏了。
+  const pickRunning = () => {
+    if (!runningProject) return null;
+    if (activePipelines[runningProject]) return activePipelines[runningProject];
+    const normalize = value => String(value || '').replace(/[\s_]+/g, '').toLowerCase();
+    const target = normalize(runningProject);
+    const hitKey = Object.keys(activePipelines).find(key => normalize(key) === target);
+    return hitKey ? activePipelines[hitKey] : null;
+  };
   const candidates = [
-    runningProject ? activePipelines[runningProject] : null,
+    pickRunning(),
     ...Object.values(activePipelines)
   ].filter(Boolean);
   for (const pipeline of candidates) {
@@ -631,6 +643,30 @@ app.get('/api/config/llm-models', async (req, res) => {
     res.json({ success: true, models });
   } catch (error) {
     console.error("[Server] 获取 LLM 模型列表失败:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// LLM 调用统计诊断：用来确认服务端跑的是带统计的新代码，以及各模型真实调用量
+app.get('/api/llm/stats', (req, res) => {
+  try {
+    const info = collectActiveLlmInfo();
+    res.json({
+      success: true,
+      // 拿到该字段且 >= 2 才说明后端是新代码；缺失说明跑的是旧版本
+      statsVersion: LLM_POOL_STATS_VERSION,
+      runningProject: globalQueueManager?.promptQueue?.current?.projectName || null,
+      loadedPipelines: Object.keys(activePipelines),
+      llmConcurrency: info?.llmConcurrency ?? null,
+      scenePromptConcurrency: info?.scenePromptConcurrency ?? null,
+      poolStats: info?.poolStats || [],
+      pools: {
+        scene: info?.scene?.pool || null,
+        characterDna: info?.characterDna?.pool || null,
+        naiTags: info?.naiTags?.pool || null
+      }
+    });
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });

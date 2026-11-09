@@ -4741,10 +4741,59 @@ function App() {
                     ) : (
                       <span className="current-idle">暂无正在生成的图片</span>
                     )}
-                    <span className="queue-pending-info">
-                      待出图总数: <strong>{globalQueueState.imageQueue?.totalPendingCount || 0}</strong> 张
-                      {globalQueueState.imageQueue?.priorityPendingCount > 0 && ` (含 ${globalQueueState.imageQueue.priorityPendingCount} 张手动插队)`}
-                    </span>
+                    {(() => {
+                      const q = globalQueueState.imageQueue || {};
+                      const pending = Number(q.totalPendingCount) || 0;
+                      const interval = Number(q.intervalSeconds) || 0;
+                      const st = q.stats || {};
+                      const fmtDuration = (sec) => {
+                        if (!Number.isFinite(sec) || sec <= 0) return null;
+                        const totalMin = Math.round(sec / 60);
+                        const h = Math.floor(totalMin / 60);
+                        const m = totalMin % 60;
+                        if (h >= 24) return `${Math.floor(h / 24)} 天 ${h % 24} 小时`;
+                        if (h > 0) return `${h} 小时 ${m} 分`;
+                        return `${Math.max(1, totalMin)} 分钟`;
+                      };
+                      const etaSec = pending > 0 && interval > 0 ? pending * interval : 0;
+                      const kindLabels = { rateLimited: '429 频控', timeout: '超时', network: '网络', content: '内容', auth: '鉴权', other: '其它' };
+                      const kinds = Object.entries(st.byKind || {}).filter(([, n]) => Number(n) > 0);
+                      return (
+                        <>
+                          <span className="queue-pending-info">
+                            待出图总数: <strong>{pending}</strong> 张
+                            {q.priorityPendingCount > 0 && ` (含 ${q.priorityPendingCount} 张手动插队)`}
+                          </span>
+                          {interval > 0 && (
+                            <span className="queue-pending-info">
+                              出图间隔: <strong>{interval}s</strong>
+                              {q.cooldownMode === 'degraded' ? '（429 降级）' : ''}
+                              {etaSec > 0 && pending > 0 ? ` · 预计剩余 ${fmtDuration(etaSec)}` : ''}
+                            </span>
+                          )}
+                          {(st.completed > 0 || st.failed > 0 || st.skipped > 0) && (
+                            <span className="queue-pending-info">
+                              本轮成功 <strong style={{ color: '#52c41a' }}>{st.completed || 0}</strong>
+                              {' · '}失败 <strong style={{ color: (st.failed || 0) > 0 ? '#ff4d4f' : 'inherit' }}>{st.failed || 0}</strong>
+                              {(st.skipped || 0) > 0 ? ` · 跳过 ${st.skipped}` : ''}
+                            </span>
+                          )}
+                          {kinds.length > 0 && (
+                            <span className="queue-pending-info" style={{ fontSize: '0.72rem', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                              失败构成:
+                              {kinds.map(([kind, n]) => (
+                                <span key={kind} style={{ color: '#ff9c9c' }}>{kindLabels[kind] || kind} {n}</span>
+                              ))}
+                            </span>
+                          )}
+                          {st.lastError && (
+                            <span className="queue-pending-info" style={{ fontSize: '0.72rem', color: '#ff9c9c' }} title={st.lastError.message}>
+                              最近错误: {st.lastError.chapterKey ? `${st.lastError.chapterKey} ` : ''}#{st.lastError.sceneIdx ?? '?'} · {String(st.lastError.message || '').slice(0, 80)}
+                            </span>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>

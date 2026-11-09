@@ -20,6 +20,12 @@
 
 export const DEFAULT_POOL_COOLDOWN_MS = 20000;
 
+/**
+ * 统计口径版本。前端/诊断端点据此判断服务端是不是带统计的新代码：
+ * 拿到该字段且 >= 2 才说明运行的是「调用次数 + 成功率」这一版。
+ */
+export const LLM_POOL_STATS_VERSION = 2;
+
 export class LLMConnectionPool {
   /**
    * @param {Array<object>} connections 槽位连接列表
@@ -165,38 +171,54 @@ export class LLMConnectionPool {
     return this.slots.find(item => item.key === key) || null;
   }
 
+  /**
+   * 统计专用查槽：先精确匹配，失败时兜底到第一个槽位。
+   *
+   * 统计不能静默丢：并发池可能在请求途中被配置热更新替换掉某个槽位，
+   * 这时记录时的 key 就找不到人了。宁可把这一笔粗略归到池首，
+   * 也不要让前端看到一片 0（那样没法判断是「没调用」还是「统计坏了」）。
+   * 业务惩罚/解除仍走 _findSlot 精确匹配，不能误伤其它槽位。
+   */
+  _resolveStatSlot(key) {
+    if (key) {
+      const hit = this.slots.find(item => item.key === key);
+      if (hit) return hit;
+    }
+    return this.slots[0] || null;
+  }
+
   /** 每发一次请求记一次调用 */
   recordCall(key) {
-    const slot = this._findSlot(key);
+    const slot = this._resolveStatSlot(key);
     if (!slot) return null;
-    slot.calls += 1;
+    slot.calls = (Number(slot.calls) || 0) + 1;
     return slot;
   }
 
   /** HTTP 2xx 且解析前暂视为成功（业务校验失败时由 recordBusinessFailure 撤回） */
   recordSuccess(key) {
-    const slot = this._findSlot(key);
+    const slot = this._resolveStatSlot(key);
     if (!slot) return null;
-    slot.success += 1;
+    slot.success = (Number(slot.success) || 0) + 1;
     return slot;
   }
 
   /** 传输层失败：rateLimited / serverError / networkError */
   recordHttpFailure(key, kind = 'serverError') {
-    const slot = this._findSlot(key);
+    const slot = this._resolveStatSlot(key);
     if (!slot) return null;
-    if (kind === 'rateLimited') slot.rateLimited += 1;
-    else if (kind === 'networkError') slot.networkErrors += 1;
-    else slot.serverErrors += 1;
+    if (kind === 'rateLimited') slot.rateLimited = (Number(slot.rateLimited) || 0) + 1;
+    else if (kind === 'networkError') slot.networkErrors = (Number(slot.networkErrors) || 0) + 1;
+    else slot.serverErrors = (Number(slot.serverErrors) || 0) + 1;
     return slot;
   }
 
   /** 业务校验失败：撤回先前记的成功，改记业务失败 */
   recordBusinessFailure(key) {
-    const slot = this._findSlot(key);
+    const slot = this._resolveStatSlot(key);
     if (!slot) return null;
-    if (slot.success > 0) slot.success -= 1;
-    slot.businessFailures += 1;
+    if (Number(slot.success) > 0) slot.success = Number(slot.success) - 1;
+    slot.businessFailures = (Number(slot.businessFailures) || 0) + 1;
     return slot;
   }
 
@@ -263,6 +285,7 @@ export class LLMConnectionPool {
     return {
       enabled: this.isUsable,
       size: this.slots.length,
+      statsVersion: LLM_POOL_STATS_VERSION,
       hopOn429: this.hopOn429,
       slots: this.slots.map(slot => ({
         key: slot.key,

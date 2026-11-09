@@ -544,3 +544,102 @@ test('GlobalQueueManager: selected_scenes 等待在途生图落盘后再执行�
   assert.equal(manager.sceneMutationLock, false);
   assert.equal(events.filter(([type]) => type === 'pipeline_failed').length, 0);
 });
+
+// ── 生图侧错误统计与 ETA 数据 ─────────────────────────────────────────────
+
+function makeStatsManager(cooldownSeconds = 15, mode = 'normal') {
+  return new GlobalQueueManager({
+    getPipeline: async () => null,
+    broadcastSSE: () => {},
+    cooldownManager: { getState: () => ({ cooldownSeconds, mode, remainingSeconds: 0 }) }
+  });
+}
+
+test('生图异常按类型分桶：429 / 超时 / 网络 / 内容 / 鉴权 / 其它', () => {
+  const manager = makeStatsManager();
+  const cases = [
+    ['NovelAI 429 Too Many Requests', 'rateLimited'],
+    ['rate limit exceeded', 'rateLimited'],
+    ['request timed out', 'timeout'],
+    ['operation aborted', 'timeout'],
+    ['ECONNRESET', 'network'],
+    ['fetch failed', 'network'],
+    ['content filter blocked', 'content'],
+    ['401 Unauthorized', 'auth'],
+    ['something exploded', 'other']
+  ];
+  for (const [message, expected] of cases) {
+    assert.equal(manager._classifyImageError(new Error(message)), expected, message);
+  }
+  // 非 Error 输入也不能抛
+  assert.equal(manager._classifyImageError(null), 'other');
+});
+
+test('生图结果累计：成功 / 失败 / 跳过，并记录失败构成与最近错误', () => {
+  const manager = makeStatsManager();
+
+  manager._recordImageOutcome('completed', null, { projectName: 'P' });
+  manager._recordImageOutcome('completed', null, { projectName: 'P' });
+  manager._recordImageOutcome('skipped', null, { projectName: 'P' });
+  manager._recordImageOutcome('failed', new Error('NovelAI 429 Too Many Requests'), {
+    projectName: 'P', chapterKey: '第一章', sceneIdx: 3
+  });
+  manager._recordImageOutcome('failed', new Error('request timed out'), {
+    projectName: 'P', chapterKey: '第二章', sceneIdx: 7
+  });
+
+  const stats = manager.getGlobalState().imageQueue.stats;
+  assert.equal(stats.completed, 2);
+  assert.equal(stats.failed, 2);
+  assert.equal(stats.skipped, 1);
+  assert.equal(stats.byKind.rateLimited, 1);
+  assert.equal(stats.byKind.timeout, 1);
+
+  // 最近错误取最后一条，并带上定位信息
+  assert.equal(stats.lastError.kind, 'timeout');
+  assert.equal(stats.lastError.chapterKey, '第二章');
+  assert.equal(stats.lastError.sceneIdx, 7);
+  assert.equal(stats.recentErrors.length, 2);
+
+  // 成功与跳过不计入失败分桶
+  assert.equal(Object.values(stats.byKind).reduce((a, b) => a + b, 0), 2);
+});
+
+test('最近错误只保留最近若干条，长期运行不会无限增长', () => {
+  const manager = makeStatsManager();
+  for (let i = 0; i < 30; i++) {
+    manager._recordImageOutcome('failed', new Error(`boom-${i}`), {
+      projectName: 'P', chapterKey: '第一章', sceneIdx: i
+    });
+  }
+  const stats = manager.getGlobalState().imageQueue.stats;
+  assert.equal(stats.failed, 30, '累计数应记全');
+  assert.equal(stats.lastError.message, 'boom-29', '最近错误应是最后一条');
+  // 对外只暴露最近 5 条
+  assert.equal(stats.recentErrors.length, 5);
+  // 内部最多保留 20 条
+  assert.equal(manager.imageStats.recentErrors.length, 20);
+});
+
+test('状态里带出图间隔与 429 降级模式，供前端估算剩余耗时', () => {
+  const normal = makeStatsManager(15, 'normal').getGlobalState().imageQueue;
+  assert.equal(normal.intervalSeconds, 15);
+  assert.equal(normal.cooldownMode, 'normal');
+
+  const degraded = makeStatsManager(35, 'degraded').getGlobalState().imageQueue;
+  assert.equal(degraded.intervalSeconds, 35);
+  assert.equal(degraded.cooldownMode, 'degraded');
+});
+
+test('ETA 口径：待出图数 × 当前间隔', () => {
+  const manager = makeStatsManager(15, 'normal');
+  // 模拟 2294 张待出图（实际队列内容不影响公式，这里只锁口径）
+  const state = manager.getGlobalState().imageQueue;
+  const pending = 2294;
+  const etaSeconds = pending * state.intervalSeconds;
+  assert.equal(etaSeconds, 34410);          // 9.56 小时
+  assert.equal((etaSeconds / 3600).toFixed(1), '9.6');
+
+  const degradedState = makeStatsManager(35, 'degraded').getGlobalState().imageQueue;
+  assert.equal((pending * degradedState.intervalSeconds / 3600).toFixed(1), '22.3');
+});
