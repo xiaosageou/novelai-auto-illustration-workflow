@@ -5,7 +5,24 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import JSZip from 'jszip';
 import sharp from 'sharp';
-import { EPUBBuilder, insertIllustrationsAfterParagraphs } from '../services/epub-builder.js';
+import { EPUBBuilder, insertIllustrationsAfterParagraphs, readEpubImage } from '../services/epub-builder.js';
+
+test('old PNG paths resolve to matching WebP only when PNG is missing', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nai-epub-path-'));
+  try {
+    await fs.writeFile(path.join(dir, 'scene.webp'), 'webp');
+    let image = await readEpubImage(dir, 'scene.png');
+    assert.equal(image.name, 'scene.webp');
+    assert.equal(image.data.toString(), 'webp');
+    await fs.writeFile(path.join(dir, 'scene.png'), 'png');
+    image = await readEpubImage(dir, 'scene.png');
+    assert.equal(image.name, 'scene.png');
+    assert.equal(image.data.toString(), 'png');
+    await assert.rejects(readEpubImage(dir, 'missing.png'), { code: 'ENOENT' });
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
 
 test('illustrations are inserted after complete paragraphs and support multiple images', () => {
   const content = '第一段正文。\n\n第二段包含触发句，仍然属于完整段落。\n\n第三段正文。';

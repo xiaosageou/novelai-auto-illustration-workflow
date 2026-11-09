@@ -3,6 +3,18 @@ import path from 'path';
 import { promises as fs } from 'fs';
 import sharp from 'sharp';
 
+// Older progress records can still point to PNGs converted to WebP on disk.
+export async function readEpubImage(projectDir, imagePath) {
+  const originalPath = path.join(projectDir, imagePath);
+  try {
+    return { name: path.basename(originalPath), data: await fs.readFile(originalPath) };
+  } catch (error) {
+    if (error.code !== 'ENOENT' || !/\.png$/i.test(imagePath)) throw error;
+    const webpPath = originalPath.replace(/\.png$/i, '.webp');
+    return { name: path.basename(webpPath), data: await fs.readFile(webpPath) };
+  }
+}
+
 export function insertIllustrationsAfterParagraphs(content, insertions = []) {
   const lines = String(content || '').split(/\r?\n/);
   const placements = new Map();

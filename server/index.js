@@ -6,7 +6,7 @@ import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import { ProxyAgent, setGlobalDispatcher } from 'undici';
 import { PipelineManager } from './services/pipeline-manager.js';
-import { EPUBBuilder, insertIllustrationsAfterParagraphs } from './services/epub-builder.js';
+import { EPUBBuilder, insertIllustrationsAfterParagraphs, readEpubImage } from './services/epub-builder.js';
 import { globalCooldownManager } from './utils/cooldown.js';
 import { enqueueUniqueJob, removeQueuedJobs } from './utils/job-queue.js';
 import { readConfig, writeConfig } from './utils/config-store.js';
@@ -1688,9 +1688,8 @@ app.post('/api/projects/:projectName/build-epub', async (req, res) => {
         const insertions = [];
         for (const scene of progress.scenes) {
           if (scene.status === 'SUCCESS' && scene.image_path) {
-            const imgName = path.basename(scene.image_path);
-            const imgBytes = await fs.readFile(path.join(pipeline.projBase, scene.image_path));
-            const epubImgName = await builder.addImage(imgName, imgBytes);
+            const image = await readEpubImage(pipeline.projBase, scene.image_path);
+            const epubImgName = await builder.addImage(image.name, image.data);
             insertions.push({
               imageName: epubImgName,
               paragraph: String(scene.source_paragraph || '').trim(),
