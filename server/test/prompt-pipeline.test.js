@@ -3551,7 +3551,7 @@ test('LLM streaming response emits incremental stream text chunks', async () => 
   assert.deepEqual(chunks, ['Hello ', 'world']);
 });
 
-test('NAI 429 retries use exponential backoff before degraded mode', async () => {
+test('NAI 429 retries are floored at the degraded 35s interval', async () => {
   const client = new NovelAIClient({
     token: 'test-token',
     baseUrl: 'https://image.novelai.net'
@@ -3622,7 +3622,8 @@ test('NAI 429 retries use exponential backoff before degraded mode', async () =>
     globalCooldownManager.lastGenerationTime = originalState.lastGenerationTime;
   }
 
-  assert.deepEqual(waits, [15000, 30000]);
+  // 一次 429 就降级到 35s，所以退避下限被 35s 兜底（重试至少隔 35 秒）
+  assert.deepEqual(waits, [35000, 35000]);
 });
 
 test('V4.5 prompt budget keeps interaction and identity phrases under the shared limit', () => {

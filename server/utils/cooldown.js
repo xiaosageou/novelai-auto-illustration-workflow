@@ -7,6 +7,10 @@ export class CooldownManager {
     this.mode = 'normal';
     this.consecutive429 = 0;
     this.degradedSuccesses = 0;
+    // 429 降级窗口：一次 429 就把间隔抬到降级档，并保持半小时。
+    // 窗口内再撞 429 就重新计时；到期自动切回用户原本设置的间隔。
+    this.degradedDurationMs = 30 * 60 * 1000;
+    this.degradedUntil = 0;
     this.lastGenerationTime = 0; // 上次生图完成的时间戳（毫秒）
     this.timer = null;
     this.listeners = new Set();
@@ -28,26 +32,46 @@ export class CooldownManager {
   record429() {
     this.consecutive429 += 1;
     if (this.mode === 'degraded') {
+      // 已在降级档：刷新半小时窗口，避免刚恢复就立刻又撞 429
+      this.degradedUntil = Date.now() + this.degradedDurationMs;
       this.degradedSuccesses = 0;
-    }
-    if (this.mode === 'normal' && this.consecutive429 >= 3) {
-      this.mode = 'degraded';
-      this.cooldownSeconds = this.degradedCooldownSeconds;
-      this.degradedSuccesses = 0;
+    } else if (this.cooldownSeconds < this.degradedCooldownSeconds) {
+      // 间隔本来就不低于降级档时无需再降，只处理「比降级档更快」的情况
+      this._enterDegraded();
     }
     this._emit(this.getRemainingSeconds());
     return this.getState();
   }
 
+  /** 进入 429 降级：把出图间隔抬到降级档并开半小时窗口 */
+  _enterDegraded() {
+    this.mode = 'degraded';
+    this.cooldownSeconds = this.degradedCooldownSeconds;
+    this.degradedSuccesses = 0;
+    this.degradedUntil = Date.now() + this.degradedDurationMs;
+    console.warn(
+      `[Cooldown] 检测到 429，出图间隔 ${this.baseCooldownSeconds}s → ${this.degradedCooldownSeconds}s，`
+      + `${Math.round(this.degradedDurationMs / 60000)} 分钟后自动恢复`
+    );
+  }
+
+  /** 降级窗口到期则切回原间隔（惰性检查，供 getState / tick 轮询时调用） */
+  _checkDegradedExpiry() {
+    if (this.mode !== 'degraded') return;
+    if (Date.now() < this.degradedUntil) return;
+    this.mode = 'normal';
+    this.cooldownSeconds = this.baseCooldownSeconds;
+    this.consecutive429 = 0;
+    this.degradedSuccesses = 0;
+    this.degradedUntil = 0;
+    console.log(`[Cooldown] 429 降级窗口结束，出图间隔恢复为 ${this.baseCooldownSeconds}s`);
+  }
+
   recordSuccess() {
     if (this.mode === 'degraded') {
+      // 不再按成功次数提前恢复：降级窗口由时间驱动，这里只做计数展示
       this.degradedSuccesses += 1;
-      if (this.degradedSuccesses >= 5) {
-        this.mode = 'normal';
-        this.cooldownSeconds = this.baseCooldownSeconds;
-        this.consecutive429 = 0;
-        this.degradedSuccesses = 0;
-      }
+      this._checkDegradedExpiry();
     } else {
       this.consecutive429 = 0;
     }
@@ -64,6 +88,8 @@ export class CooldownManager {
   }
 
   getState() {
+    // 惰性到期检查：即使没有新请求，前端轮询时也能及时切回原间隔
+    this._checkDegradedExpiry();
     return {
       remaining: this.getRemainingSeconds(),
       activeCooldownSeconds: this.activeCooldownSeconds,
@@ -72,7 +98,12 @@ export class CooldownManager {
       degradedCooldownSeconds: this.degradedCooldownSeconds,
       mode: this.mode,
       consecutive429: this.consecutive429,
-      degradedSuccesses: this.degradedSuccesses
+      degradedSuccesses: this.degradedSuccesses,
+      degradedUntil: this.degradedUntil,
+      degradedRemainingSeconds: this.mode === 'degraded'
+        ? Math.max(0, Math.round((this.degradedUntil - Date.now()) / 1000))
+        : 0,
+      degradedDurationMinutes: Math.round(this.degradedDurationMs / 60000)
     };
   }
 

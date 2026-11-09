@@ -4569,7 +4569,7 @@ function App() {
                 <div
                   className={`cooldown-chip mini active ${cooldownState.mode === 'degraded' ? 'degraded' : ''}`}
                   title={cooldownState.mode === 'degraded'
-                    ? `429 降级模式：固定 35 秒，成功 ${cooldownState.degradedSuccesses || 0}/5 次后恢复`
+                    ? `429 降级：出图间隔已切到 35 秒，约 ${Math.max(1, Math.ceil((cooldownState.degradedRemainingSeconds || 0) / 60))} 分钟后自动恢复`
                     : `基础间隔 ${cooldownState.baseCooldownSeconds || config.nai_cooldown_seconds || 15} 秒`}
                 >
                   <Timer size={11} />
@@ -4616,7 +4616,7 @@ function App() {
                 <div
                   className={`cooldown-chip ${cooldown > 0 ? 'active' : ''} ${cooldownState.mode === 'degraded' ? 'degraded' : ''}`}
                   title={cooldownState.mode === 'degraded'
-                    ? `429 降级模式：固定 35 秒，成功 ${cooldownState.degradedSuccesses || 0}/5 次后恢复`
+                    ? `429 降级：出图间隔已切到 35 秒，约 ${Math.max(1, Math.ceil((cooldownState.degradedRemainingSeconds || 0) / 60))} 分钟后自动恢复`
                     : `基础间隔 ${cooldownState.baseCooldownSeconds || config.nai_cooldown_seconds || 15} 秒`}
                 >
                   <Timer size={14} />
@@ -4996,7 +4996,7 @@ function App() {
               <div
                 className={`cooldown-chip ${cooldown > 0 ? 'active' : ''} ${cooldownState.mode === 'degraded' ? 'degraded' : ''}`}
                 title={cooldownState.mode === 'degraded'
-                  ? '429 降级模式：固定 35 秒，成功 5 次后恢复'
+                  ? `429 降级：出图间隔已切到 35 秒，约 ${Math.max(1, Math.ceil((cooldownState.degradedRemainingSeconds || 0) / 60))} 分钟后自动恢复`
                   : `基础间隔 ${cooldownState.baseCooldownSeconds || config.nai_cooldown_seconds || 15} 秒`}
               >
                 <Timer size={13} />
@@ -6084,7 +6084,7 @@ function App() {
                       style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                     />
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                      默认 15 秒；连续 3 次 429 后自动固定为 35 秒，连续成功 5 次后恢复此间隔。
+                      默认 15 秒；出现一次 429 立即切到 35 秒并保持 30 分钟，之后自动恢复此间隔。
                     </div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
@@ -6093,11 +6093,15 @@ function App() {
                       <input
                         type="number"
                         min="1"
-                        max="50"
+                        max="28"
                         value={config.steps ?? 28}
-                        onChange={(e) => setConfig({ ...config, steps: Number(e.target.value) })}
+                        onChange={(e) => setConfig({ ...config, steps: Math.max(1, Math.min(28, Math.floor(Number(e.target.value) || 28))) })}
+                        title="上限 28：超过后单张图会额外消耗点数"
                         style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-light)', borderRadius: '6px', padding: '8px', color: 'white' }}
                       />
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                        上限 28：4.5 免费档上限，超过后单张图会额外扣点数（后端也会强砍到 28）。
+                      </div>
                     </div>
                     <div>
                       <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>Prompt Guidance / Scale</label>

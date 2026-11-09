@@ -2,6 +2,7 @@ import { globalCooldownManager } from '../utils/cooldown.js';
 import { getExponentialBackoffDelaySeconds } from '../utils/backoff.js';
 import { removeNonEnglishPromptTokens } from '../utils/prompt-cleaner.js';
 import { extractFirstImageFromZip, uint8ArrayToDataUrl, detectImageMimeType } from '../utils/zip-parser.js';
+import { clampNaiDimensions, clampNaiSteps, clampNaiScale, NAI_FREE_STEPS_MAX } from '../utils/nai-params.js';
 
 const NOVELAI_TRIAL_RECAPTCHA_PATTERN = /recaptcha token is required for trial generation/i;
 const NOVELAI_ACCESS_DENIED_PATTERN = /access_denied|ip .*not .*allow|ip .*not .*allowed|ip.*白名单|ip.*允许访问|不在令牌允许访问的列表/i;
@@ -228,6 +229,22 @@ export class NovelAIClient {
     signal = null,
     onRetry = null
   } = {}) {
+    // 生图参数护栏：锁在免费档以内（steps ≤ 28、总像素 ≤ 1024²、单边 ≤ 1216），
+    // 防止手滑调高参数后每张图都在额外扣点数。
+    // 这里是所有生图调用的必经入口，钳制放在这里能覆盖配置、场景卡手动改尺寸等全部路径。
+    const guardedSize = clampNaiDimensions(width, height);
+    if (guardedSize.clamped) {
+      console.warn(`[NAI Client] 尺寸 ${width}x${height} 超免费档，已等比压回 ${guardedSize.width}x${guardedSize.height}`);
+    }
+    width = guardedSize.width;
+    height = guardedSize.height;
+    const guardedSteps = clampNaiSteps(steps, NAI_FREE_STEPS_MAX);
+    if (guardedSteps !== Number(steps)) {
+      console.warn(`[NAI Client] steps ${steps} 超免费档，已压回 ${guardedSteps}`);
+    }
+    steps = guardedSteps;
+    scale = clampNaiScale(scale, 5);
+
     if (!this.token) {
       throw new Error("未配置有效的 NovelAI API Token！");
     }

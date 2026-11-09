@@ -12,6 +12,7 @@ import { enqueueUniqueJob, removeQueuedJobs } from './utils/job-queue.js';
 import { readConfig, writeConfig } from './utils/config-store.js';
 import { resolveLlmRetryLimits } from './utils/llm-retry.js';
 import { LLM_POOL_STATS_VERSION } from './utils/llm-pool.js';
+import { clampNaiSteps, clampNaiScale } from './utils/nai-params.js';
 import { parseFile } from './utils/file-parser.js';
 import { getProjectSummary } from './utils/project-summary.js';
 import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL } from './utils/default-prompts.js';
@@ -107,6 +108,9 @@ function normalizeConfig(config = {}) {
   normalized.llm_429_max_retries = retryLimits.max429Retries;
   normalized.llm_concurrency = clampConcurrency(normalized.llm_concurrency, 2);
   normalized.max_scene_prompt_concurrency = clampConcurrency(normalized.max_scene_prompt_concurrency, 5);
+  // 生图参数锁在免费档：steps > 28 会按倍数扣点数，scale 超出 NAI 上限会被上游拒掉
+  normalized.steps = clampNaiSteps(normalized.steps, 28);
+  normalized.scale = clampNaiScale(normalized.scale, 5.5);
   const promptDefaults = {
     system_prompt_extract_scenes: DEFAULT_EXTRACT_SCENES_PROMPT,
     system_prompt_character_dna: DEFAULT_CHARACTER_DNA_PROMPT,
