@@ -103,6 +103,11 @@ p {
   }
 
   async addImage(name, data) {
+    if (path.extname(name).toLowerCase() === '.webp') {
+      const outputName = path.basename(name);
+      this.images[outputName] = data;
+      return outputName;
+    }
     const baseName = path.basename(name, path.extname(name));
     const outputName = `${baseName}.jpg`;
     const compressed = await sharp(data, { failOn: 'none' })
@@ -265,7 +270,7 @@ p {
 
     // 5. 写入打包插图资源 OEBPS/images/
     for (const [imgName, imgData] of Object.entries(this.images)) {
-      zip.file(`OEBPS/images/${imgName}`, imgData);
+      zip.file(`OEBPS/images/${imgName}`, imgData, { compression: 'STORE' });
       const imgId = `img_${imgName.replace(/\./g, '_')}`;
       
       const ext = path.extname(imgName).toLowerCase();

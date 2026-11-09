@@ -50,3 +50,22 @@ test('EPUB image compression uses high-quality JPEG and emits no filename captio
   assert.match(chapter, /<img src="images\/original\.jpg" alt="" \/>/);
   assert.doesNotMatch(chapter, /original\.jpg<\/div>|章节精美插图|illustration-caption/);
 });
+
+test('EPUB preserves WebP image bytes and references the correct media type', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nai-epub-webp-'));
+  try {
+    const outputPath = path.join(tempDir, 'book.epub');
+    const webp = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#123456' } }).webp().toBuffer();
+    const builder = new EPUBBuilder('测试书', '测试作者', outputPath);
+    const imageName = await builder.addImage('original.webp', webp);
+    builder.addChapter('', '第一章', `[插图：${imageName}]`);
+    await builder.build();
+    const zip = await JSZip.loadAsync(await fs.readFile(outputPath));
+    assert.equal(imageName, 'original.webp');
+    assert.deepEqual(await zip.file('OEBPS/images/original.webp').async('nodebuffer'), webp);
+    assert.match(await zip.file('OEBPS/content.opf').async('string'), /href="images\/original\.webp" media-type="image\/webp"/);
+    assert.match(await zip.file('OEBPS/chap_1.xhtml').async('string'), /src="images\/original\.webp"/);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});

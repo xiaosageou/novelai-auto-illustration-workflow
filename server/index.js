@@ -1657,8 +1657,8 @@ app.post('/api/projects/:projectName/build-epub', async (req, res) => {
 
     console.log(`[Server] 开始为项目 ${projectName} 构建 EPUB 电子书...`);
 
-    // 1. 生成带插图正文
-    const illustratedText = await pipeline.buildNovelWithIllustrations();
+    // 刷新章节和进度；插图正文在下方按章节直接生成。
+    await pipeline.initialize();
 
     // 2. 实例化 EPUBBuilder
     const outputEpubName = `${projectName}.epub`;
