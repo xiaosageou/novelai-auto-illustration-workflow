@@ -22,9 +22,21 @@ import { runAudiobookPipeline, summarize, AudiobookError } from './pipeline.js';
 import { removeTree } from './wav.js';
 import { estimateDurationSec, formatBytes, formatDuration } from './text.js';
 
-/** 每个项目最多一个运行中的任务 */
-const tasks = new Map();      // projectName -> { id, controller, snapshot }
+/**
+ * 任务表 + 全局队列。
+ *
+ * 全局串行：同一时刻只跑一本书。TTS 是限流敏感的网络 IO，多书并行会让 429 互相
+ * 放大、ETA 一起失真；NAS 上还会几个 ffmpeg 同时收尾抢 CPU。所以后来者排队，
+ * 拿到「前面还有 N 本」的位置，真正轮到了才读盘、跑管线。
+ */
+const tasks = new Map();      // projectName -> { id, controller, snapshot, chapters, ... }
 const listeners = new Map();  // projectName -> Set<res>
+const queue = [];             // 排队中的任务（FIFO），元素就是上面的 task 对象
+let activeTask = null;        // 正在运行的那一个
+let slotReserved = false;     // 全局槽位已被某个 /start 同步占住（它在 await 中还没进 startTask）
+
+/** 占着队列位置的状态；done/error/stopped 的旧任务可以直接被新任务顶掉 */
+const BUSY_STATUS = new Set(['running', 'queued', 'stopping']);
 
 function broadcast(projectName, evt) {
   const set = listeners.get(projectName);
@@ -43,6 +55,149 @@ function publicTask(task) {
 function taskSnapshot(projectName) {
   const task = tasks.get(projectName);
   return task ? publicTask(task) : null;
+}
+
+function pushTaskLog(task, message, level = 'info') {
+  const logs = task.snapshot.logs;
+  logs.push({ at: new Date().toISOString(), level, message });
+  if (logs.length > 300) logs.splice(0, logs.length - 300);
+}
+
+/** 队列全貌：哪本在跑、谁在第几位 */
+function queueInfo() {
+  return {
+    active: activeTask ? { projectName: activeTask.snapshot.projectName, taskId: activeTask.id } : null,
+    pending: queue.map((t, i) => ({
+      projectName: t.snapshot.projectName,
+      taskId: t.id,
+      position: i + 1,
+    })),
+  };
+}
+
+/** 重排排队位置，并把新位置推给每一本排队中的书 */
+function refreshQueuePositions() {
+  const blocking = activeTask ? activeTask.snapshot.projectName : '';
+  queue.forEach((t, i) => {
+    t.snapshot.queuePosition = i + 1;
+    t.snapshot.queueAhead = i;
+    t.snapshot.queueTotal = queue.length;
+    t.snapshot.blockingProject = blocking;
+  });
+  for (const t of queue) {
+    broadcast(t.snapshot.projectName, { type: 'task', data: publicTask(t) });
+  }
+}
+
+/** 进程重启后，磁盘上残留的 running/queued 是死状态，纠正成 stopped */
+async function reconcileState(projectPath, projectName, state) {
+  if (!state || !BUSY_STATUS.has(state.status) || tasks.has(projectName)) return state;
+  state.status = 'stopped';
+  await writeState(projectPath, state).catch(() => {});
+  return state;
+}
+
+/**
+ * 真正开始跑一个任务：置 running → 跑管线 → 收尾后交给队列里的下一本。
+ * 调用前任务必须已在 tasks 里，且没有别的任务在跑。
+ */
+async function startTask(task) {
+  const {
+    projectPath, chapters, settings, apiKey, baseUrl, force,
+  } = task;
+  // 书名只在 snapshot 里，任务对象本身不存一份，避免两处不一致
+  const projectName = task.snapshot.projectName;
+
+  activeTask = task;
+  slotReserved = false;
+  task.snapshot = {
+    ...task.snapshot,
+    status: 'running',
+    queuePosition: 0,
+    queueAhead: 0,
+    startedAt: new Date().toISOString(),
+  };
+  pushTaskLog(task, `轮到本书：${chapters.length} 章 · 并发 ${settings.concurrency} · ${settings.bitrateKbps}kbps AAC`);
+  broadcast(projectName, { type: 'task', data: publicTask(task) });
+  refreshQueuePositions(); // 后面的书前进一位
+
+  const state = await readState(projectPath, projectName).catch(() => task.sourceState);
+  state.status = 'running';
+  state.settings = settings;
+  await writeState(projectPath, state).catch(() => {});
+
+  try {
+    const output = await runAudiobookPipeline({
+      projectPath,
+      projectName,
+      chapters,
+      state,
+      settings,
+      apiKey,
+      baseUrl,
+      signal: task.controller.signal,
+      force,
+      meta: { title: projectName, author: '' },
+      emit: (evt) => {
+        if (evt.type === 'progress') {
+          task.snapshot = { ...task.snapshot, ...evt.data, status: 'running' };
+        } else if (evt.type === 'log') {
+          pushTaskLog(task, evt.message, evt.level);
+        } else if (evt.type === 'chapter') {
+          pushTaskLog(task, `${evt.data.title} · ${evt.data.status === 'done' ? '完成' : evt.data.status === 'error' ? `失败：${evt.data.error || ''}` : '编码中'}`,
+            evt.data.status === 'error' ? 'error' : evt.data.status === 'done' ? 'success' : 'info');
+        } else if (evt.type === 'done') {
+          task.snapshot = { ...task.snapshot, status: 'done', percent: 100, output: evt.data };
+        } else if (evt.type === 'stopped') {
+          task.snapshot = { ...task.snapshot, status: 'stopped' };
+        }
+        broadcast(projectName, evt);
+      },
+    });
+    if (output?.stopped) {
+      task.snapshot.status = 'stopped';
+    } else {
+      task.snapshot = { ...task.snapshot, status: 'done', percent: 100, output };
+    }
+  } catch (err) {
+    const message = err?.message || String(err);
+    pushTaskLog(task, message, 'error');
+    task.snapshot = { ...task.snapshot, status: 'error', error: message, details: err?.details || null };
+    broadcast(projectName, { type: 'error', message, details: err?.details || null });
+    const state2 = await readState(projectPath, projectName).catch(() => null);
+    if (state2) {
+      state2.status = 'error';
+      await writeState(projectPath, state2).catch(() => {});
+    }
+  } finally {
+    activeTask = null;
+    broadcast(projectName, { type: 'task', data: publicTask(task) });
+    // 保留 5 秒快照，方便前端把「完成/中断」的收尾日志显示完
+    setTimeout(() => {
+      if (tasks.get(projectName) === task) tasks.delete(projectName);
+    }, 5000);
+    drainQueue();
+  }
+}
+
+/** 空出全局槽位后，拉起队首的书 */
+function drainQueue() {
+  if (activeTask) return;
+  const next = queue.shift();
+  if (!next) return;
+  refreshQueuePositions();
+  void startTask(next).catch((err) => recoverStartFailure(next, err));
+}
+
+/** startTask 在进入自己的 try 之前就挂了（读盘/写状态失败）时的兜底，别把全局槽位占死 */
+function recoverStartFailure(task, err) {
+  if (activeTask === task) activeTask = null;
+  slotReserved = false;
+  task.snapshot = { ...task.snapshot, status: 'error', error: err?.message || String(err) };
+  const { projectName } = task.snapshot;
+  if (tasks.get(projectName) === task) tasks.delete(projectName);
+  broadcast(projectName, { type: 'task', data: publicTask(task) });
+  drainQueue();
 }
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -78,7 +233,7 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
     if (projectName) {
       try {
         const { projectPath } = await safeProjectPath(projectName);
-        state = await readState(projectPath, projectName);
+        state = await reconcileState(projectPath, projectName, await readState(projectPath, projectName));
       } catch {
         state = null;
       }
@@ -90,6 +245,7 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
       voices: PRESET_VOICES,
       bitrates: BITRATE_PRESETS,
       state,
+      queue: queueInfo(),
       task: taskSnapshot(projectName),
     });
   }));
@@ -121,10 +277,11 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
     if (!projectName) return res.status(400).json({ error: '缺少 projectName' });
     const { projectPath } = await safeProjectPath(projectName);
 
-    const [{ pipeline, chapters }, state] = await Promise.all([
+    const [{ pipeline, chapters }, rawState] = await Promise.all([
       loadChapters(getPipeline, projectName),
       readState(projectPath, projectName),
     ]);
+    const state = await reconcileState(projectPath, projectName, rawState);
 
     const settings = normalizeSettings({
       ...state.settings,
@@ -165,6 +322,7 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
       settings,
       output: state.output,
       status: state.status,
+      queue: queueInfo(),
       task: taskSnapshot(projectName),
     });
   }));
@@ -174,7 +332,16 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
     const body = req.body || {};
     const projectName = String(body.projectName || '');
     if (!projectName) return res.status(400).json({ error: '缺少 projectName' });
-    if (tasks.has(projectName)) return res.status(409).json({ error: '该书的有声书任务正在运行' });
+
+    const existing = tasks.get(projectName);
+    if (existing && BUSY_STATUS.has(existing.snapshot.status)) {
+      const ahead = Math.max(0, existing.snapshot.queueAhead || 0);
+      return res.status(409).json({
+        error: existing.snapshot.status === 'queued'
+          ? `该书已在队列中，前面还有 ${ahead} 本`
+          : '该书的有声书任务正在运行',
+      });
+    }
 
     const { projectPath } = await safeProjectPath(projectName);
     const mimo = await readMimoConfig(baseDir);
@@ -190,21 +357,37 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
     const selected = wanted ? chapters.filter((c) => wanted.has(c.key)) : chapters;
     if (!selected.length) return res.status(400).json({ error: '没有勾选任何章节' });
 
+    // 全局串行：已经有书在跑就排队，先落一个 queued 状态，刷新页面也能看到。
+    // 从这里到 tasks.set 之间不能再有 await，否则两个 /start 会互相看不见对方、双双开跑。
     await ensureAudiobookDirs(projectPath);
     const state = await readState(projectPath, projectName);
     state.settings = settings;
-    state.status = 'running';
-    await writeState(projectPath, state);
 
-    const controller = new AbortController();
-    const taskId = `ab-${Date.now().toString(36)}`;
+    const willQueue = Boolean(activeTask) || slotReserved;
+    if (!willQueue) slotReserved = true;
+    state.status = willQueue ? 'queued' : 'running';
+    try {
+      await writeState(projectPath, state);
+    } catch (err) {
+      if (!willQueue) slotReserved = false;
+      throw err;
+    }
+
+    const taskId = `ab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const task = {
       id: taskId,
-      controller,
+      controller: new AbortController(),
+      projectPath,
+      chapters: selected,
+      settings,
+      apiKey: mimo.apiKey,
+      baseUrl: mimo.baseUrl,
+      force: Boolean(body.force),
+      sourceState: state,
       snapshot: {
         taskId,
         projectName,
-        status: 'running',
+        status: willQueue ? 'queued' : 'running',
         stage: 'tts',
         percent: 0,
         doneChunks: 0,
@@ -214,76 +397,52 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
         aacBytes: 0,
         elapsedSec: 0,
         etaSec: 0,
+        queuePosition: willQueue ? queue.length + 1 : 0,
+        queueAhead: willQueue ? queue.length : 0,
+        queueTotal: willQueue ? queue.length + 1 : 0,
+        blockingProject: willQueue ? (activeTask?.snapshot.projectName || '') : '',
         startedAt: new Date().toISOString(),
         logs: [],
       },
     };
     tasks.set(projectName, task);
 
-    const pushLog = (message, level = 'info') => {
-      const logs = task.snapshot.logs;
-      logs.push({ at: new Date().toISOString(), level, message });
-      if (logs.length > 300) logs.splice(0, logs.length - 300);
-    };
+    if (willQueue) {
+      queue.push(task);
+      pushTaskLog(task, `已加入队列：前面还有 ${queue.length - 1} 本`);
+      refreshQueuePositions();
+      return res.json({ ok: true, taskId, queued: true, ahead: queue.length - 1, position: queue.length });
+    }
 
-    res.json({ ok: true, taskId });
-
-    // 后台执行，不阻塞 HTTP
-    (async () => {
-      try {
-        const output = await runAudiobookPipeline({
-          projectPath,
-          projectName,
-          chapters: selected,
-          state,
-          settings,
-          apiKey: mimo.apiKey,
-          baseUrl: mimo.baseUrl,
-          signal: controller.signal,
-          force: Boolean(body.force),
-          meta: { title: projectName, author: '' },
-          emit: (evt) => {
-            if (evt.type === 'progress') {
-              task.snapshot = { ...task.snapshot, ...evt.data, status: 'running' };
-            } else if (evt.type === 'log') {
-              pushLog(evt.message, evt.level);
-            } else if (evt.type === 'chapter') {
-              pushLog(`${evt.data.title} · ${evt.data.status === 'done' ? '完成' : evt.data.status === 'error' ? `失败：${evt.data.error || ''}` : '编码中'}`,
-                evt.data.status === 'error' ? 'error' : evt.data.status === 'done' ? 'success' : 'info');
-            } else if (evt.type === 'done') {
-              task.snapshot = { ...task.snapshot, status: 'done', percent: 100, output: evt.data };
-            } else if (evt.type === 'stopped') {
-              task.snapshot = { ...task.snapshot, status: 'stopped' };
-            }
-            broadcast(projectName, evt);
-          },
-        });
-        if (output?.stopped) {
-          task.snapshot.status = 'stopped';
-        } else {
-          task.snapshot = { ...task.snapshot, status: 'done', percent: 100, output };
-        }
-      } catch (err) {
-        const message = err?.message || String(err);
-        pushLog(message, 'error');
-        task.snapshot = { ...task.snapshot, status: 'error', error: message, details: err?.details || null };
-        broadcast(projectName, { type: 'error', message, details: err?.details || null });
-        const state2 = await readState(projectPath, projectName).catch(() => null);
-        if (state2) {
-          state2.status = 'error';
-          await writeState(projectPath, state2).catch(() => {});
-        }
-      } finally {
-        broadcast(projectName, { type: 'task', data: publicTask(task) });
-        setTimeout(() => { tasks.delete(projectName); }, 5000);
-      }
-    })();
+    res.json({ ok: true, taskId, queued: false });
+    void startTask(task).catch((err) => recoverStartFailure(task, err));
   }));
 
   router.post('/stop', asyncHandler(async (req, res) => {
     const projectName = String(req.body?.projectName || '');
     const task = tasks.get(projectName);
     if (!task) return res.json({ ok: true, message: '当前没有运行中的任务' });
+
+    // 排队中的任务：直接摘出队列，后面几本一起往前挪，不需要中断任何东西
+    if (task.snapshot.status === 'queued') {
+      const idx = queue.indexOf(task);
+      if (idx >= 0) queue.splice(idx, 1);
+      task.snapshot = { ...task.snapshot, status: 'stopped', queuePosition: 0, queueAhead: 0 };
+      pushTaskLog(task, '已取消排队', 'warn');
+      broadcast(projectName, { type: 'task', data: publicTask(task) });
+      broadcast(projectName, { type: 'stopped', message: '已取消排队' });
+      const state = await readState(task.projectPath, projectName).catch(() => null);
+      if (state) {
+        state.status = 'stopped';
+        await writeState(task.projectPath, state).catch(() => {});
+      }
+      setTimeout(() => {
+        if (tasks.get(projectName) === task) tasks.delete(projectName);
+      }, 5000);
+      refreshQueuePositions();
+      return res.json({ ok: true, cancelled: true });
+    }
+
     task.snapshot.status = 'stopping';
     task.controller.abort();
     broadcast(projectName, { type: 'stopping', message: '正在停止…已完成的章节会保留' });
@@ -344,7 +503,12 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
   router.post('/reset', asyncHandler(async (req, res) => {
     const projectName = String(req.body?.projectName || '');
     if (!projectName) return res.status(400).json({ error: '缺少 projectName' });
-    if (tasks.has(projectName)) return res.status(409).json({ error: '任务运行中，请先停止' });
+    const busy = tasks.get(projectName);
+    if (busy && BUSY_STATUS.has(busy.snapshot.status)) {
+      return res.status(409).json({
+        error: busy.snapshot.status === 'queued' ? '该书正在排队，请先取消排队' : '任务运行中，请先停止',
+      });
+    }
 
     const { projectPath } = await safeProjectPath(projectName);
     const paths = audiobookPaths(projectPath);

@@ -11,7 +11,7 @@
 - 支持 Vibe Transfer、多角色场景、单场景重绘、仅 NAI 重绘
 - 支持章节级断点续跑、失败记录、SSE 实时日志和冷却状态同步
 - 预留 EPUB 构建路径，便于把章节与插图整理成电子书产物
-- 独立「有声书」标签页：同一本书的章节经 MiMo TTS 合成并压缩为单个 `.m4b`，与生图管线互不干扰
+- 独立「有声书」标签页：同一本书的章节经 MiMo TTS 合成并压缩为单个 `.m4b`，与生图管线互不干扰；多书任务全局串行排队（同一时刻只跑一本）
 
 ## 目录结构
 
@@ -144,10 +144,11 @@ node scripts/compress-images.mjs --keep-original    # 保留原 PNG 只出 WebP
 - **前端可配置**：MiMo API Key（保存到根目录 `.env` 的 `MIMO_API_KEY`，页面只显示掩码）、并发数（1–16）、音色、AAC 码率、每块字数、块间/章间停顿、风格指令。
 - **压缩**：TTS 返回的 24kHz/16bit 单声道 WAV 是 384 kbps，逐章转成 AAC 后体积约为原来 **1/8**（默认 48 kbps ≈ 22 MB/小时），中间 WAV 编码完立即删除，磁盘只留分章 AAC。
 - **只产出 m4b**：分章 AAC 单遍流式封装为 `.m4b`，写入章节标记、书名/作者/演播者元数据和 `faststart`；章节时间轴按 AAC 帧数计算，避免累加漂移。
-- **并发与续跑**：块级任务池并发吃满配置的并发数；已完成的章节落地为 `parts/<hash>.aac`，重启后自动跳过，中断在半章也能复用已合成的块。
+- **并发与续跑**：本书内块级任务池并发吃满配置的并发数；已完成的章节落地为 `parts/<hash>.aac`，重启后自动跳过，中断在半章也能复用已合成的块。
+- **全局单任务队列**：同一时刻只跑一本书。在另一本书上点开始不会并行开跑，而是进入全局 FIFO 队列，页面显示「排队中 · 前面还有 N 本 · 正在合成《某书》」，轮到后自动开始（可以切走做别的事）；排队中可随时「取消排队」，后面的书位置自动前移。多书并行会让 MiMo 的 429 互相放大、ETA 一起失真，NAS 上还会几个 ffmpeg 同时收尾抢 CPU，所以选择排队而不是并行。
 - **产物路径**：`projects/<书名>/audiobook/out/<书名>.m4b`，状态在 `audiobook/state.json`。
 
-接口（均为 `/api/audiobook` 前缀）：`GET /status`、`POST /config`、`POST /test`、`GET /chapters`、`POST /start`、`POST /stop`、`GET /task`、`GET /events`（SSE）、`GET /download`、`POST /reset`。
+接口（均为 `/api/audiobook` 前缀）：`GET /status`（含 `queue`：谁在跑、谁在第几位）、`POST /config`、`POST /test`、`GET /chapters`、`POST /start`（返回 `queued` / `ahead`）、`POST /stop`（运行中=中断，排队中=取消排队）、`GET /task`、`GET /events`（SSE）、`GET /download`、`POST /reset`。
 
 依赖：需要 `ffmpeg` 与 `ffprobe` 在 PATH 中（`AUDIOBOOK_FFMPEG` 可覆盖）。TTS 请求默认直连，不受主程序全局代理影响；如确需走代理，设置 `MIMO_PROXY=http://host:port`。
 

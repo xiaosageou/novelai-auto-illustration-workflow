@@ -81,7 +81,10 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
   const esRef = useRef(null);
   const logBoxRef = useRef(null);
 
-  const running = task && ['running', 'stopping'].includes(task.status);
+  // 全局串行：队列里等着的也算「占着任务」，只是没在跑
+  const busy = Boolean(task && ['running', 'queued', 'stopping'].includes(task.status));
+  const queued = Boolean(task && task.status === 'queued');
+  const running = busy && !queued;
 
   /* ── 拉取状态与章节 ── */
   const loadStatus = useCallback(async () => {
@@ -260,19 +263,31 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || '启动失败');
-      setTask({ taskId: j.taskId, status: 'running', percent: 0 });
-      setNotice(`已启动 · ${keys.length} 章 · 并发 ${settings.concurrency}`);
+      if (j.queued) {
+        setTask({ taskId: j.taskId, status: 'queued', percent: 0, queueAhead: j.ahead, queuePosition: j.position });
+        setNotice(`已排队 · ${keys.length} 章 · 前面还有 ${j.ahead} 本`);
+      } else {
+        setTask({ taskId: j.taskId, status: 'running', percent: 0 });
+        setNotice(`已启动 · ${keys.length} 章 · 并发 ${settings.concurrency}`);
+      }
     } catch (err) {
       setError(err.message);
     }
   }
 
   async function stop() {
+    const wasQueued = queued;
     await fetch(`${apiBase}/api/audiobook/stop`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ projectName }),
     });
+    if (wasQueued) {
+      setNotice('已取消排队');
+      setTask((prev) => (prev ? { ...prev, status: 'stopped', queueAhead: 0 } : prev));
+      await loadChapters();
+      return;
+    }
     setNotice('正在停止，已完成的章节会保留');
   }
 
@@ -479,10 +494,10 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
                   强制重跑已完成的章节
                 </label>
                 <div className="abw-danger-row">
-                  <button type="button" className="abw-danger" onClick={() => reset(false)} disabled={running}>
+                  <button type="button" className="abw-danger" onClick={() => reset(false)} disabled={busy}>
                     <Trash2 size={13} /> 清空所选章节
                   </button>
-                  <button type="button" className="abw-danger" onClick={() => reset(true)} disabled={running}>
+                  <button type="button" className="abw-danger" onClick={() => reset(true)} disabled={busy}>
                     <Trash2 size={13} /> 清空全书
                   </button>
                 </div>
@@ -497,20 +512,33 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
             <div className="abw-progress-head">
               <div>
                 <strong>
-                  {running ? (task.status === 'stopping' ? '正在停止…' : '合成中')
-                    : task?.status === 'done' ? '已完成' : task?.status === 'error' ? '中断' : '就绪'}
+                  {queued ? '排队中'
+                    : running ? (task.status === 'stopping' ? '正在停止…' : '合成中')
+                      : task?.status === 'done' ? '已完成'
+                        : task?.status === 'error' ? '中断'
+                          : task?.status === 'stopped' ? '已停止' : '就绪'}
                 </strong>
                 <span>
-                  {doneCount}/{chapters.length} 章已完成
-                  {task?.doneChunks ? ` · 块 ${task.doneChunks}/${task.totalChunks}` : ''}
-                  {running && task?.etaSec ? ` · 剩余约 ${fmtEta(task.etaSec)}` : ''}
-                  {task?.aacBytes ? ` · 已压缩 ${fmtBytes(task.aacBytes)}` : ''}
+                  {queued ? (
+                    <>
+                      {task.queueAhead > 0 ? `前面还有 ${task.queueAhead} 本` : '下一本轮到本书'}
+                      {task.blockingProject ? ` · 正在合成《${task.blockingProject}》` : ''}
+                      {' '}· 轮到后自动开始，可以切走
+                    </>
+                  ) : (
+                    <>
+                      {doneCount}/{chapters.length} 章已完成
+                      {task?.doneChunks ? ` · 块 ${task.doneChunks}/${task.totalChunks}` : ''}
+                      {running && task?.etaSec ? ` · 剩余约 ${fmtEta(task.etaSec)}` : ''}
+                      {task?.aacBytes ? ` · 已压缩 ${fmtBytes(task.aacBytes)}` : ''}
+                    </>
+                  )}
                 </span>
               </div>
               <div className="abw-actions">
-                {running ? (
-                  <button className="abw-btn danger" type="button" onClick={stop}>
-                    <Square size={14} /> 停止
+                {busy ? (
+                  <button className="abw-btn danger" type="button" onClick={stop} disabled={task.status === 'stopping'}>
+                    {queued ? <><Clock size={14} /> 取消排队</> : <><Square size={14} /> 停止</>}
                   </button>
                 ) : (
                   <button className="abw-btn primary" type="button" onClick={start} disabled={!hasKey || !ffmpegOk || !selected.size}>
@@ -524,7 +552,7 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
                 )}
               </div>
             </div>
-            <div className="abw-bar"><span style={{ width: `${Math.min(100, Math.max(0, progress))}%` }} /></div>
+            <div className={`abw-bar${queued ? ' is-queued' : ''}`}><span style={{ width: `${queued ? 100 : Math.min(100, Math.max(0, progress))}%` }} /></div>
             {output && (
               <div className="abw-output">
                 <CheckCircle2 size={14} />
