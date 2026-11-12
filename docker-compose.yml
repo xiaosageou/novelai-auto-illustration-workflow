@@ -13,6 +13,10 @@ services:
       - ./projects:/app/projects
       # 有声书：MiMo Key 与运行态落在 data/，重建容器不丢
       - ./data:/app/data
+      # 成品导出目录：生成的 m4b 自动复制到宿主机 ./audiobook，
+      # EPUB 自动复制到宿主机 ./book（不用进 projects/ 深处找）
+      - ./audiobook:/app/audiobook
+      - ./book:/app/book
       # 主配置（不含密钥，可提交到仓库）
       - ./illustrator_config.json:/app/illustrator_config.json
       # 密钥文件（务必保留在宿主机，不要提交）；首次启动前先创建空文件或填好密钥
@@ -23,6 +27,9 @@ services:
       - NODE_ENV=production
       - NODE_OPTIONS=--max-old-space-size=4096
       - AUDIOBOOK_ENV_FILE=/app/data/audiobook.env
+      # 成品自动导出到上面挂载的两个目录
+      - AUDIOBOOK_EXPORT_DIR=/app/audiobook
+      - EPUB_EXPORT_DIR=/app/book
       # 也可以不用前端填写，直接在这里注入 Key（优先级高于文件）
       # - MIMO_API_KEY=sk-xxxx
       # 内网需要走代理访问 MiMo 时再打开

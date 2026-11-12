@@ -15,6 +15,7 @@ import { LLM_POOL_STATS_VERSION } from './utils/llm-pool.js';
 import { clampNaiSteps, clampNaiScale } from './utils/nai-params.js';
 import { parseFile } from './utils/file-parser.js';
 import { getProjectSummary } from './utils/project-summary.js';
+import { epubExportDir, copyToDir } from './utils/export-copy.js';
 import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL } from './utils/default-prompts.js';
 import { normalizeAdvancedPromptForConfig, normalizeCharacterDnaPromptForConfig } from './utils/advanced-prompt-contract.js';
 import { createAgentRouter } from './services/agent-api.js';
@@ -1710,12 +1711,23 @@ app.post('/api/projects/:projectName/build-epub', async (req, res) => {
     job.phase = '压缩并写入电子书';
     await builder.build(percent => { job.percent = Math.floor(percent); });
 
+    // 5. 自动复制到挂载出来的导出目录（NAS 上直接可见）；失败不影响下载
+    let exportedTo = '';
+    try {
+      exportedTo = await copyToDir(outputPath, epubExportDir(BASE_DIR));
+      console.log(`[EPUB] 已复制到导出目录: ${exportedTo}`);
+    } catch (err) {
+      console.warn(`[EPUB] 复制到导出目录失败（项目内文件仍可下载）: ${err.message}`);
+    }
+    if (exportedTo) job.exportPath = exportedTo;
+
     Object.assign(job, { status: 'done', phase: '打包完成', percent: 100, downloadUrl: `/projects/${encodeURIComponent(projectName)}/${encodeURIComponent(outputEpubName)}` });
 
     res.json({
       success: true,
       downloadUrl: `/projects/${projectName}/${outputEpubName}`,
-      outputPath
+      outputPath,
+      exportPath: exportedTo || undefined
     });
 
   } catch (error) {

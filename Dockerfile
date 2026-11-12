@@ -23,7 +23,8 @@ COPY server/ ./server/
 COPY --from=builder /app/client/dist ./client/dist
 
 # Create necessary directories for volumes
-RUN mkdir -p /app/projects /app/data
+# audiobook/ 与 book/ 是成品导出目录（挂载宿主机后可直接在文件管理里看到）
+RUN mkdir -p /app/projects /app/data /app/audiobook /app/book
 
 EXPOSE 5001
 ENV PORT=5001
@@ -31,6 +32,9 @@ ENV NODE_ENV=production
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 # 前端填写的 MiMo Key 存在这个文件，挂载 ./data 后重建容器不丢
 ENV AUDIOBOOK_ENV_FILE=/app/data/audiobook.env
+# 成品自动导出的位置：m4b → /app/audiobook，epub → /app/book
+ENV AUDIOBOOK_EXPORT_DIR=/app/audiobook
+ENV EPUB_EXPORT_DIR=/app/book
 
 # Start Node.js server
 CMD ["node", "server/index.js"]

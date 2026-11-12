@@ -3,6 +3,9 @@ scratch/
 illustrations/
 projects/
 data/
+# 成品导出目录（挂载出来的 m4b / epub），不入库
+/audiobook/
+/book/
 *.zip
 *.naiv4vibebundle
 *.jsonl

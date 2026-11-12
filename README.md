@@ -168,7 +168,8 @@ docker compose -f docker-compose.release.yml up -d
 
 部署要点：
 
-- **两个必须的挂载**：`./projects:/app/projects`（书籍、插图、`audiobook/out/*.m4b` 都在这里）与 `./data:/app/data`（配合 `AUDIOBOOK_ENV_FILE=/app/data/audiobook.env`，前端填写的 MiMo Key 才不会随容器重建丢失）。
+- **四个挂载**：`./projects:/app/projects`（书籍、插图、中间产物都在这里）、`./data:/app/data`（配合 `AUDIOBOOK_ENV_FILE=/app/data/audiobook.env`，前端填写的 MiMo Key 才不会随容器重建丢失）、`./audiobook:/app/audiobook`（生成的 m4b 自动复制进来）、`./book:/app/book`（生成的 epub 自动复制进来）。后两个就是给 NAS 文件管理/阅读器/音乐库直接扫的落地目录。
+- **成品自动导出**：有声书封装完 m4b 会立刻复制一份到 `AUDIOBOOK_EXPORT_DIR`（容器里 `/app/audiobook`，本地运行默认 `./audiobook/`），EPUB 打包完同理复制到 `EPUB_EXPORT_DIR`（默认 `./book/`）。**同名文件直接覆盖**（先写 `.part` 临时名再 rename，避免同步/下载工具读到半截文件）；复制失败只打一条警告，`projects/` 里的原产物和网页下载始终可用。
 - **Key 也可用环境变量注入**：`MIMO_API_KEY=sk-xxx`，优先级高于文件，适合不想在网页里填的场景。
 - **内网走代理**：容器默认直连 MiMo（不受主程序给 NovelAI 设的全局代理影响）；确需代理时设 `MIMO_PROXY=http://host:port`。
 - **磁盘**：TTS 返回的 WAV 只是块级临时文件，分章编码成 AAC 后立即删除，常驻体积约 `22 MB/小时`（48 kbps）；峰值约为「在途块 + 单章 WAV」，一般几十到一百多 MB。请确保 `projects` 所在卷有足够空间。

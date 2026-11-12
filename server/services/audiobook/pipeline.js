@@ -26,6 +26,7 @@ import {
   audiobookPaths, partIdFor, partPathFor, partMetaPathFor,
   readPartMeta, writePartMeta, settingsSignature, normalizeSettings, writeState,
 } from './state.js';
+import { audiobookExportDir, copyToDir, prettyDir } from '../../utils/export-copy.js';
 
 const TARGET_SAMPLE_RATE = 24000;
 const TARGET_CHANNELS = 1;
@@ -687,6 +688,15 @@ export async function runAudiobookPipeline(opts) {
   const wavEquivalent = Math.round(info.durationSec * TARGET_SAMPLE_RATE * TARGET_CHANNELS * (TARGET_BITS / 8));
   const ratio = info.bytes > 0 ? Number((wavEquivalent / info.bytes).toFixed(1)) : 0;
 
+  // 自动复制到挂载出来的导出目录（NAS 上直接可见）。失败不影响项目内产物。
+  const exportDir = audiobookExportDir();
+  let exportedTo = '';
+  try {
+    exportedTo = await copyToDir(outFile, exportDir);
+  } catch (err) {
+    log(`复制到导出目录失败（项目内产物仍可用）：${err.message}`, 'warn');
+  }
+
   state.status = 'done';
   state.output = {
     file: path.basename(outFile),
@@ -698,10 +708,12 @@ export async function runAudiobookPipeline(opts) {
     compressionRatio: ratio,
     settings,
     createdAt: new Date().toISOString(),
+    ...(exportedTo ? { exportPath: exportedTo } : {}),
   };
   await writeState(projectPath, state);
 
   log(`m4b 已生成：${path.basename(outFile)} · ${Math.round(info.durationSec / 60)} 分钟 · ${(info.bytes / 1048576).toFixed(1)} MB（约为 WAV 的 1/${ratio}）`, 'success');
+  if (exportedTo) log(`已复制到 ${prettyDir(exportDir)}${path.basename(exportedTo)}`, 'success');
   emit({ type: 'done', data: state.output });
   return state.output;
 }
