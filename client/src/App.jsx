@@ -4,13 +4,14 @@ import {
   RefreshCw, CheckCircle2, Sparkles, X, FileText, Clapperboard, Timer,
   Copy, PanelLeftClose, PanelLeftOpen, Trash2, Pencil, Image as ImageIcon,
   Flame, Heart, Users, MapPin, Camera, ChevronDown, ChevronUp, Check, Terminal,
-  Maximize2, Minimize2, Clock, ChevronLeft, ChevronRight, Brain
+  Maximize2, Minimize2, Clock, ChevronLeft, ChevronRight, Brain, Headphones
 } from 'lucide-react';
 import { isSingleChapterGenerateDisabled } from './chapterQueueState.js';
 import { isNaiLogMessage } from './logClassification.js';
 import { mergeProjectProgressSnapshot } from './projectProgressState.js';
 import { placeReaderScenesByParagraph } from './readerScenePlacement.js';
 import ComicWorkbench from './ComicWorkbench.jsx';
+import AudiobookWorkbench from './AudiobookWorkbench.jsx';
 import {
   SCENE_CHARACTER_DETAIL_FIELDS,
   buildCharacterReferenceSummary,
@@ -4944,6 +4945,18 @@ function App() {
 
             <button 
               type="button"
+              className={`main-tab-item ${mainTab === 'audiobook' ? 'active' : ''}`}
+              onClick={() => setMainTab('audiobook')}
+              disabled={!activeProject}
+              title={!activeProject ? '请先选择一本书籍' : '用同一本书生成 m4b 有声书'}
+            >
+              <Headphones size={15} />
+              <span>有声书</span>
+              <span className="tab-badge">M4B</span>
+            </button>
+
+            <button 
+              type="button"
               className={`main-tab-item log-toggle-tab ${isLogsOpen ? 'active' : ''}`}
               onClick={() => setIsLogsOpen(!isLogsOpen)}
               title={isLogsOpen ? "收起底部运行日志" : "在当前工作台展开实时运行日志"}
@@ -5052,6 +5065,14 @@ function App() {
         {mainTab === 'books' && renderBooksTab()}
         {mainTab === 'dna' && renderDnaTab()}
         {(mainTab === 'workbench' || mainTab === 'logs') && renderWorkbenchTab()}
+        {mainTab === 'audiobook' && (
+          <AudiobookWorkbench
+            apiBase={API_BASE}
+            projectName={activeProject}
+            projects={projects}
+            onSelectProject={(name) => selectProject(name, false)}
+          />
+        )}
       </main>
 
       {/* 底部可收起与展开的实时日志抽屉 */}

@@ -1,0 +1,27 @@
+# 构建上下文瘦身：NAS 上 docker build 时不要把书籍产物一起传进去
+node_modules
+**/node_modules
+client/dist
+projects
+data
+logs
+audiobooks
+docs
+.git
+.github
+.workbuddy
+.vscode
+
+# 本地小说与配置备份
+*.jsonl
+*.naiv4vibebundle
+*.log
+*.bak
+*.bak-*
+illustrator_config.json.bak*
+
+# 临时脚本与截图
+_tmp*
+.tmp*
+_nai_test_45.png
+start.bat

@@ -11,6 +11,7 @@
 - 支持 Vibe Transfer、多角色场景、单场景重绘、仅 NAI 重绘
 - 支持章节级断点续跑、失败记录、SSE 实时日志和冷却状态同步
 - 预留 EPUB 构建路径，便于把章节与插图整理成电子书产物
+- 独立「有声书」标签页：同一本书的章节经 MiMo TTS 合成并压缩为单个 `.m4b`，与生图管线互不干扰
 
 ## 目录结构
 
@@ -135,6 +136,40 @@ node scripts/compress-images.mjs -j 8 -q 85         # 8 路并行，替换原图
 node scripts/compress-images.mjs --only 项目名       # 只处理单个项目
 node scripts/compress-images.mjs --keep-original    # 保留原 PNG 只出 WebP
 ```
+
+## 有声书管线（TTS → M4B）
+
+顶部导航第三个标签「有声书」是与生图完全独立的一套生产管线，只复用书籍与章节数据（`projects/<书名>/book.txt` → 章节），不触碰插图、场景和 NAI 队列。
+
+- **前端可配置**：MiMo API Key（保存到根目录 `.env` 的 `MIMO_API_KEY`，页面只显示掩码）、并发数（1–16）、音色、AAC 码率、每块字数、块间/章间停顿、风格指令。
+- **压缩**：TTS 返回的 24kHz/16bit 单声道 WAV 是 384 kbps，逐章转成 AAC 后体积约为原来 **1/8**（默认 48 kbps ≈ 22 MB/小时），中间 WAV 编码完立即删除，磁盘只留分章 AAC。
+- **只产出 m4b**：分章 AAC 单遍流式封装为 `.m4b`，写入章节标记、书名/作者/演播者元数据和 `faststart`；章节时间轴按 AAC 帧数计算，避免累加漂移。
+- **并发与续跑**：块级任务池并发吃满配置的并发数；已完成的章节落地为 `parts/<hash>.aac`，重启后自动跳过，中断在半章也能复用已合成的块。
+- **产物路径**：`projects/<书名>/audiobook/out/<书名>.m4b`，状态在 `audiobook/state.json`。
+
+接口（均为 `/api/audiobook` 前缀）：`GET /status`、`POST /config`、`POST /test`、`GET /chapters`、`POST /start`、`POST /stop`、`GET /task`、`GET /events`（SSE）、`GET /download`、`POST /reset`。
+
+依赖：需要 `ffmpeg` 与 `ffprobe` 在 PATH 中（`AUDIOBOOK_FFMPEG` 可覆盖）。TTS 请求默认直连，不受主程序全局代理影响；如确需走代理，设置 `MIMO_PROXY=http://host:port`。
+
+## Docker / NAS 部署
+
+镜像已经内置 ffmpeg 与 ffprobe，**NAS 宿主机不需要另装**：Dockerfile 运行阶段执行 `apk add --no-cache ffmpeg`（Alpine 官方包同时提供两个二进制，原生 `aac` 编码 + `adts → mp4` 封装足够生成 m4b）。打开「有声书」标签页时右上角会显示 `ffmpeg 就绪`，`GET /api/audiobook/status` 也能直接查到版本。
+
+```powershell
+docker compose up -d --build
+# 或使用预编译镜像
+docker compose -f docker-compose.release.yml up -d
+```
+
+部署要点：
+
+- **两个必须的挂载**：`./projects:/app/projects`（书籍、插图、`audiobook/out/*.m4b` 都在这里）与 `./data:/app/data`（配合 `AUDIOBOOK_ENV_FILE=/app/data/audiobook.env`，前端填写的 MiMo Key 才不会随容器重建丢失）。
+- **Key 也可用环境变量注入**：`MIMO_API_KEY=sk-xxx`，优先级高于文件，适合不想在网页里填的场景。
+- **内网走代理**：容器默认直连 MiMo（不受主程序给 NovelAI 设的全局代理影响）；确需代理时设 `MIMO_PROXY=http://host:port`。
+- **磁盘**：TTS 返回的 WAV 只是块级临时文件，分章编码成 AAC 后立即删除，常驻体积约 `22 MB/小时`（48 kbps）；峰值约为「在途块 + 单章 WAV」，一般几十到一百多 MB。请确保 `projects` 所在卷有足够空间。
+- **自检 ffmpeg**：`docker exec -it novelai-illustrator ffmpeg -version`。若用的是自己改过的基础镜像且未装 ffmpeg，可用 `AUDIOBOOK_FFMPEG=/path/to/ffmpeg` 指向挂载进来的静态二进制。
+- **架构**：Alpine 仓库在 x86_64 / aarch64 都有 ffmpeg 包，本地 `--build` 可用；但 GitHub Actions 目前只构建 amd64 镜像，ARM 群晖/威联通请本地构建，或给 workflow 的 build-push-action 加 `platforms: linux/amd64,linux/arm64`。
+- **构建上下文**：仓库里已加 `.dockerignore`，`projects/`、`data/`、`logs/`、`docs/` 不会被打进构建上下文，NAS 上 `--build` 不会因为几百 GB 小说和插图而卡住。
 
 ## 常用命令
 

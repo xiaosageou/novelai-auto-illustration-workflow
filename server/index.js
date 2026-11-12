@@ -18,6 +18,7 @@ import { getProjectSummary } from './utils/project-summary.js';
 import { DEFAULT_EXTRACT_SCENES_PROMPT, DEFAULT_CHARACTER_DNA_PROMPT, DEFAULT_ADVANCED_PROMPT, DEFAULT_ADVANCED_PROMPT_V45_NL } from './utils/default-prompts.js';
 import { normalizeAdvancedPromptForConfig, normalizeCharacterDnaPromptForConfig } from './utils/advanced-prompt-contract.js';
 import { createAgentRouter } from './services/agent-api.js';
+import { createAudiobookRouter } from './services/audiobook/router.js';
 import { createComicLegacyGuard } from './services/comic-service.js';
 import { createThumbnailMiddleware } from './services/thumbnail-service.js';
 import { GlobalQueueManager } from './services/global-queue-manager.js';
@@ -1763,6 +1764,13 @@ const agentRouter = createAgentRouter({
 });
 app.use('/api/agent', agentRouter);
 app.use('/api/comic', agentRouter.humanRouter);
+
+// 有声书生产管线（独立于生图管线，复用书籍/章节数据）
+app.use('/api/audiobook', createAudiobookRouter({
+  baseDir: BASE_DIR,
+  getPipeline,
+  safeProjectPath
+}));
 
 // 启动监听
 app.listen(PORT, () => {

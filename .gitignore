@@ -2,6 +2,7 @@ node_modules/
 scratch/
 illustrations/
 projects/
+data/
 *.zip
 *.naiv4vibebundle
 *.jsonl
