@@ -12,7 +12,9 @@ import { promises as fs } from 'node:fs';
 import {
   checkFfmpeg, BITRATE_PRESETS, remuxToM4a,
 } from './ffmpeg.js';
-import { PRESET_VOICES, verifyKey } from './mimo.js';
+import {
+  PRESET_VOICES, verifyKey, MiMoClient,
+} from './mimo.js';
 import { readMimoConfig, saveMimoConfig, maskKey } from './key-store.js';
 import {
   audiobookPaths, ensureAudiobookDirs, readState, writeState,
@@ -305,6 +307,71 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
       res.json({ ok: true, latencyMs: Date.now() - started, bytes: r.bytes, masked: maskKey(apiKey) });
     } catch (err) {
       res.status(400).json({ ok: false, error: err.message });
+    }
+  }));
+
+  /* ── 样音试听：一段文字 + 当前音色/风格指令，合成一小段回放 ── */
+  // 同一段文字+参数重复点「试听」很常见（换音色前先听听语气），进程内缓存省额度。
+  // 只存内存：进程重启就清空，不落盘也不占 NAS 空间。
+  const SAMPLE_CACHE_MAX = 12;
+  const SAMPLE_MAX_CHARS = 500;
+  const sampleCache = new Map();
+
+  router.post('/sample', asyncHandler(async (req, res) => {
+    const body = req.body || {};
+    const text = String(body.text || '').replace(/\s+/g, ' ').trim();
+    if (!text) return res.status(400).json({ error: '请先输入要试听的文字' });
+    if (text.length > SAMPLE_MAX_CHARS) {
+      return res.status(400).json({ error: `试听文本最长 ${SAMPLE_MAX_CHARS} 字，当前 ${text.length} 字` });
+    }
+
+    const current = await readMimoConfig(baseDir);
+    const apiKey = String(body.apiKey || current.apiKey || '').trim();
+    if (!apiKey) return res.status(400).json({ error: '请先填写 MiMo API Key' });
+
+    // 只取音色和风格指令：样音与码率/分块无关，不必进签名
+    const settings = normalizeSettings({ voice: body.voice, context: body.context });
+    const cacheKey = `${settings.voice}\u0000${settings.context}\u0000${text}`;
+    const hit = sampleCache.get(cacheKey);
+    if (hit) {
+      res.set({
+        'Content-Type': 'audio/wav',
+        'Content-Length': String(hit.wav.length),
+        'Cache-Control': 'no-store',
+        'Content-Disposition': 'inline',
+        'X-Sample-Cache': 'hit',
+        'X-Sample-Ms': String(hit.ms),
+        'X-Sample-Chars': String(text.length),
+      });
+      return res.send(hit.wav);
+    }
+
+    const started = Date.now();
+    const client = new MiMoClient({
+      apiKey,
+      baseUrl: current.baseUrl,
+      voice: settings.voice,
+      context: settings.context,
+      maxAttempts: 3,
+      timeoutMs: 120000,
+    });
+    try {
+      // 样音是即时交互，别让它等太久：整块 2 次，失败直接报错让用户改文本/参数
+      const { wav } = await client.synthesize(text, { maxAttempts: 2 });
+      const ms = Date.now() - started;
+      if (sampleCache.size >= SAMPLE_CACHE_MAX) sampleCache.delete(sampleCache.keys().next().value);
+      sampleCache.set(cacheKey, { wav, ms });
+      res.set({
+        'Content-Type': 'audio/wav',
+        'Content-Length': String(wav.length),
+        'Cache-Control': 'no-store',
+        'Content-Disposition': 'inline',
+        'X-Sample-Ms': String(ms),
+        'X-Sample-Chars': String(text.length),
+      });
+      res.send(wav);
+    } catch (err) {
+      res.status(400).json({ error: `试听合成失败：${err.message}` });
     }
   }));
 

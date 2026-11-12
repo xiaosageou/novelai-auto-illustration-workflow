@@ -20,8 +20,14 @@ const DEFAULT_VOICES = [
   { id: '冰糖', desc: '甜美活泼' },
 ];
 
-const STATUS_TEXT = {
-  pending: '未生成',
+/** 「填入示例」用的一小段正文，带叙述和一句对白，能听出语气差别 */
+const SAMPLE_PRESET = '雨下了一整夜。她推门进来的时候，带进一阵潮湿的风，伞尖还在滴水。'
+  + '“你等了很久？”她把伞靠在墙角，声音比雨声还轻。他摇摇头，说没有，其实已经坐了一个下午。';
+
+/** 试听文本最长字数，与服务端 SAMPLE_MAX_CHARS 保持一致 */
+const SAMPLE_MAX_CHARS = 500;
+
+const STATUS_TEXT = {  pending: '未生成',
   encoding: '编码中',
   done: '已完成',
   error: '失败',
@@ -83,6 +89,16 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
   const [previewToken, setPreviewToken] = useState({});
   const [audioError, setAudioError] = useState('');
 
+  /* 样音试听：输入一小段文字，用当前音色 + 风格指令合成后立刻回放 */
+  const [sampleText, setSampleText] = useState(() => {
+    try { return window.localStorage.getItem('abw.sampleText') || ''; } catch { return ''; }
+  });
+  const [sampleBusy, setSampleBusy] = useState(false);
+  const [sampleUrl, setSampleUrl] = useState('');
+  const [sampleInfo, setSampleInfo] = useState(null); // { voice, context, ms, bytes, fromCache }
+  const [sampleError, setSampleError] = useState('');
+  const sampleUrlRef = useRef('');
+
   const esRef = useRef(null);
   const logBoxRef = useRef(null);
   const settingsRef = useRef(settings);
@@ -90,6 +106,15 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
   const hydratedRef = useRef(false);
 
   useEffect(() => { settingsRef.current = settings; }, [settings]);
+
+  /* 试听文本下次打开还在；blob URL 用完记得回收，否则整段 WAV 一直占内存 */
+  useEffect(() => {
+    try { window.localStorage.setItem('abw.sampleText', sampleText); } catch { /* 隐私模式忽略 */ }
+  }, [sampleText]);
+
+  useEffect(() => () => {
+    if (sampleUrlRef.current) URL.revokeObjectURL(sampleUrlRef.current);
+  }, []);
 
   // 全局串行：队列里等着的也算「占着任务」，只是没在跑
   const busy = Boolean(task && ['running', 'queued', 'stopping'].includes(task.status));
@@ -276,6 +301,46 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
       setError(err.message);
     } finally {
       setTestingKey(false);
+    }
+  }
+
+  /* ── 样音试听 ── */
+  async function playSample() {
+    const text = sampleText.trim();
+    if (!text) { setSampleError('请先输入要试听的文字'); return; }
+    if (text.length > SAMPLE_MAX_CHARS) {
+      setSampleError(`试听文本最长 ${SAMPLE_MAX_CHARS} 字，当前 ${text.length} 字`);
+      return;
+    }
+    setSampleBusy(true);
+    setSampleError('');
+    try {
+      const r = await fetch(`${apiBase}/api/audiobook/sample`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice: settings.voice, context: settings.context }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || `试听失败（HTTP ${r.status}）`);
+      }
+      const blob = await r.blob();
+      if (!blob.size) throw new Error('返回的音频是空的，换个文本再试');
+      const url = URL.createObjectURL(blob);
+      if (sampleUrlRef.current) URL.revokeObjectURL(sampleUrlRef.current);
+      sampleUrlRef.current = url;
+      setSampleUrl(url);
+      setSampleInfo({
+        voice: settings.voice,
+        context: settings.context.trim(),
+        ms: Number(r.headers.get('X-Sample-Ms')) || 0,
+        bytes: blob.size,
+        fromCache: r.headers.get('X-Sample-Cache') === 'hit',
+      });
+    } catch (err) {
+      setSampleError(err.message);
+    } finally {
+      setSampleBusy(false);
     }
   }
 
@@ -506,6 +571,72 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
                 onChange={(e) => setSettings({ ...settings, context: e.target.value })}
               />
             </label>
+
+            {/* 样音试听：先用一小段文字听效果，满意了再整本开跑 */}
+            <div className="abw-sample">
+              <label className="abw-field">
+                <span>
+                  试听文本
+                  <em className={`abw-count${sampleText.length > SAMPLE_MAX_CHARS ? ' over' : ''}`}>
+                    {sampleText.length}/{SAMPLE_MAX_CHARS}
+                  </em>
+                </span>
+                <textarea
+                  rows={3}
+                  maxLength={SAMPLE_MAX_CHARS}
+                  placeholder="粘贴一小段正文，用当前音色 + 上面的风格指令合成一段试听"
+                  value={sampleText}
+                  onChange={(e) => setSampleText(e.target.value)}
+                />
+              </label>
+              <div className="abw-sample-row">
+                <button
+                  className="abw-ghost-btn"
+                  type="button"
+                  onClick={playSample}
+                  disabled={!hasKey || sampleBusy || !sampleText.trim()}
+                  title={hasKey ? '用当前音色和风格指令合成这段文字' : '请先填写并保存 MiMo API Key'}
+                >
+                  {sampleBusy ? <Loader2 size={14} className="spin" /> : <Play size={14} />}
+                  {sampleBusy ? '合成中…' : '试听这段'}
+                </button>
+                <button
+                  className="abw-ghost-btn"
+                  type="button"
+                  onClick={() => setSampleText(SAMPLE_PRESET)}
+                  disabled={sampleBusy}
+                >
+                  填入示例
+                </button>
+              </div>
+
+              {sampleError && (
+                <p className="abw-sample-error"><AlertTriangle size={13} /> {sampleError}</p>
+              )}
+
+              {sampleUrl && (
+                <>
+                  <audio key={sampleUrl} className="abw-audio" src={sampleUrl} controls autoPlay />
+                  <p className="abw-sample-meta">
+                    <span>
+                      {sampleInfo?.voice}
+                      {sampleInfo?.context
+                        ? ` · 风格「${sampleInfo.context.length > 16 ? `${sampleInfo.context.slice(0, 16)}…` : sampleInfo.context}」`
+                        : ' · 无风格指令'}
+                    </span>
+                    <span>
+                      {sampleInfo?.ms ? `${(sampleInfo.ms / 1000).toFixed(1)}s` : ''}
+                      {sampleInfo?.bytes ? ` · ${fmtBytes(sampleInfo.bytes)}` : ''}
+                      {sampleInfo?.fromCache ? ' · 缓存' : ''}
+                    </span>
+                  </p>
+                  {sampleInfo
+                    && (sampleInfo.voice !== settings.voice || sampleInfo.context !== settings.context.trim()) && (
+                      <p className="abw-sample-stale">音色或风格指令已改，重新试听才是新的参数</p>
+                  )}
+                </>
+              )}
+            </div>
           </div>
 
           <div className="abw-panel-block">

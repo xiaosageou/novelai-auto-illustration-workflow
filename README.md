@@ -149,9 +149,10 @@ node scripts/compress-images.mjs --keep-original    # 保留原 PNG 只出 WebP
 - **全局单任务队列**：同一时刻只跑一本书。在另一本书上点开始不会并行开跑，而是进入全局 FIFO 队列，页面显示「排队中 · 前面还有 N 本 · 正在合成《某书》」，轮到后自动开始（可以切走做别的事）；排队中可随时「取消排队」，后面的书位置自动前移。多书并行会让 MiMo 的 429 互相放大、ETA 一起失真，NAS 上还会几个 ffmpeg 同时收尾抢 CPU，所以选择排队而不是并行。
 - **单章在线试听**：每个已完成章节行有 ▶ 按钮，点开就在原位展开播放器（`GET /preview` 把分章 AAC 转封装成带 `faststart` 的 m4a 再流式返回，支持 Range，可拖动进度条）。试听副本缓存在 `audiobook/preview/<hash>.m4a`，章节重生成后按 mtime 自动失效重建。
 - **换音色重生成**：音色/码率/每块字数参与「参数签名」，页面一改音色就重新拉章节清单并标出「待重生成」，顶部横幅可一键只重生成这批章节，也可以用章节行的 ⟳ 单独重做某一章。重生成会丢弃该章上次残留的块 WAV（`work/<hash>/_settings.txt` 记签名），不会出现新旧音色混读。
+- **音色/风格先试听**：音色卡片里有「试听文本」输入框（最多 500 字，随页保存在 localStorage），点「试听这段」就用当前音色 + 上面的风格指令合成一小段（`POST /sample`，直接回 WAV 用 blob 播放，3 秒左右），不满意换个音色再听一遍，不用先跑整章；同一段文字+同一组参数重复点会命中进程内缓存，不重复计费。
 - **产物路径**：`projects/<书名>/audiobook/out/<书名>.m4b`，状态在 `audiobook/state.json`。
 
-接口（均为 `/api/audiobook` 前缀）：`GET /status`（含 `queue`：谁在跑、谁在第几位）、`POST /config`、`POST /test`、`GET /chapters`（可带 `voice`/`bitrateKbps`/`chunkChars`，返回每章 `stale`）、`POST /start`（返回 `queued` / `ahead`）、`POST /stop`（运行中=中断，排队中=取消排队）、`GET /task`、`GET /events`（SSE）、`GET /preview?chapterKey=`（单章试听）、`GET /download`、`POST /reset`。
+接口（均为 `/api/audiobook` 前缀）：`GET /status`（含 `queue`：谁在跑、谁在第几位）、`POST /config`、`POST /test`、`POST /sample`（样音试听，返回 `audio/wav`）、`GET /chapters`（可带 `voice`/`bitrateKbps`/`chunkChars`，返回每章 `stale`）、`POST /start`（返回 `queued` / `ahead`）、`POST /stop`（运行中=中断，排队中=取消排队）、`GET /task`、`GET /events`（SSE）、`GET /preview?chapterKey=`（单章试听）、`GET /download`、`POST /reset`。
 
 依赖：需要 `ffmpeg` 与 `ffprobe` 在 PATH 中（`AUDIOBOOK_FFMPEG` 可覆盖）。TTS 请求默认直连，不受主程序全局代理影响；如确需走代理，设置 `MIMO_PROXY=http://host:port`。
 
