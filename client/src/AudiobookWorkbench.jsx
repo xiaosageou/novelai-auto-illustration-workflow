@@ -167,14 +167,18 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
                 status: evt.data.status,
                 durationSec: evt.data.durationSec ?? c.durationSec,
                 bytes: evt.data.bytes ?? c.bytes,
+                skippedChars: evt.data.skippedChars ?? c.skippedChars,
                 error: evt.data.error || '',
               }
               : c)),
           };
         });
         if (evt.data.status === 'done') {
+          const skipNote = evt.data.skippedChars ? ` · 跳过 ${evt.data.skippedChars} 字` : '';
           setLogs((prev) => [...prev.slice(-299), {
-            at: new Date().toISOString(), level: 'success', message: `${evt.data.title} · 完成 ${fmtDuration(evt.data.durationSec)} · ${fmtBytes(evt.data.bytes)}`,
+            at: new Date().toISOString(),
+            level: evt.data.skippedChars ? 'warn' : 'success',
+            message: `${evt.data.title} · 完成 ${fmtDuration(evt.data.durationSec)} · ${fmtBytes(evt.data.bytes)}${skipNote}`,
           }]);
         }
       } else if (evt.type === 'done') {
@@ -589,9 +593,9 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
                     <b>{c.index + 1}. {c.title}</b>
                     <small>{c.charCount.toLocaleString()} 字 · 约 {fmtDuration(c.estDurationSec)}</small>
                   </span>
-                  <span className={`abw-chapter-status ${c.status}`}>
+                  <span className={`abw-chapter-status ${c.status}${c.skippedChars ? ' skipped' : ''}`}>
                     {c.status === 'done'
-                      ? `${fmtDuration(c.durationSec)} · ${fmtBytes(c.bytes)}`
+                      ? `${fmtDuration(c.durationSec)} · ${fmtBytes(c.bytes)}${c.skippedChars ? ` · 跳过 ${c.skippedChars} 字` : ''}`
                       : (c.status === 'error' ? (c.error || STATUS_TEXT.error) : STATUS_TEXT[c.status] || c.status)}
                   </span>
                 </label>

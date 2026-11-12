@@ -300,6 +300,7 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
         status: record.status || 'pending',
         durationSec: record.durationSec || 0,
         bytes: record.bytes || 0,
+        skippedChars: record.skippedChars || 0,
         error: record.error || '',
       };
     });

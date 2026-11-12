@@ -54,13 +54,32 @@ export const PRESET_VOICES = [
 ];
 
 export class TtsError extends Error {
-  constructor(message, { status = 0, retryable = false, cause } = {}) {
+  constructor(message, {
+    status = 0, retryable = false, cause, kind = '', attempts = 0,
+  } = {}) {
     super(message);
     this.name = 'TtsError';
     this.status = status;
     this.retryable = retryable;
     this.cause = cause;
+    /** 错误分类：'no-audio' 表示模型没返回音频（内容审核/空文本），上层可据此拆段重试 */
+    this.kind = kind;
+    /** 该错误单独的重试次数预算，0 表示沿用客户端的 maxAttempts */
+    this.attempts = attempts;
   }
+}
+
+/** 空响应时尽量带上模型的说法，方便判断是审核还是别的问题 */
+function describeEmptyReply(data) {
+  const choice = data?.choices?.[0];
+  const bits = [];
+  const reason = choice?.finish_reason;
+  if (reason) bits.push(`finish_reason=${reason}`);
+  const content = String(choice?.message?.content || '').trim();
+  if (content) bits.push(`模型回复「${content.slice(0, 60)}」`);
+  const refused = choice?.message?.refusal;
+  if (refused) bits.push(`refusal=${String(refused).slice(0, 40)}`);
+  return bits.length ? `；${bits.join('；')}` : '';
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -88,6 +107,8 @@ export class MiMoClient {
 
   /**
    * 合成一段文本。
+   * @param {string} text
+   * @param {{ signal?: AbortSignal, maxAttempts?: number }} [opts]
    * @returns {Promise<{ wav: Buffer, usage: object|null }>}
    */
   async synthesize(text, opts = {}) {
@@ -98,28 +119,39 @@ export class MiMoClient {
       stream: false,
     };
 
+    const maxAttempts = Math.max(1, Number(opts.maxAttempts) || this.maxAttempts);
     let lastError = null;
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       if (opts.signal?.aborted) throw new TtsError('已取消');
       try {
         const data = await this.request(payload, opts.signal);
         const b64 = data?.choices?.[0]?.message?.audio?.data;
         if (!b64) {
-          throw new TtsError('响应中没有音频数据（可能触发内容审核，或文本为空）');
+          // 空响应可能是偶发抽风，也可能是内容审核。
+          // 先按调用方给的次数整块重试（默认 3 次），仍失败再由上层拆小段。
+          throw new TtsError(
+            `响应中没有音频数据（可能因内容审核或文本为空）${describeEmptyReply(data)}`,
+            { kind: 'no-audio', retryable: true },
+          );
         }
         const wav = Buffer.from(b64, 'base64');
-        if (wav.length < 44) throw new TtsError('返回音频数据不完整', { retryable: true });
+        if (wav.length < 44) throw new TtsError('返回音频数据不完整', { retryable: true, kind: 'bad-audio' });
         this.stats.requests += 1;
         this.stats.audioBytes += wav.length;
         return { wav, usage: data.usage || null };
       } catch (err) {
         lastError = err;
         const retryable = err instanceof TtsError ? err.retryable : true;
-        if (!retryable || attempt >= this.maxAttempts) break;
+        const budget = err instanceof TtsError && err.attempts > 0
+          ? Math.min(maxAttempts, err.attempts)
+          : maxAttempts;
+        if (!retryable || attempt >= budget) break;
         if (opts.signal?.aborted) throw new TtsError('已取消');
 
         this.stats.retries += 1;
-        const backoff = Math.min(30000, 800 * (2 ** (attempt - 1)));
+        const backoff = err?.kind === 'no-audio'
+          ? Math.min(4000, 600 * (2 ** (attempt - 1)))
+          : Math.min(30000, 800 * (2 ** (attempt - 1)));
         const wait = Math.round(backoff * (err.status === 429 ? 2.2 : 1) * (0.7 + Math.random() * 0.6));
         this.log(`合成失败（第 ${attempt} 次）：${err.message}，${(wait / 1000).toFixed(1)}s 后重试`, 'warn');
         await sleep(wait);

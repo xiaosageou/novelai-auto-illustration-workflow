@@ -16,7 +16,7 @@ import { promises as fs } from 'node:fs';
 
 import { chunkText, estimateDurationSec } from './text.js';
 import {
-  parseWav, extractPcm, WavStreamWriter, removeTree,
+  parseWav, extractPcm, buildHeader, WavStreamWriter, removeTree,
 } from './wav.js';
 import { MiMoClient } from './mimo.js';
 import {
@@ -53,6 +53,94 @@ async function convertChunkToPcm(srcPath, dstPath) {
     child.on('error', reject);
     child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`块转码失败：${code}`))));
   });
+}
+
+/**
+ * 「模型没念出来」的错误才值得拆小重试：内容审核对长段落命中率高，
+ * 拆到句子级往往能过。网络 / 限流 / 鉴权类错误不拆，直接让章节失败重跑。
+ */
+const SPLITTABLE_KINDS = new Set(['no-audio', 'bad-audio']);
+/** 递归拆段层数：默认 1600 字的块最细能拆到约 200 字，跳过损失可控 */
+const MAX_SPLIT_DEPTH = 3;
+const MIN_SPLIT_CHARS = 60;
+/** 一章里被跳过字数超过这个比例，就判定该章不可用 */
+const MAX_SKIP_RATIO = 0.35;
+const SENTENCE_BOUNDARY = '。！？；…!?;.\n';
+
+/** 就近找句末标点，把文本切成两半；切不动（太短）返回 null */
+function splitForRetry(text) {
+  const mid = Math.floor(text.length / 2);
+  let cut = -1;
+  for (let d = 0; d < 200 && cut < 0; d += 1) {
+    if (SENTENCE_BOUNDARY.includes(text[mid + d])) cut = mid + d + 1;
+    else if (SENTENCE_BOUNDARY.includes(text[mid - d])) cut = mid - d + 1;
+  }
+  if (cut < 0) cut = mid;
+  const head = text.slice(0, cut).trim();
+  const tail = text.slice(cut).trim();
+  if (head.length < MIN_SPLIT_CHARS || tail.length < MIN_SPLIT_CHARS) return null;
+  return [head, tail];
+}
+
+/** 把同格式的多段 PCM 拼成一个 WAV（分段重试的产物要先合回一个块文件） */
+function mergeWavs(buffers) {
+  if (buffers.length === 1) return buffers[0];
+  const base = parseWav(buffers[0]);
+  for (const buf of buffers) {
+    const info = parseWav(buf);
+    if (info.sampleRate !== base.sampleRate
+      || info.channels !== base.channels
+      || info.bitsPerSample !== base.bitsPerSample) {
+      throw new Error('分段音频格式不一致，无法拼接');
+    }
+  }
+  const pcm = Buffer.concat(buffers.map((buf) => extractPcm(buf).pcm));
+  return Buffer.concat([
+    buildHeader({
+      sampleRate: base.sampleRate,
+      channels: base.channels,
+      bitsPerSample: base.bitsPerSample,
+      dataBytes: pcm.length,
+    }),
+    pcm,
+  ]);
+}
+
+/**
+ * 合成一块文本；若触发内容审核（空响应），按句拆成更小的段递归重试。
+ * @returns {Promise<{ wav: Buffer|null, skipped: Array<{text:string, error:string}> }>}
+ *   wav 为 null 表示这一整块都没法合成（由调用方决定跳过还是放弃整章）
+ */
+async function synthesizeWithFallback(client, text, {
+  signal, log, label, depth = 0,
+}) {
+  // 整块先重试 3 次（偶发空响应能救回来），仍失败才拆小段；拆开后的段给 2 次
+  const maxAttempts = depth === 0 ? 3 : 2;
+  try {
+    const { wav } = await client.synthesize(text, { signal, maxAttempts });
+    return { wav, skipped: [] };
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    if (!SPLITTABLE_KINDS.has(err?.kind)) throw err;
+
+    const halves = depth >= MAX_SPLIT_DEPTH || text.length < MIN_SPLIT_CHARS * 2
+      ? null
+      : splitForRetry(text);
+    if (!halves) return { wav: null, skipped: [{ text, error: String(err?.message || err) }] };
+
+    log(`${label} 未返回音频（${err.message}），拆成 ${halves.length} 段各 ${halves.map((h) => h.length).join('/')} 字重试`, 'warn');
+    const parts = [];
+    const skipped = [];
+    for (const half of halves) {
+      const sub = await synthesizeWithFallback(client, half, {
+        signal, log, label, depth: depth + 1,
+      });
+      if (sub.wav) parts.push(sub.wav);
+      skipped.push(...sub.skipped);
+    }
+    if (!parts.length) return { wav: null, skipped };
+    return { wav: mergeWavs(parts), skipped };
+  }
 }
 
 /**
@@ -175,6 +263,10 @@ export async function runAudiobookPipeline(opts) {
       failed: false,
       assemblyQueued: false,
       bytes: 0,
+      /** 内容审核导致整块无法合成、被跳过的块下标 */
+      skippedIndexes: new Set(),
+      /** 被跳过的字数（含块内部分跳过的段） */
+      skippedChars: 0,
     };
     plans.push(plan);
     totalChunks += chunks.length;
@@ -231,15 +323,21 @@ export async function runAudiobookPipeline(opts) {
       const workDir = path.join(paths.workDir, partIdFor(chapter.key));
       const chapterWav = path.join(workDir, '_chapter.wav');
 
-      // 校验块文件齐全
+      // 校验块文件齐全（被判定跳过的块除外）
       const chunkFiles = [];
       for (let ci = 0; ci < plan.chunks.length; ci += 1) {
         const file = path.join(workDir, `c_${String(ci).padStart(4, '0')}.wav`);
         if (!(await fs.stat(file).catch(() => null))?.size) {
+          if (plan.skippedIndexes.has(ci)) continue;
           throw new Error(`缺少第 ${ci + 1}/${plan.chunks.length} 个音频块`);
         }
         chunkFiles.push(file);
       }
+      const chapterChars = plan.chunks.reduce((s, c) => s + c.length, 0);
+      if (plan.skippedChars > 0 && plan.skippedChars > chapterChars * MAX_SKIP_RATIO) {
+        throw new Error(`本章有 ${plan.skippedChars}/${chapterChars} 字未能合成（多因内容审核），跳过比例过高，已放弃该章`);
+      }
+      if (!chunkFiles.length) throw new Error('该章所有音频块都缺失（多因内容审核），无法编码');
 
       const firstBuf = await fs.readFile(chunkFiles[0]);
       const firstInfo = parseWav(firstBuf);
@@ -304,6 +402,7 @@ export async function runAudiobookPipeline(opts) {
         durationSec,
         bytes,
         chunks: plan.chunks.length,
+        skippedChars: plan.skippedChars,
         signature: settingsSignature(settings),
         createdAt: new Date().toISOString(),
       });
@@ -321,15 +420,17 @@ export async function runAudiobookPipeline(opts) {
         durationSec,
         bytes,
         error: '',
+        skippedChars: plan.skippedChars,
         partId: partIdFor(chapter.key),
         signature: settingsSignature(settings),
         updatedAt: new Date().toISOString(),
       };
       await writeState(projectPath, state);
 
-      log(`第 ${chapter.index + 1} 章完成 · ${plan.chunks.length} 块 · ${Math.round(durationSec)}s · ${(bytes / 1048576).toFixed(2)} MB`, 'success');
+      const skipNote = plan.skippedChars > 0 ? ` · 跳过 ${plan.skippedChars} 字` : '';
+      log(`第 ${chapter.index + 1} 章完成 · ${plan.chunks.length} 块 · ${Math.round(durationSec)}s · ${(bytes / 1048576).toFixed(2)} MB${skipNote}`, 'success');
       emit({ type: 'chapter', data: {
-        key: chapter.key, title: chapter.title, status: 'done', durationSec, bytes,
+        key: chapter.key, title: chapter.title, status: 'done', durationSec, bytes, skippedChars: plan.skippedChars,
       } });
       emitProgress({}, true);
     }).catch(async (err) => {
@@ -354,13 +455,13 @@ export async function runAudiobookPipeline(opts) {
   let cursor = 0;
   let aborted = false;
 
-  const worker = async () => {
+  const worker = async (list) => {
     while (!aborted) {
       if (signal?.aborted) { aborted = true; return; }
       const idx = cursor;
       cursor += 1;
-      if (idx >= tasks.length) return;
-      const { plan, chapter, ci, text } = tasks[idx];
+      if (idx >= list.length) return;
+      const { plan, chapter, ci, text } = list[idx];
 
       if (plan.failed) {
         processedTasks += 1;
@@ -388,7 +489,34 @@ export async function runAudiobookPipeline(opts) {
       }
 
       try {
-        const { wav } = await client.synthesize(text, { signal });
+        const { wav, skipped } = await synthesizeWithFallback(client, text, {
+          signal,
+          log,
+          label: `第 ${chapter.index + 1} 章第 ${ci + 1} 块`,
+        });
+
+        if (!wav) {
+          // 整块都没念出来：跳过它让本章继续，最后按比例判定本章是否放弃
+          plan.skippedIndexes.add(ci);
+          plan.skippedChars += text.length;
+          const reason = skipped[0]?.error || '未知原因';
+          log(`第 ${chapter.index + 1} 章第 ${ci + 1} 块跳过 ${text.length} 字：${reason}`, 'warn');
+          processedTasks += 1;
+          doneChunks += 1;
+          plan.remaining -= 1;
+          if (plan.remaining === 0) queueAssembly(plan);
+          emitProgress({ stage: `ch${chapter.index + 1}` });
+          continue;
+        }
+
+        if (skipped.length) {
+          const chars = skipped.reduce((s, x) => s + x.text.length, 0);
+          plan.skippedChars += chars;
+          for (const part of skipped) {
+            log(`第 ${chapter.index + 1} 章有 ${part.text.length} 字未能合成（${part.error}），已跳过`, 'warn');
+          }
+        }
+
         parseWav(wav); // 早失败：返回的不是合法 WAV
         await fs.writeFile(target, wav);
         processedTasks += 1;
@@ -418,9 +546,47 @@ export async function runAudiobookPipeline(opts) {
     }
   };
 
-  const workerCount = Math.min(settings.concurrency, Math.max(tasks.length, 1));
-  await Promise.all(Array.from({ length: workerCount }, worker));
+  const runTasks = async (list) => {
+    cursor = 0;
+    const workerCount = Math.min(settings.concurrency, Math.max(list.length, 1));
+    await Promise.all(Array.from({ length: workerCount }, () => worker(list)));
+  };
+
+  await runTasks(tasks);
   await assembleChain;
+
+  /* ── 3b. 失败章节自动补跑一轮：已合成的块直接复用，只补缺的块 ── */
+  if (!signal?.aborted && !aborted) {
+    failedChapters = plans.filter((p) => p.failed).length;
+    if (failedChapters > 0) {
+      const retryTasks = [];
+      for (const plan of plans) {
+        if (!plan.failed) continue;
+        const workDir = path.join(paths.workDir, partIdFor(plan.chapter.key));
+        const missing = [];
+        for (let ci = 0; ci < plan.chunks.length; ci += 1) {
+          if (plan.skippedIndexes.has(ci)) continue;
+          const file = path.join(workDir, `c_${String(ci).padStart(4, '0')}.wav`);
+          if (!(await fs.stat(file).catch(() => null))?.size) missing.push(ci);
+        }
+        if (!missing.length) continue;
+        plan.failed = false;
+        plan.assemblyQueued = false;
+        plan.remaining = missing.length;
+        log(`第 ${plan.chapter.index + 1} 章自动补跑：补 ${missing.length} 块（已完成的块直接复用）`, 'warn');
+        for (const ci of missing) {
+          retryTasks.push({ plan, chapter: plan.chapter, ci, text: plan.chunks[ci] });
+        }
+      }
+
+      if (retryTasks.length) {
+        await sleep(1500);
+        await runTasks(retryTasks);
+        await assembleChain;
+      }
+      failedChapters = plans.filter((p) => p.failed).length;
+    }
+  }
 
   if (signal?.aborted || aborted) {
     state.status = 'stopped';

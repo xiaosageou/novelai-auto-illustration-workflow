@@ -490,6 +490,11 @@
   border-color: rgba(239, 68, 68, 0.35);
   background: rgba(239, 68, 68, 0.1);
 }
+.abw-chapter-status.skipped {
+  color: #fcd34d;
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.1);
+}
 
 .abw-placeholder {
   display: flex;
