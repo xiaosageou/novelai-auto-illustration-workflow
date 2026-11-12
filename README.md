@@ -177,6 +177,10 @@ docker compose -f docker-compose.release.yml up -d
 - **架构**：Alpine 仓库在 x86_64 / aarch64 都有 ffmpeg 包，本地 `--build` 可用；但 GitHub Actions 目前只构建 amd64 镜像，ARM 群晖/威联通请本地构建，或给 workflow 的 build-push-action 加 `platforms: linux/amd64,linux/arm64`。
 - **构建上下文**：仓库里已加 `.dockerignore`，`projects/`、`data/`、`logs/`、`docs/` 不会被打进构建上下文，NAS 上 `--build` 不会因为几百 GB 小说和插图而卡住。
 
+## 小工具
+
+- **NAI 生图电量查询**：`tools/nai-balance/index.html`，单文件、零依赖，**双击用浏览器打开**即可。填入 NovelAI 的 `pst-…` 持久化令牌，显示 Anlas 余额（本期额度 + 已购买）、订阅档位与到期倒计时、本期剩余比例、优先队列上限。页面直接从浏览器请求 `image.novelai.net/user/data`（该接口允许跨域），令牌只存本机 localStorage，不经过任何后端。详见 `tools/nai-balance/README.md`。
+
 ## 常用命令
 
 ```powershell
