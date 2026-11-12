@@ -496,6 +496,123 @@
   background: rgba(245, 158, 11, 0.1);
 }
 
+/* ── 试听 / 单章重生成 ── */
+.abw-chapter-item { display: flex; flex-direction: column; }
+
+.abw-chapter.is-stale { border-color: rgba(245, 158, 11, 0.28); background: rgba(245, 158, 11, 0.05); }
+
+.abw-badge-stale {
+  flex: 0 0 auto;
+  font-size: 0.66rem;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.12);
+  white-space: nowrap;
+}
+
+.abw-chapter-tools { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+
+.abw-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  flex: 0 0 auto;
+}
+
+.abw-tool-btn:hover { color: var(--text-primary); border-color: var(--border-focus); background: rgba(168, 85, 247, 0.14); }
+.abw-tool-btn.active { color: #c4b5fd; border-color: rgba(168, 85, 247, 0.55); background: rgba(168, 85, 247, 0.2); }
+.abw-tool-btn:disabled { opacity: 0.4; cursor: default; }
+.abw-tool-btn:disabled:hover { color: var(--text-secondary); border-color: var(--border-light); background: rgba(255, 255, 255, 0.04); }
+
+.abw-player {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 8px 30px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid rgba(168, 85, 247, 0.24);
+  background: rgba(168, 85, 247, 0.07);
+}
+
+.abw-player audio {
+  width: 100%;
+  height: 34px;
+  filter: invert(0.92) hue-rotate(180deg);
+}
+
+.abw-player-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.abw-player-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 8px 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 0.74rem;
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+}
+
+/* 换音色后：已完成章节与当前参数不一致 */
+.abw-stale {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 8px 0;
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: rgba(245, 158, 11, 0.08);
+  font-size: 0.76rem;
+  color: #fde68a;
+  flex-wrap: wrap;
+}
+
+.abw-stale > svg { flex: 0 0 auto; }
+.abw-stale > span { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 180px; }
+.abw-stale b { color: #fbbf24; }
+.abw-stale small { font-size: 0.68rem; color: rgba(253, 230, 138, 0.7); }
+
+.abw-stale button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.16);
+  color: #fde68a;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.abw-stale button:hover { background: rgba(245, 158, 11, 0.26); }
+.abw-stale button:disabled { opacity: 0.45; cursor: default; }
+
 .abw-placeholder {
   display: flex;
   align-items: center;

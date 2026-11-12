@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Headphones, Play, Square, Download, RefreshCw, KeyRound, Save, Trash2,
+  Headphones, Play, Pause, Square, Download, RefreshCw, KeyRound, Save, Trash2,
   AlertTriangle, CheckCircle2, Loader2, Gauge, Volume2, FileAudio, ChevronDown,
-  ChevronRight, Zap, Clock, HardDrive,
+  ChevronRight, Zap, Clock, HardDrive, RotateCcw,
 } from 'lucide-react';
 import './AudiobookWorkbench.css';
 
@@ -78,8 +78,18 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
   const [logs, setLogs] = useState([]);
   const [logOpen, setLogOpen] = useState(true);
 
+  /* 试听：同一时刻只展开一章；token 用于章节重生后强制播放器重新拉流 */
+  const [previewKey, setPreviewKey] = useState(null);
+  const [previewToken, setPreviewToken] = useState({});
+  const [audioError, setAudioError] = useState('');
+
   const esRef = useRef(null);
   const logBoxRef = useRef(null);
+  const settingsRef = useRef(settings);
+  /** 首次加载用服务端保存的参数，之后才用页面上的值，避免把已保存音色又推回默认值 */
+  const hydratedRef = useRef(false);
+
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
 
   // 全局串行：队列里等着的也算「占着任务」，只是没在跑
   const busy = Boolean(task && ['running', 'queued', 'stopping'].includes(task.status));
@@ -99,19 +109,30 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
     setLoading(true);
     setError('');
     try {
-      const r = await fetch(`${apiBase}/api/audiobook/chapters?projectName=${encodeURIComponent(projectName)}`);
+      const q = new URLSearchParams({ projectName });
+      if (hydratedRef.current) {
+        const s = settingsRef.current;
+        q.set('voice', s.voice);
+        q.set('bitrateKbps', String(s.bitrateKbps));
+        q.set('chunkChars', String(s.chunkChars));
+      }
+      const r = await fetch(`${apiBase}/api/audiobook/chapters?${q}`);
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || '读取章节失败');
       setData(j);
-      if (j.settings) setSettings((prev) => ({ ...prev, ...j.settings }));
+      if (!hydratedRef.current) {
+        if (j.settings) setSettings((prev) => ({ ...prev, ...j.settings }));
+        hydratedRef.current = true;
+      }
       setSelected((prev) => {
-        // 首次进入默认勾选「还没完成」的章节；已有勾选则保留仍存在的项
+        // 默认勾选「还没生成」和「音色已换、需要重生成」的章节；已有勾选则保留仍存在的项
+        const needsWork = (c) => c.status !== 'done' || c.stale;
         if (prev.size === 0) {
-          return new Set(j.chapters.filter((c) => c.status !== 'done').map((c) => c.key));
+          return new Set(j.chapters.filter(needsWork).map((c) => c.key));
         }
         const alive = new Set(j.chapters.map((c) => c.key));
         const kept = [...prev].filter((k) => alive.has(k));
-        return kept.length ? new Set(kept) : new Set(j.chapters.filter((c) => c.status !== 'done').map((c) => c.key));
+        return kept.length ? new Set(kept) : new Set(j.chapters.filter(needsWork).map((c) => c.key));
       });
       if (j.task) {
         setTask(j.task);
@@ -124,14 +145,22 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
     }
   }, [apiBase, projectName]);
 
+  // 组件按书名做了 key，切书会整体重挂载，这里只负责首次加载
   useEffect(() => {
-    setData(null);
-    setTask(null);
-    setLogs([]);
-    setSelected(new Set());
     void loadStatus();
     void loadChapters();
-  }, [projectName, loadStatus, loadChapters]);
+  }, [loadStatus, loadChapters]);
+
+  /* ── 音色/码率/分块变了，重算「哪些章节需要重新生成」 ── */
+  const sigKey = `${settings.voice}|${settings.bitrateKbps}|${settings.chunkChars}|24000`;
+  useEffect(() => {
+    if (!data || !projectName || !hydratedRef.current) return undefined;
+    // 输入框正在输数字（超出 400-2400）时别急着重新拉，服务端会 clamp 成另一个值
+    if (!(settings.chunkChars >= 400 && settings.chunkChars <= 2400)) return undefined;
+    if (data.expectedSignature === sigKey) return undefined;
+    const timer = setTimeout(() => { void loadChapters(); }, 350);
+    return () => clearTimeout(timer);
+  }, [sigKey, data, projectName, loadChapters, settings.chunkChars]);
 
   /* ── SSE 实时进度 ── */
   useEffect(() => {
@@ -169,11 +198,15 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
                 bytes: evt.data.bytes ?? c.bytes,
                 skippedChars: evt.data.skippedChars ?? c.skippedChars,
                 error: evt.data.error || '',
+                // 刚合成完的章节一定用的是当前参数
+                ...(evt.data.status === 'done' ? { stale: false, voice: settingsRef.current.voice } : {}),
               }
               : c)),
           };
         });
         if (evt.data.status === 'done') {
+          // 这一章刚重新合成完，正在试听的话让播放器重新拉流
+          setPreviewToken((prev) => ({ ...prev, [evt.data.key]: (prev[evt.data.key] || 0) + 1 }));
           const skipNote = evt.data.skippedChars ? ` · 跳过 ${evt.data.skippedChars} 字` : '';
           setLogs((prev) => [...prev.slice(-299), {
             at: new Date().toISOString(),
@@ -247,10 +280,11 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
   }
 
   /* ── 开始 / 停止 / 清理 ── */
-  async function start() {
+  async function start(override) {
     if (!data) return;
-    const keys = [...selected];
+    const keys = override?.chapterKeys?.length ? override.chapterKeys : [...selected];
     if (!keys.length) { setError('请至少勾选一个章节'); return; }
+    const runForce = override?.force ?? force;
     setError('');
     setNotice('');
     setLogs([]);
@@ -262,21 +296,43 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
           projectName,
           chapterKeys: keys,
           settings,
-          force,
+          force: runForce,
         }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || '启动失败');
+      const voiceNote = runForce ? ` · 音色 ${settings.voice}` : '';
       if (j.queued) {
         setTask({ taskId: j.taskId, status: 'queued', percent: 0, queueAhead: j.ahead, queuePosition: j.position });
-        setNotice(`已排队 · ${keys.length} 章 · 前面还有 ${j.ahead} 本`);
+        setNotice(`已排队 · ${keys.length} 章${voiceNote} · 前面还有 ${j.ahead} 本`);
       } else {
         setTask({ taskId: j.taskId, status: 'running', percent: 0 });
-        setNotice(`已启动 · ${keys.length} 章 · 并发 ${settings.concurrency}`);
+        setNotice(`已启动 · ${keys.length} 章${voiceNote} · 并发 ${settings.concurrency}`);
       }
     } catch (err) {
       setError(err.message);
     }
+  }
+
+  /** 用当前音色重生成一章 */
+  async function regenerate(chapter) {
+    if (busy) return;
+    const ok = window.confirm(
+      `用「${settings.voice}」重新生成第 ${chapter.index + 1} 章？\n\n旧的音频会被覆盖，已生成的 m4b 会在下次完成后重新封装。`,
+    );
+    if (!ok) return;
+    await start({ chapterKeys: [chapter.key], force: true });
+  }
+
+  /** 音色换过之后，一键把不一致的章节全部重生成 */
+  async function regenerateStale() {
+    const keys = chapters.filter((c) => c.stale).map((c) => c.key);
+    if (!keys.length || busy) return;
+    const ok = window.confirm(
+      `用「${settings.voice}」重新生成 ${keys.length} 章？\n\n这些章节已生成的音频是别的音色/码率合成的，需要重新合成才能和其余部分统一。`,
+    );
+    if (!ok) return;
+    await start({ chapterKeys: keys, force: true });
   }
 
   async function stop() {
@@ -314,6 +370,7 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
   /* ── 派生数据 ── */
   const chapters = data?.chapters || [];
   const doneCount = chapters.filter((c) => c.status === 'done').length;
+  const staleChapters = chapters.filter((c) => c.stale);
   const selectedChapters = useMemo(() => chapters.filter((c) => selected.has(c.key)), [chapters, selected]);
   const selEstSec = selectedChapters.reduce((s, c) => s + c.estDurationSec, 0);
   const estBytes = Math.round((selEstSec * settings.bitrateKbps * 1000) / 8);
@@ -335,6 +392,20 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
 
   function toggleAll() {
     setSelected((prev) => (prev.size === chapters.length ? new Set() : new Set(chapters.map((c) => c.key))));
+  }
+
+  function previewUrl(key) {
+    const q = new URLSearchParams({
+      projectName,
+      chapterKey: key,
+      t: String(previewToken[key] || 0),
+    });
+    return `${apiBase}/api/audiobook/preview?${q}`;
+  }
+
+  function togglePreview(key) {
+    setAudioError('');
+    setPreviewKey((prev) => (prev === key ? null : key));
   }
 
   if (!projectName) {
@@ -545,7 +616,7 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
                     {queued ? <><Clock size={14} /> 取消排队</> : <><Square size={14} /> 停止</>}
                   </button>
                 ) : (
-                  <button className="abw-btn primary" type="button" onClick={start} disabled={!hasKey || !ffmpegOk || !selected.size}>
+                  <button className="abw-btn primary" type="button" onClick={() => start()} disabled={!hasKey || !ffmpegOk || !selected.size}>
                     <Play size={14} /> 开始合成
                   </button>
                 )}
@@ -583,22 +654,90 @@ export default function AudiobookWorkbench({ apiBase, projectName, projects = []
               </label>
               <span>{selected.size} 章已选 · 预计 {fmtBytes(estBytes)}</span>
             </div>
+
+            {staleChapters.length > 0 && (
+              <div className="abw-stale">
+                <AlertTriangle size={14} />
+                <span>
+                  当前音色 <b>{settings.voice}</b> 与 {staleChapters.length} 章已生成的音频不一致
+                  <small>直接开始合成会自动重生成这些章节，也可以只重生成它们。</small>
+                </span>
+                <button type="button" onClick={regenerateStale} disabled={busy || !hasKey || !ffmpegOk}>
+                  <RotateCcw size={13} /> 重生成这 {staleChapters.length} 章
+                </button>
+              </div>
+            )}
+
+            {audioError && <div className="abw-player-error"><AlertTriangle size={13} /> {audioError}</div>}
+
             <div className="abw-chapter-list">
               {loading && !chapters.length && <div className="abw-placeholder"><Loader2 size={16} className="spin" /> 正在读取章节…</div>}
               {!loading && !chapters.length && <div className="abw-placeholder">这本书还没有可读章节。</div>}
               {chapters.map((c) => (
-                <label key={c.key} className={`abw-chapter ${selected.has(c.key) ? 'checked' : ''} ${c.status}`}>
-                  <input type="checkbox" checked={selected.has(c.key)} onChange={() => toggle(c.key)} />
-                  <span className="abw-chapter-title">
-                    <b>{c.index + 1}. {c.title}</b>
-                    <small>{c.charCount.toLocaleString()} 字 · 约 {fmtDuration(c.estDurationSec)}</small>
-                  </span>
-                  <span className={`abw-chapter-status ${c.status}${c.skippedChars ? ' skipped' : ''}`}>
-                    {c.status === 'done'
-                      ? `${fmtDuration(c.durationSec)} · ${fmtBytes(c.bytes)}${c.skippedChars ? ` · 跳过 ${c.skippedChars} 字` : ''}`
-                      : (c.status === 'error' ? (c.error || STATUS_TEXT.error) : STATUS_TEXT[c.status] || c.status)}
-                  </span>
-                </label>
+                <div key={c.key} className="abw-chapter-item">
+                  <div
+                    className={`abw-chapter ${selected.has(c.key) ? 'checked' : ''} ${c.status}${c.stale ? ' is-stale' : ''}`}
+                    onClick={() => toggle(c.key)}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(c.key)}
+                      onChange={() => toggle(c.key)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <span className="abw-chapter-title">
+                      <b>{c.index + 1}. {c.title}</b>
+                      <small>
+                        {c.charCount.toLocaleString()} 字 · 约 {fmtDuration(c.estDurationSec)}
+                        {c.stale ? ` · 现为「${c.voice || '旧音色'}」` : ''}
+                      </small>
+                    </span>
+                    {c.stale && <span className="abw-badge-stale" title="音频参数与当前设置不一致">待重生成</span>}
+                    <span className={`abw-chapter-status ${c.status}${c.skippedChars ? ' skipped' : ''}`}>
+                      {c.status === 'done'
+                        ? `${fmtDuration(c.durationSec)} · ${fmtBytes(c.bytes)}${c.skippedChars ? ` · 跳过 ${c.skippedChars} 字` : ''}`
+                        : (c.status === 'error' ? (c.error || STATUS_TEXT.error) : STATUS_TEXT[c.status] || c.status)}
+                    </span>
+                    {c.status === 'done' && (
+                      <span className="abw-chapter-tools">
+                        <button
+                          type="button"
+                          className={`abw-tool-btn${previewKey === c.key ? ' active' : ''}`}
+                          title={previewKey === c.key ? '收起试听' : '在线试听这一章'}
+                          onClick={(e) => { e.stopPropagation(); togglePreview(c.key); }}
+                        >
+                          {previewKey === c.key ? <Pause size={13} /> : <Play size={13} />}
+                        </button>
+                        <button
+                          type="button"
+                          className="abw-tool-btn"
+                          title={`用「${settings.voice}」重新生成这一章`}
+                          disabled={busy || !hasKey || !ffmpegOk}
+                          onClick={(e) => { e.stopPropagation(); void regenerate(c); }}
+                        >
+                          <RotateCcw size={13} />
+                        </button>
+                      </span>
+                    )}
+                  </div>
+
+                  {previewKey === c.key && (
+                    <div className="abw-player">
+                      <audio
+                        key={`${c.key}-${previewToken[c.key] || 0}`}
+                        controls
+                        autoPlay
+                        preload="metadata"
+                        src={previewUrl(c.key)}
+                        onError={() => setAudioError(`第 ${c.index + 1} 章试听加载失败，可能音频片段已损坏，可重新生成该章后再试。`)}
+                      />
+                      <div className="abw-player-meta">
+                        <span>试听 · {c.title}</span>
+                        <span>{c.stale ? `当前音频是「${c.voice || '旧音色'}」，重生成后自动替换` : `音色「${c.voice || settings.voice}」`}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           </div>

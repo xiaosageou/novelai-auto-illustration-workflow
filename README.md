@@ -143,13 +143,15 @@ node scripts/compress-images.mjs --keep-original    # 保留原 PNG 只出 WebP
 
 - **前端可配置**：MiMo API Key（保存到根目录 `.env` 的 `MIMO_API_KEY`，页面只显示掩码）、并发数（1–16）、音色、AAC 码率、每块字数、块间/章间停顿、风格指令。
 - **压缩**：TTS 返回的 24kHz/16bit 单声道 WAV 是 384 kbps，逐章转成 AAC 后体积约为原来 **1/8**（默认 48 kbps ≈ 22 MB/小时），中间 WAV 编码完立即删除，磁盘只留分章 AAC。
-- **只产出 m4b**：分章 AAC 单遍流式封装为 `.m4b`，写入章节标记、书名/作者/演播者元数据和 `faststart`；章节时间轴按 AAC 帧数计算，避免累加漂移。
+- **只产出 m4b**：分章 AAC 单遍流式封装为 `.m4b`，写入章节标记、书名/作者/演播者元数据和 `faststart`；章节时间轴按 AAC 帧数计算，避免累加漂移。唯一的分支产物是试听用的 m4a 副本（同码流转封装，体积与原 AAC 基本一致，随时可删，`POST /reset` 会一并清掉）。
 - **并发与续跑**：本书内块级任务池并发吃满配置的并发数；已完成的章节落地为 `parts/<hash>.aac`，重启后自动跳过，中断在半章也能复用已合成的块。
 - **失败自动重试**：网络错误 / 5xx 指数退避重试；模型返回空音频（多为内容审核）先整块重试 3 次，仍失败则按句拆成更小的段递归重试（最多 3 层）。个别句子确实无法合成时跳过并记为「跳过 N 字」，只有跳过比例超过 35% 才判定该章失败；运行结束若有章节失败，会自动再补跑一轮（已合成的块直接复用）。
 - **全局单任务队列**：同一时刻只跑一本书。在另一本书上点开始不会并行开跑，而是进入全局 FIFO 队列，页面显示「排队中 · 前面还有 N 本 · 正在合成《某书》」，轮到后自动开始（可以切走做别的事）；排队中可随时「取消排队」，后面的书位置自动前移。多书并行会让 MiMo 的 429 互相放大、ETA 一起失真，NAS 上还会几个 ffmpeg 同时收尾抢 CPU，所以选择排队而不是并行。
+- **单章在线试听**：每个已完成章节行有 ▶ 按钮，点开就在原位展开播放器（`GET /preview` 把分章 AAC 转封装成带 `faststart` 的 m4a 再流式返回，支持 Range，可拖动进度条）。试听副本缓存在 `audiobook/preview/<hash>.m4a`，章节重生成后按 mtime 自动失效重建。
+- **换音色重生成**：音色/码率/每块字数参与「参数签名」，页面一改音色就重新拉章节清单并标出「待重生成」，顶部横幅可一键只重生成这批章节，也可以用章节行的 ⟳ 单独重做某一章。重生成会丢弃该章上次残留的块 WAV（`work/<hash>/_settings.txt` 记签名），不会出现新旧音色混读。
 - **产物路径**：`projects/<书名>/audiobook/out/<书名>.m4b`，状态在 `audiobook/state.json`。
 
-接口（均为 `/api/audiobook` 前缀）：`GET /status`（含 `queue`：谁在跑、谁在第几位）、`POST /config`、`POST /test`、`GET /chapters`、`POST /start`（返回 `queued` / `ahead`）、`POST /stop`（运行中=中断，排队中=取消排队）、`GET /task`、`GET /events`（SSE）、`GET /download`、`POST /reset`。
+接口（均为 `/api/audiobook` 前缀）：`GET /status`（含 `queue`：谁在跑、谁在第几位）、`POST /config`、`POST /test`、`GET /chapters`（可带 `voice`/`bitrateKbps`/`chunkChars`，返回每章 `stale`）、`POST /start`（返回 `queued` / `ahead`）、`POST /stop`（运行中=中断，排队中=取消排队）、`GET /task`、`GET /events`（SSE）、`GET /preview?chapterKey=`（单章试听）、`GET /download`、`POST /reset`。
 
 依赖：需要 `ffmpeg` 与 `ffprobe` 在 PATH 中（`AUDIOBOOK_FFMPEG` 可覆盖）。TTS 请求默认直连，不受主程序全局代理影响；如确需走代理，设置 `MIMO_PROXY=http://host:port`。
 

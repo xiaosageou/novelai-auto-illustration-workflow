@@ -41,6 +41,35 @@ export class AudiobookError extends Error {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 章工作目录的参数印记。
+ *
+ * 块级断点续跑只看 work/<partId>/c_0001.wav 是否存在——如果用户中途换了音色再点开始，
+ * 旧音色的块会被当成「已完成」混进新章节里，听起来像两个人轮流念。
+ * 所以每个工作目录落一个签名文件：签名变了就整目录丢掉重来。
+ */
+const WORK_SIG_FILE = '_settings.txt';
+const workDirPending = new Map();
+
+async function prepareWorkDir(workDir, signature) {
+  const pending = workDirPending.get(workDir);
+  if (pending) return pending;
+
+  const job = (async () => {
+    const sigFile = path.join(workDir, WORK_SIG_FILE);
+    const prev = await fs.readFile(sigFile, 'utf8').catch(() => null);
+    if (prev !== null && prev.trim() !== signature) removeTree(workDir);
+    await fs.mkdir(workDir, { recursive: true });
+    if (prev === null || prev.trim() !== signature) {
+      await fs.writeFile(sigFile, signature, 'utf8').catch(() => {});
+    }
+    return workDir;
+  })().finally(() => workDirPending.delete(workDir));
+
+  workDirPending.set(workDir, job);
+  return job;
+}
+
 /** 把非目标格式的块转成 24k/16bit/单声道 PCM（极少发生，仅作兜底） */
 async function convertChunkToPcm(srcPath, dstPath) {
   const { spawn } = await import('node:child_process');
@@ -165,6 +194,7 @@ export async function runAudiobookPipeline(opts) {
   } = opts;
 
   const settings = normalizeSettings(opts.settings);
+  const signature = settingsSignature(settings);
   const paths = audiobookPaths(projectPath);
   await fs.mkdir(paths.partsDir, { recursive: true });
   await fs.mkdir(paths.workDir, { recursive: true });
@@ -403,7 +433,7 @@ export async function runAudiobookPipeline(opts) {
         bytes,
         chunks: plan.chunks.length,
         skippedChars: plan.skippedChars,
-        signature: settingsSignature(settings),
+        signature,
         createdAt: new Date().toISOString(),
       });
 
@@ -422,7 +452,7 @@ export async function runAudiobookPipeline(opts) {
         error: '',
         skippedChars: plan.skippedChars,
         partId: partIdFor(chapter.key),
-        signature: settingsSignature(settings),
+        signature,
         updatedAt: new Date().toISOString(),
       };
       await writeState(projectPath, state);
@@ -470,7 +500,7 @@ export async function runAudiobookPipeline(opts) {
 
       const workDir = path.join(paths.workDir, partIdFor(chapter.key));
       const target = path.join(workDir, `c_${String(ci).padStart(4, '0')}.wav`);
-      await fs.mkdir(workDir, { recursive: true });
+      await prepareWorkDir(workDir, signature);
 
       // 块级续跑
       if (!force) {
@@ -608,18 +638,34 @@ export async function runAudiobookPipeline(opts) {
   emitProgress({ stage: 'packing', percent: 99 }, true);
   log('章节音频已就绪，开始封装 m4b…');
 
-  const ordered = chapters
-    .map((c) => ({ chapter: c, record: state.chapters[c.key] }))
-    .filter(({ record }) => record?.status === 'done')
-    .sort((a, b) => a.chapter.index - b.chapter.index);
+  // 打包用的是「全书所有已完成的章节」，不是本次勾选的子集：
+  // 只重生成某一章时，产物仍应是整本书，否则 m4b 会悄悄少掉其他章。
+  const candidates = Object.entries(state.chapters)
+    .filter(([, r]) => r?.status === 'done')
+    .map(([key, record]) => ({
+      key,
+      title: record.title || key,
+      index: record.index ?? 0,
+      durationSec: record.durationSec,
+    }))
+    .sort((a, b) => a.index - b.index);
+
+  const ordered = [];
+  for (const item of candidates) {
+    const stat = await fs.stat(partPathFor(projectPath, item.key)).catch(() => null);
+    if (stat && stat.size > 1024) ordered.push(item);
+  }
 
   if (!ordered.length) throw new AudiobookError('没有成功合成的章节，无法打包 m4b');
 
-  const parts = ordered.map(({ chapter, record }) => ({
-    path: partPathFor(projectPath, chapter.key),
-    title: chapter.title,
-    durationSec: record.durationSec,
+  const parts = ordered.map((item) => ({
+    path: partPathFor(projectPath, item.key),
+    title: item.title,
+    durationSec: item.durationSec,
   }));
+  if (ordered.length > chapters.length) {
+    log(`本次勾选 ${chapters.length} 章，整书共 ${ordered.length} 章已完成，一并封装`, 'info');
+  }
 
   const outFile = path.join(paths.outDir, `${safeName(meta.title || projectName)}.m4b`);
   await fs.mkdir(paths.outDir, { recursive: true });

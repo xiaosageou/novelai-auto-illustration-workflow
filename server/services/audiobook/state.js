@@ -5,6 +5,7 @@
  *   state.json            设置 + 每章状态 + 产物信息
  *   parts/<hash>.aac      分章压缩音频（中间产物）
  *   parts/<hash>.json     该章的时长/体积/参数签名
+ *   preview/<hash>.m4a    试听副本（ADTS→MP4 转封装，浏览器可直接播）
  *   work/                 临时块 WAV（编码后立即清理）
  *   out/<书名>.m4b        最终产物
  */
@@ -21,6 +22,7 @@ export function audiobookPaths(projectPath) {
     root,
     stateFile: path.join(root, 'state.json'),
     partsDir: path.join(root, 'parts'),
+    previewDir: path.join(root, 'preview'),
     workDir: path.join(root, 'work'),
     outDir: path.join(root, 'out'),
   };
@@ -37,6 +39,11 @@ export function partPathFor(projectPath, chapterKey) {
 
 export function partMetaPathFor(projectPath, chapterKey) {
   return path.join(audiobookPaths(projectPath).partsDir, `${partIdFor(chapterKey)}.json`);
+}
+
+/** 试听用的 m4a 副本路径（由 parts/<hash>.aac 转封装而来） */
+export function previewPathFor(projectPath, chapterKey) {
+  return path.join(audiobookPaths(projectPath).previewDir, `${partIdFor(chapterKey)}.m4a`);
 }
 
 export const DEFAULT_SETTINGS = {
@@ -73,7 +80,7 @@ export function settingsSignature(settings) {
 
 export async function ensureAudiobookDirs(projectPath) {
   const p = audiobookPaths(projectPath);
-  for (const dir of [p.root, p.partsDir, p.workDir, p.outDir]) {
+  for (const dir of [p.root, p.partsDir, p.previewDir, p.workDir, p.outDir]) {
     await fs.mkdir(dir, { recursive: true });
   }
   return p;
@@ -126,6 +133,15 @@ export async function readPartMeta(projectPath, chapterKey, settings) {
     const stat = await fs.stat(audioFile);
     if (stat.size < 1024) return null;
     return { ...meta, bytes: stat.size };
+  } catch {
+    return null;
+  }
+}
+
+/** 读该章片段的原始 meta（不校验签名），用于页面展示「这章是用什么音色合成的」 */
+export async function readPartMetaFile(projectPath, chapterKey) {
+  try {
+    return JSON.parse(await fs.readFile(partMetaPathFor(projectPath, chapterKey), 'utf8'));
   } catch {
     return null;
   }

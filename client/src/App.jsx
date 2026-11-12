@@ -5067,6 +5067,7 @@ function App() {
         {(mainTab === 'workbench' || mainTab === 'logs') && renderWorkbenchTab()}
         {mainTab === 'audiobook' && (
           <AudiobookWorkbench
+            key={activeProject || 'none'}
             apiBase={API_BASE}
             projectName={activeProject}
             projects={projects}

@@ -10,13 +10,14 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 
 import {
-  checkFfmpeg, BITRATE_PRESETS,
+  checkFfmpeg, BITRATE_PRESETS, remuxToM4a,
 } from './ffmpeg.js';
 import { PRESET_VOICES, verifyKey } from './mimo.js';
 import { readMimoConfig, saveMimoConfig, maskKey } from './key-store.js';
 import {
   audiobookPaths, ensureAudiobookDirs, readState, writeState,
-  normalizeSettings, partPathFor, partMetaPathFor,
+  normalizeSettings, settingsSignature, partPathFor, partMetaPathFor,
+  previewPathFor, readPartMetaFile,
 } from './state.js';
 import { runAudiobookPipeline, summarize, AudiobookError } from './pipeline.js';
 import { removeTree } from './wav.js';
@@ -202,6 +203,42 @@ function recoverStartFailure(task, err) {
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
+/**
+ * 试听副本（parts/<hash>.aac → preview/<hash>.m4a）。
+ * 播放器发起的是 Range 请求，常常几个请求并发打进来，所以同一文件只转封装一次；
+ * 章节重新生成后 AAC 的 mtime 变新，副本自动失效重建。
+ */
+const previewJobs = new Map();
+
+async function ensurePreviewFile(projectPath, chapterKey) {
+  const partFile = partPathFor(projectPath, chapterKey);
+  const m4aFile = previewPathFor(projectPath, chapterKey);
+  const [partStat, m4aStat] = await Promise.all([
+    fs.stat(partFile).catch(() => null),
+    fs.stat(m4aFile).catch(() => null),
+  ]);
+  if (!partStat || partStat.size < 1024) return null;
+  if (m4aStat && m4aStat.size > 1024 && m4aStat.mtimeMs >= partStat.mtimeMs) return m4aFile;
+
+  const running = previewJobs.get(m4aFile);
+  if (running) return running;
+
+  const job = (async () => {
+    await fs.mkdir(path.dirname(m4aFile), { recursive: true });
+    const tmp = `${m4aFile}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      await remuxToM4a(partFile, tmp);
+      await fs.rename(tmp, m4aFile);
+      return m4aFile;
+    } finally {
+      await fs.unlink(tmp).catch(() => {});
+    }
+  })().finally(() => previewJobs.delete(m4aFile));
+
+  previewJobs.set(m4aFile, job);
+  return job;
+}
+
 /** 取项目章节（复用已有的 PipelineManager 解析结果） */
 async function loadChapters(getPipeline, projectName) {
   const pipeline = await getPipeline(projectName);
@@ -283,13 +320,21 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
     ]);
     const state = await reconcileState(projectPath, projectName, rawState);
 
+    // 页面上的音色/码率可能还没保存到 state，用查询参数覆盖，才能算出「这章是不是要重生成」
     const settings = normalizeSettings({
       ...state.settings,
+      voice: req.query.voice || state.settings.voice,
       bitrateKbps: req.query.bitrateKbps || state.settings.bitrateKbps,
+      chunkChars: req.query.chunkChars || state.settings.chunkChars,
     });
+    const expectedSignature = settingsSignature(settings);
 
-    const items = chapters.map((c) => {
+    const items = await Promise.all(chapters.map(async (c) => {
       const record = state.chapters[c.key] || {};
+      // 片段是用什么参数合成的（老数据可能只有文件里的 meta 才有签名）
+      const signature = record.signature
+        || (record.status === 'done' ? (await readPartMetaFile(projectPath, c.key))?.signature : '')
+        || '';
       return {
         key: c.key,
         title: c.title,
@@ -302,13 +347,18 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
         bytes: record.bytes || 0,
         skippedChars: record.skippedChars || 0,
         error: record.error || '',
+        signature,
+        voice: signature ? signature.split('|')[0] : '',
+        // 已完成、但音频是别的音色/码率合成的 → 需要重新生成
+        stale: record.status === 'done' && Boolean(signature) && signature !== expectedSignature,
       };
-    });
+    }));
 
     const totals = {
       chapters: items.length,
       chars: items.reduce((s, c) => s + c.charCount, 0),
       doneChapters: items.filter((c) => c.status === 'done').length,
+      staleChapters: items.filter((c) => c.stale).length,
       estDurationSec: Math.round(items.reduce((s, c) => s + c.estDurationSec, 0)),
       estBytes: Math.round((items.reduce((s, c) => s + c.estDurationSec, 0) * settings.bitrateKbps * 1000) / 8),
       doneBytes: items.reduce((s, c) => s + (c.status === 'done' ? c.bytes : 0), 0),
@@ -321,6 +371,7 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
       chapters: items,
       totals,
       settings,
+      expectedSignature,
       output: state.output,
       status: state.status,
       queue: queueInfo(),
@@ -486,6 +537,40 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
     });
   }));
 
+  /* ── 单章在线试听（返回支持 Range 的 m4a，可拖动进度条） ── */
+  router.get('/preview', asyncHandler(async (req, res) => {
+    const projectName = String(req.query.projectName || '');
+    const chapterKey = String(req.query.chapterKey || '');
+    if (!projectName) return res.status(400).json({ error: '缺少 projectName' });
+    if (!chapterKey) return res.status(400).json({ error: '缺少 chapterKey' });
+
+    const { projectPath } = await safeProjectPath(projectName);
+    const state = await readState(projectPath, projectName);
+    const record = state.chapters[chapterKey];
+    if (!record || record.status !== 'done') {
+      return res.status(404).json({ error: '该章还没有可试听的音频' });
+    }
+
+    let file;
+    try {
+      file = await ensurePreviewFile(projectPath, chapterKey);
+    } catch (err) {
+      return res.status(500).json({ error: `试听音频准备失败：${err.message}` });
+    }
+    if (!file) return res.status(404).json({ error: '该章的音频片段不存在，请重新生成' });
+
+    res.sendFile(file, {
+      headers: {
+        'Content-Type': 'audio/mp4',
+        'Cache-Control': 'no-store',
+        'Content-Disposition': 'inline',
+      },
+    }, (err) => {
+      if (!err) return;
+      if (!res.headersSent) res.status(500).json({ error: err.message });
+    });
+  }));
+
   /* ── 产物下载 / 清理 ── */
   router.get('/download', asyncHandler(async (req, res) => {
     const projectName = String(req.query.projectName || '');
@@ -520,11 +605,13 @@ export function createAudiobookRouter({ baseDir, getPipeline, safeProjectPath })
       for (const key of keys) {
         removeTree(partPathFor(projectPath, key), { recursive: false });
         removeTree(partMetaPathFor(projectPath, key), { recursive: false });
+        removeTree(previewPathFor(projectPath, key), { recursive: false });
         delete state.chapters[key];
       }
       state.output = null;
     } else {
       removeTree(paths.partsDir);
+      removeTree(paths.previewDir);
       removeTree(paths.workDir);
       removeTree(paths.outDir);
       state.chapters = {};

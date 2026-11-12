@@ -88,6 +88,25 @@ export async function encodeAac(wavPath, aacPath, opts = {}) {
   return size;
 }
 
+/**
+ * ADTS(AAC) → m4a 试听副本：只转封装不重编码，一章通常在百毫秒级完成。
+ * 浏览器对裸 .aac 的支持参差不齐（Safari / 部分 Chromium 版本无法 seek），
+ * MP4 容器 + faststart 后 <audio> 才能正常拖动进度条。
+ */
+export async function remuxToM4a(aacPath, m4aPath) {
+  fs.mkdirSync(path.dirname(m4aPath), { recursive: true });
+  await run(FFMPEG, [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-i', aacPath,
+    '-vn', '-c:a', 'copy',
+    '-movflags', '+faststart',
+    '-f', 'ipod', m4aPath,
+  ], { timeoutMs: 60000 });
+  const size = fs.statSync(m4aPath).size;
+  if (size < 1024) throw new Error('试听音频转封装产物为空');
+  return size;
+}
+
 /** 读取媒体时长（秒），失败返回 0 */
 export async function probeDuration(filePath) {
   try {
