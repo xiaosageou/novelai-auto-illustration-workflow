@@ -181,6 +181,30 @@
     border: 1px solid rgba(168, 85, 247, 0.28);
   }
 
+  .stack {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .anlas.compact b { font-size: 1.9rem; }
+
+  .anlas b.low {
+    background: linear-gradient(120deg, #fef3c7, #fbbf24 60%, #f59e0b);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .anlas b.empty {
+    background: linear-gradient(120deg, #fee2e2, #f87171 60%, #dc2626);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .hero .hint { margin-top: 10px; }
+
   .label {
     font-size: 0.72rem;
     color: var(--text-dim);
@@ -392,7 +416,7 @@
       <h1>NAI 生图电量</h1>
       <span class="tag">独立工具 · 无需安装</span>
     </div>
-    <p class="sub">查 NovelAI 账号的 Anlas 余额、订阅层级与到期时间。页面直接请求 <code style="color:#a79fb8">image.novelai.net</code>，令牌与结果都不经过任何第三方服务器。</p>
+    <p class="sub">一次看清两项额度：<b style="color:#ddd6fe">V5 免费电量</b>（Opus 电池，决定免费出图还剩多少）与 <b style="color:#ddd6fe">Anlas</b>（只有超出免费参数才扣）。页面直接请求 <code style="color:#a79fb8">image.novelai.net</code>，令牌与结果都不经过任何第三方服务器。</p>
   </header>
 
   <div class="card key-card">
@@ -419,39 +443,48 @@
   <div id="result" hidden>
     <div class="grid">
       <div class="card hero">
-        <div class="label">Anlas 余额</div>
-        <div class="anlas"><b id="anlasTotal">—</b><span>点</span></div>
-        <div class="split">
-          <div class="piece">
-            <small>本期订阅额度</small>
-            <b id="anlasFree">—</b>
-          </div>
-          <div class="piece">
-            <small>已购买</small>
-            <b id="anlasBought">—</b>
-          </div>
-        </div>
-        <div class="bar-wrap" style="margin-top: 14px;">
+        <div class="label">V5 免费电量（Opus 电池）</div>
+        <div class="anlas"><b id="batteryLeft">—</b><span>% 可用</span></div>
+        <div class="bar-wrap" style="margin-top: 10px;">
           <div class="bar-head">
-            <span>本期剩余</span>
-            <span id="usageText">—</span>
+            <span>已用 <span id="batteryUsed">—</span>%</span>
+            <span id="batteryRefill">—</span>
           </div>
-          <div class="bar" id="usageBar"><i id="usageFill"></i></div>
+          <div class="bar" id="batteryBar"><i id="batteryFill"></i></div>
         </div>
+        <p class="hint" id="batteryNote">满槽约可生成 1,730 张 V5（默认 23 步 / Normal 尺寸）。</p>
       </div>
 
-      <div class="card">
-        <div class="label">订阅</div>
-        <div class="tier-row">
-          <span class="tier-name" id="tierName">—</span>
-          <span class="pill" id="activePill">—</span>
+      <div class="stack">
+        <div class="card">
+          <div class="label">Anlas 余额</div>
+          <div class="anlas compact"><b id="anlasTotal">—</b><span>点</span></div>
+          <div class="split">
+            <div class="piece">
+              <small>本期订阅</small>
+              <b id="anlasFree">—</b>
+            </div>
+            <div class="piece">
+              <small>已购买</small>
+              <b id="anlasBought">—</b>
+            </div>
+          </div>
+          <p class="hint" id="anlasNote">V5 在标准参数下不扣点，只有超出（Large 尺寸 / 更高步数 / 多图）才按张计费。</p>
         </div>
-        <dl class="kv">
-          <dt>到期</dt><dd id="expiresAt">—</dd>
-          <dt>剩余</dt><dd id="daysLeft">—</dd>
-          <dt>优先队列上限</dt><dd id="priority">—</dd>
-          <dt>下次恢复</dt><dd id="refill">—</dd>
-        </dl>
+
+        <div class="card">
+          <div class="label">订阅</div>
+          <div class="tier-row">
+            <span class="tier-name" id="tierName">—</span>
+            <span class="pill" id="activePill">—</span>
+          </div>
+          <dl class="kv">
+            <dt>到期</dt><dd id="expiresAt">—</dd>
+            <dt>剩余</dt><dd id="daysLeft">—</dd>
+            <dt>优先队列上限</dt><dd id="priority">—</dd>
+            <dt>队列刷新</dt><dd id="refill">—</dd>
+          </dl>
+        </div>
       </div>
     </div>
 
@@ -471,7 +504,8 @@
   </div>
 
   <footer>
-    <b>点数怎么算：</b>Anlas 是跨模型的通用点数，本期额度按订阅档位每月发放，用完后才消耗「已购买」的部分；Opus 标准参数下生图不扣点，只有超出免费参数（步数 / 尺寸等）才按张扣。<br />
+    <b>两个额度别搞混：</b>「V5 免费电量」是 Opus 在 V5 上的电池额度，用自己的百分比慢慢回充，标准参数（≤832×1216 / 28 步 / 单图）出图扣的是它、不扣 Anlas；「Anlas」只在超出免费参数时才扣（例如 1024×1536 约 45 点/张），两者互不替代。<br />
+    <b>满槽能画多少：</b>官方 FAQ 说满槽约 1,730 张 V5（默认 23 步 / Normal 尺寸），折合约 7,000 张/月；进度按 100 分钟到 2 小时回 1% 的速度走。<br />
     <b>隐私：</b>本页是静态文件，没有后端。请求从你的浏览器直接发往 NovelAI，令牌存在本机 localStorage（明文，建议只在自己的电脑上用）。<br />
     <b>打不开或报网络错误：</b>确认能直接访问 novelai.net；开了代理的话，浏览器需要能直连 <code style="color:#a79fb8">image.novelai.net</code>。
   </footer>
@@ -618,18 +652,39 @@
   }
 
   /** 兼容 /user/data 与 /user/subscription 两种返回 */
+  /** 满槽约能生成多少张 V5：官方 FAQ 给的约 1,730 张（默认 23 步 / Normal 尺寸） */
+  const FULL_BAR_IMAGES = 1730;
+
   function normalize(body, url) {
     const sub = body && body.subscription ? body.subscription : (body || {});
     const steps = sub.trainingStepsLeft || {};
     const free = num(steps.fixedTrainingStepsLeft);
     const bought = num(steps.purchasedTrainingSteps);
+
+    // 注意：trainingStepsLeft 是 Anlas，只影响「超出免费参数」的计费；
+    // V5 在 Opus 上的免费额度是 subscription.usage 这条「电池」，两者别混。
+    // usage.percent 是「剩余电量」本身（会随时间回充，1% ≈ 2.19 小时），
+    // 不是「已用百分比」——早先按 100-percent 算会把它整个反过来。
+    const rawUsage = sub.usage || {};
+    const hasBattery = Number.isFinite(Number(rawUsage.percent));
+    const leftPercent = hasBattery ? Math.min(100, Math.max(0, num(rawUsage.percent))) : 0;
+    const usedPercent = 100 - leftPercent;
+
     return {
       source: String(url || '').includes('/user/data') ? 'user/data' : 'user/subscription',
       tier: num(sub.tier),
       active: Boolean(sub.active),
       expiresAt: num(sub.expiresAt),
       isGracePeriod: Boolean(sub.isGracePeriod),
-      usage: sub.usage || {},
+      battery: {
+        supported: hasBattery,
+        usedPercent,
+        leftPercent,
+        refillSec: num(rawUsage.timeUntilNextPercent),
+        isNegative: Boolean(rawUsage.isNegative),
+        estimatedImages: Math.round((FULL_BAR_IMAGES * leftPercent) / 100),
+      },
+      usage: rawUsage,
       free,
       bought,
       total: free + bought,
@@ -645,16 +700,39 @@
 
   /* ── 渲染 ── */
   function render(d) {
+    /* 主指标：V5 电池 */
+    const b = d.battery;
+    if (b.supported) {
+      $('batteryLeft').textContent = String(b.leftPercent);
+      $('batteryLeft').className = b.leftPercent <= 0 ? 'empty' : b.leftPercent <= 25 ? 'low' : '';
+      $('batteryUsed').textContent = String(b.usedPercent);
+      $('batteryRefill').textContent = b.refillSec
+        ? `约 ${secondsToText(b.refillSec)}后 +1%`
+        : '自动回充';
+      const bar = $('batteryBar');
+      bar.className = 'bar' + (b.leftPercent <= 0 ? ' empty' : b.leftPercent <= 25 ? ' low' : '');
+      $('batteryFill').style.width = `${b.leftPercent}%`;
+      if (b.isNegative) {
+        $('batteryNote').innerHTML = '<span style="color: var(--bad)">额度已透支，超出部分按 Anlas 计费。</span>';
+      } else if (b.leftPercent <= 0) {
+        $('batteryNote').innerHTML = '<span style="color: var(--bad)">电量耗尽：V5 免费额度用完，继续生成会按 Anlas 计费（Anlas 也为 0 时就会失败）。</span>';
+      } else {
+        $('batteryNote').innerHTML = `满槽约 1,730 张（默认 23 步 / Normal 尺寸）· 按当前电量约还能生成 <b style="color:#e9d5ff">${fmt(b.estimatedImages)}</b> 张`;
+      }
+    } else {
+      $('batteryLeft').textContent = '—';
+      $('batteryUsed').textContent = '—';
+      $('batteryRefill').textContent = '';
+      $('batteryNote').textContent = '这个账号没有 V5 电池额度（Opus 专属的免费生成额度），生成会直接按 Anlas 计费。';
+    }
+
+    /* 次指标：Anlas */
     $('anlasTotal').textContent = fmt(d.total);
     $('anlasFree').textContent = fmt(d.free);
     $('anlasBought').textContent = fmt(d.bought);
-
-    const used = Math.min(100, Math.max(0, num(d.usage.percent)));
-    const remaining = 100 - used;
-    $('usageText').textContent = `${remaining}% 可用`;
-    const bar = $('usageBar');
-    bar.className = 'bar' + (remaining <= 0 ? ' empty' : remaining <= 25 ? ' low' : '');
-    $('usageFill').style.width = `${remaining}%`;
+    $('anlasNote').innerHTML = d.total > 0
+      ? 'V5 标准参数不扣点；Large 尺寸、更高步数、多图才按张计费。'
+      : 'Anlas 为 0，但 V5 标准参数（≤Normal 尺寸 / 28 步 / 单图）不扣点，仍然能正常生成；只有 Large 及以上尺寸才需要点数。';
 
     $('tierName').textContent = TIER_NAME[d.tier] || `Tier ${d.tier}`;
     const pill = $('activePill');
@@ -685,7 +763,12 @@
     $('priority').textContent = d.priority
       ? `${fmt(d.priority.max)} 次 · 优先级 ${d.priority.task}`
       : '—';
-    $('refill').textContent = d.priority && d.priority.refillAt ? fmtDate(d.priority.refillAt) : '—';
+    if (d.priority && d.priority.refillAt) {
+      const past = d.priority.refillAt * 1000 < Date.now();
+      $('refill').innerHTML = `${fmtDate(d.priority.refillAt)}${past ? ' <span style="color: var(--text-mute)">（已过）</span>' : ''}`;
+    } else {
+      $('refill').textContent = '—';
+    }
 
     $('raw').textContent = JSON.stringify(d.raw, null, 2);
     $('updatedAt').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')} · 来源 ${d.source}`;
@@ -698,8 +781,10 @@
     const lines = [
       `订阅：${TIER_NAME[d.tier] || d.tier}${d.active ? '（生效中）' : '（未生效）'}`,
       `到期：${fmtDate(d.expiresAt)}（剩 ${d.expiresAt ? Math.max(0, Math.ceil((d.expiresAt * 1000 - Date.now()) / 86400000)) : 0} 天）`,
+      d.battery.supported
+        ? `V5 电量：${d.battery.leftPercent}% 可用（已用 ${d.battery.usedPercent}%，约 ${fmt(d.battery.estimatedImages)} 张）`
+        : 'V5 电量：无（非 Opus）',
       `Anlas：${fmt(d.total)}（本期 ${fmt(d.free)} + 已购 ${fmt(d.bought)}）`,
-      `本期已用：${num(d.usage.percent)}%`,
     ];
     try {
       await navigator.clipboard.writeText(lines.join('\n'));

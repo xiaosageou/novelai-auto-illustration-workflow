@@ -179,7 +179,7 @@ docker compose -f docker-compose.release.yml up -d
 
 ## 小工具
 
-- **NAI 生图电量查询**：`tools/nai-balance/index.html`，单文件、零依赖，**双击用浏览器打开**即可。填入 NovelAI 的 `pst-…` 持久化令牌，显示 Anlas 余额（本期额度 + 已购买）、订阅档位与到期倒计时、本期剩余比例、优先队列上限。页面直接从浏览器请求 `image.novelai.net/user/data`（该接口允许跨域），令牌只存本机 localStorage，不经过任何后端。详见 `tools/nai-balance/README.md`。
+- **NAI 生图电量查询**：`tools/nai-balance/index.html`，单文件、零依赖，**双击用浏览器打开**即可。填入 NovelAI 的 `pst-…` 持久化令牌，显示 **V5 免费电量**（剩余百分比 + 约可生成张数）、Anlas 余额（本期 + 已购）、订阅档位与到期倒计时、优先队列上限。页面直接从浏览器请求 `image.novelai.net/user/data`（该接口允许跨域），令牌只存本机 localStorage，不经过任何后端。详见 `tools/nai-balance/README.md`。
 
 ## 常用命令
 
